@@ -1565,7 +1565,7 @@ export default function RequestPage() {
                 Your Requests ({selected.length}/{maxLimit})
               </div>
               <div className="text-right text-xs text-neutral-400">
-                <div>Titles left: {Math.max(0, Number(quota?.remaining || 0))}</div>
+                <div>Movies left: {Math.max(0, Number(quota?.remaining || 0))}</div>
                 <div>
                   Series episodes left:{' '}
                   {Math.max(0, Number(quota?.seriesEpisodesRemaining ?? quota?.series?.remaining ?? 0))}
