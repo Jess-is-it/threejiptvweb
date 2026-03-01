@@ -540,6 +540,9 @@ export default function RequestPage() {
                   </div>
                 </div>
 
+                {(resolved.state === 'available' || resolved.state === 'requested') ? (
+                  <div className="pointer-events-none absolute left-0 top-0 h-14 w-32 bg-gradient-to-br from-black/80 via-black/45 to-transparent" />
+                ) : null}
                 {resolved.state === 'available' ? (
                   <span className="absolute left-2 top-2 rounded-full border border-emerald-500/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-100">
                     Available Now
