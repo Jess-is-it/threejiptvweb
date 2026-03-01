@@ -138,6 +138,7 @@ There is currently **no automated test suite**. Use:
 - Content APIs: `/api/xuione/*`, `/api/tmdb/*`
 - Public feedback: `/api/public/reports`, `/api/public/notifications`
 - Public requests: `/api/public/requests` (`GET` quota/settings/active request states, `POST` actions: `submit|state|remind`)
+  - includes TMDB request catalog endpoint `GET /api/public/requests/catalog` (supports request-page browse/search/infinite-scroll with `include_adult=false` and genre filters)
 - AutoDownload: `/api/admin/autodownload/*` (engine, mount, download client, settings, processing, scheduler, xui, logs)
  - Request admin APIs:
    - `/api/admin/request-settings` (`GET`/`PUT`)
@@ -239,8 +240,11 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - XUI Scan state actions are simplified to `Manual Scan` (Movies/Series) and execute immediate manual scan requests.
 - XUI integration watchfolder IDs support legacy keys (`watchFolderId`, `watchFolderIdMovie`) and normalize to `watchFolderIdMovies`/`watchFolderIdSeries`.
 - Public request backend now enforces per-user daily quota (default `3`, with per-username overrides), dedupes by `mediaType + tmdbId`, supports reminder subscriptions, and exposes request-state lookups for request-card UI state.
+- Public request backend state/submit flows now use authenticated XUI catalog checks (via `streamBase`) to mark already-available titles as `Available Now` and block duplicate request submissions for titles already in XUI.
 - Admin request backend now supports queue sorting by most requested first (`requestCount`), fixed status workflow (`pending`, `approved`, `available_now`, `rejected`, `archived`), and archive actions for completed/rejected cleanup.
 - When request status transitions to `available_now`, notifications are pushed to all usernames in `reminderSubscribers`.
+- Public `/request` page now includes TMDB infinite scroll, search + autosuggest + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
+- Header request CTA is now contextual by route (`Request` on Home, `Request Movie` on Movies pages, `Request Series` on Series pages) and routes to `/request?type=all|movie|tv`.
 - Playback proxy (`/api/proxy/hls`) uses an undici dispatcher with `bodyTimeout: 0` to avoid long VOD streams being cut mid-playback.
 - Movie watch page (`/watch/movie/[id]`) now prefers HLS first in `VideoPlayer` and falls back to MP4 only if needed.
 - Production runtime uses `NEXT_DIST_DIR=.next-runtime` to isolate live chunks from local/dev builds and reduce ChunkLoadError during updates.
