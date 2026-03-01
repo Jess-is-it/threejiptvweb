@@ -82,6 +82,19 @@ function seasonRows(input) {
       episodeCount: clampPositiveInt(x?.episodeCount ?? x?.episode_count, 1, 500),
       name: String(x?.name || '').trim(),
       airDate: String(x?.airDate || x?.air_date || '').trim(),
+      posterPath: String((x?.posterPath ?? x?.poster_path) || '').trim(),
+      episodes: (Array.isArray(x?.episodes) ? x.episodes : [])
+        .map((ep) => ({
+          episodeNumber: clampPositiveInt(ep?.episodeNumber ?? ep?.episode_number, 1, 999),
+          name: String(ep?.name || '').trim(),
+          stillPath: String((ep?.stillPath ?? ep?.still_path) || '').trim(),
+          overview: String(ep?.overview || '').trim(),
+          airDate: String((ep?.airDate ?? ep?.air_date) || '').trim(),
+          runtime: clampPositiveInt(ep?.runtime, 1, 500),
+          availableNow: Boolean(ep?.availableNow),
+        }))
+        .filter((ep) => Number(ep.episodeNumber) > 0)
+        .sort((a, b) => a.episodeNumber - b.episodeNumber),
     }))
     .filter((x) => Number(x.seasonNumber) > 0 && Number(x.episodeCount) > 0)
     .sort((a, b) => a.seasonNumber - b.seasonNumber);
@@ -94,10 +107,51 @@ function findSeasonMeta(seasons, seasonNumber) {
   return found || rows[0] || null;
 }
 
-function episodeOptionsForSeason(seasons, seasonNumber) {
+function episodeRowsForSeason(seasons, seasonNumber) {
   const meta = findSeasonMeta(seasons, seasonNumber);
   if (!meta?.episodeCount) return [];
-  return Array.from({ length: meta.episodeCount }, (_, i) => i + 1);
+  if (Array.isArray(meta?.episodes) && meta.episodes.length) return meta.episodes;
+  return Array.from({ length: meta.episodeCount }, (_, i) => {
+    const episodeNumber = i + 1;
+    return {
+      episodeNumber,
+      name: `Episode ${episodeNumber}`,
+      stillPath: '',
+      overview: '',
+      airDate: '',
+      runtime: null,
+      availableNow: false,
+    };
+  });
+}
+
+function normalizeEpisodeNumbers(input, maxEpisode = 999) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(input) ? input : []) {
+    const value = clampPositiveInt(raw, 1, maxEpisode);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+function formatEpisodeListLabel(episodes) {
+  const rows = normalizeEpisodeNumbers(episodes, 999);
+  if (!rows.length) return '';
+  if (rows.length <= 6) return rows.join(', ');
+  return `${rows.slice(0, 6).join(', ')} +${rows.length - 6} more`;
+}
+
+function sameNumberList(left, right) {
+  const a = normalizeEpisodeNumbers(left, 999);
+  const b = normalizeEpisodeNumbers(right, 999);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function normalizeSeriesSelection(input, mediaType, seasons = []) {
@@ -109,35 +163,54 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
       episodeNumber: null,
       requestDetailLabel: '',
       requestUnits: 1,
+      episodeNumbers: [],
     };
   }
 
-  const requestScope = String(input?.requestScope || input?.scope || 'episode').trim().toLowerCase() === 'season' ? 'season' : 'episode';
+  const requestScope =
+    String(input?.requestScope || input?.scope || 'episode').trim().toLowerCase() === 'season'
+      ? 'season'
+      : 'episode';
   const rawSeasonNumber = clampPositiveInt(input?.seasonNumber ?? input?.season, 1, 99);
   const season = findSeasonMeta(seasons, rawSeasonNumber);
   const seasonNumber = season?.seasonNumber || rawSeasonNumber || 1;
-  const requestedUnits =
+  const seasonEpisodeCount = Math.max(1, Number(season?.episodeCount || 1));
+  const requestUnitsInput =
     clampPositiveInt(input?.requestUnits ?? input?.seasonEpisodeCount ?? input?.requestedEpisodes, 1, 500) || null;
-  const seasonEpisodeCount = Math.max(1, Number(season?.episodeCount || requestedUnits || 1));
+  const episodeNumbersInput = normalizeEpisodeNumbers(
+    input?.episodeNumbers ?? input?.requestedEpisodeNumbers ?? input?.episodes,
+    seasonEpisodeCount
+  );
+  const candidateEpisode = clampPositiveInt(input?.episodeNumber ?? input?.episode, 1, seasonEpisodeCount);
 
-  if (requestScope === 'season') {
+  let episodeNumbers = episodeNumbersInput;
+  if (!episodeNumbers.length && candidateEpisode) episodeNumbers = [candidateEpisode];
+  if (!episodeNumbers.length && requestScope === 'season') {
+    const requestedUnits = requestUnitsInput ? Math.min(seasonEpisodeCount, requestUnitsInput) : seasonEpisodeCount;
+    episodeNumbers = Array.from({ length: requestedUnits }, (_, i) => i + 1);
+  }
+  if (!episodeNumbers.length) episodeNumbers = [1];
+
+  const requestUnits = Math.max(1, episodeNumbers.length);
+  if (requestUnits > 1 || requestScope === 'season') {
     return {
-      requestScope,
+      requestScope: 'season',
       seasonNumber,
       episodeNumber: null,
-      requestDetailLabel: `Season ${seasonNumber}`,
-      requestUnits: requestedUnits ? Math.min(seasonEpisodeCount, requestedUnits) : seasonEpisodeCount,
+      requestDetailLabel: `Season ${seasonNumber} · Episodes ${formatEpisodeListLabel(episodeNumbers)}`,
+      requestUnits,
+      episodeNumbers,
     };
   }
 
-  const candidateEpisode = clampPositiveInt(input?.episodeNumber ?? input?.episode, 1, seasonEpisodeCount);
-  const episodeNumber = candidateEpisode || 1;
+  const episodeNumber = episodeNumbers[0] || 1;
   return {
     requestScope: 'episode',
     seasonNumber,
     episodeNumber,
     requestDetailLabel: `Season ${seasonNumber} · Episode ${episodeNumber}`,
     requestUnits: 1,
+    episodeNumbers: [episodeNumber],
   };
 }
 
@@ -152,6 +225,9 @@ function selectedCardChip(item) {
   const mt = String(item?.mediaType || '').toLowerCase();
   if (mt !== 'tv') return '';
   if (String(item?.requestScope || '').toLowerCase() === 'season' && String(item?.requestDetailLabel || '').trim()) {
+    const units = Math.max(1, Number(item?.requestUnits || 1));
+    const seasonNumber = Number(item?.seasonNumber || 0);
+    if (seasonNumber > 0 && units > 1) return `S${seasonNumber} • ${units} eps`;
     return String(item.requestDetailLabel).trim();
   }
   const normalized = normalizeSeriesSelection(item, mt);
@@ -313,7 +389,9 @@ export default function RequestPage() {
             requestScope: x.requestScope,
             seasonNumber: x.seasonNumber,
             episodeNumber: x.episodeNumber,
+            requestDetailLabel: x.requestDetailLabel,
             requestUnits: x.requestUnits,
+            episodeNumbers: normalizeEpisodeNumbers(x.episodeNumbers, 999),
           })),
         }),
       });
@@ -416,10 +494,18 @@ export default function RequestPage() {
     }));
 
     const run = async () => {
-      const r = await fetch(
-        `/api/public/requests/series-options?tmdbId=${encodeURIComponent(seriesPicker.item.tmdbId)}`,
-        { cache: 'no-store' }
-      );
+      const r = await fetch('/api/public/requests/series-options', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          tmdbId: seriesPicker.item.tmdbId,
+          title: seriesPicker.item.title,
+          originalTitle: seriesPicker.item.originalTitle,
+          releaseDate: seriesPicker.item.releaseDate,
+          streamBase,
+        }),
+      });
       const j = await readJsonSafe(r);
       if (!alive) return;
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to load series options.');
@@ -444,7 +530,13 @@ export default function RequestPage() {
     return () => {
       alive = false;
     };
-  }, [seriesPicker?.item?.tmdbId]);
+  }, [
+    seriesPicker?.item?.tmdbId,
+    seriesPicker?.item?.title,
+    seriesPicker?.item?.originalTitle,
+    seriesPicker?.item?.releaseDate,
+    streamBase,
+  ]);
 
   useEffect(() => {
     if (!seriesPicker || !seriesPickerMeta.seasons.length) return;
@@ -453,7 +545,8 @@ export default function RequestPage() {
       normalized.requestScope === seriesPicker.requestScope &&
       normalized.seasonNumber === seriesPicker.seasonNumber &&
       normalized.episodeNumber === seriesPicker.episodeNumber &&
-      normalized.requestUnits === seriesPicker.requestUnits
+      normalized.requestUnits === seriesPicker.requestUnits &&
+      sameNumberList(normalized.episodeNumbers, seriesPicker.episodeNumbers)
     ) {
       setSeriesExpandedSeason((prev) => prev || normalized.seasonNumber || null);
       return;
@@ -466,6 +559,7 @@ export default function RequestPage() {
             seasonNumber: normalized.seasonNumber,
             episodeNumber: normalized.episodeNumber,
             requestUnits: normalized.requestUnits,
+            episodeNumbers: normalized.episodeNumbers,
           }
         : prev
     );
@@ -560,6 +654,7 @@ export default function RequestPage() {
         seasonNumber: normalized.seasonNumber || 1,
         episodeNumber: normalized.episodeNumber || 1,
         requestUnits: Math.max(1, Number(existing?.requestUnits || normalized.requestUnits || 1)),
+        episodeNumbers: normalizeEpisodeNumbers(existing?.episodeNumbers || normalized.episodeNumbers, 999),
         editing: Boolean(existing),
       });
     },
@@ -580,6 +675,7 @@ export default function RequestPage() {
       episodeNumber: normalized.episodeNumber,
       requestDetailLabel: normalized.requestDetailLabel,
       requestUnits: normalized.requestUnits,
+      episodeNumbers: normalized.episodeNumbers,
     });
     closeSeriesPicker();
   }, [seriesPicker, seriesPickerMeta.seasons, push, upsertSelectedItem, closeSeriesPicker]);
@@ -655,7 +751,9 @@ export default function RequestPage() {
             requestScope: x.requestScope,
             seasonNumber: x.seasonNumber,
             episodeNumber: x.episodeNumber,
+            requestDetailLabel: x.requestDetailLabel,
             requestUnits: x.requestUnits,
+            episodeNumbers: normalizeEpisodeNumbers(x.episodeNumbers, 999),
           })),
         }),
       });
@@ -745,6 +843,110 @@ export default function RequestPage() {
     Number(
       (quota?.seriesEpisodeLimit ?? quota?.series?.limit ?? settings?.seriesEpisodeLimitDefault) || 8
     ) || 8;
+  const seriesQuotaRemaining = Math.max(
+    0,
+    Number(quota?.seriesEpisodesRemaining ?? quota?.series?.remaining ?? maxSeriesEpisodeLimit)
+  );
+  const seriesPickerItemKey = seriesPicker?.item ? mediaKey(seriesPicker.item) : '';
+  const seriesUnitsInOtherSelections = selected.reduce((sum, row) => {
+    if (String(row?.mediaType || '').toLowerCase() !== 'tv') return sum;
+    if (seriesPickerItemKey && mediaKey(row) === seriesPickerItemKey) return sum;
+    return sum + Math.max(1, Number(row?.requestUnits || 1));
+  }, 0);
+  const seriesPickerEpisodeLimit = Math.max(0, seriesQuotaRemaining - seriesUnitsInOtherSelections);
+  const normalizedSeriesPickerSelection = seriesPicker
+    ? normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons)
+    : null;
+
+  const toggleSeriesEpisode = useCallback(
+    (seasonNumber, episodeNumber) => {
+      const season = findSeasonMeta(seriesPickerMeta.seasons, seasonNumber);
+      if (!season) return;
+      const episode = episodeRowsForSeason(seriesPickerMeta.seasons, seasonNumber).find(
+        (row) => Number(row.episodeNumber) === Number(episodeNumber)
+      );
+      if (!episode) return;
+      if (episode.availableNow) {
+        push('This episode is already available on your server.', 'info');
+        return;
+      }
+
+      setSeriesPicker((prev) => {
+        if (!prev) return prev;
+        const sameSeason = Number(prev.seasonNumber || 0) === Number(seasonNumber);
+        const base = sameSeason ? normalizeEpisodeNumbers(prev.episodeNumbers, 999) : [];
+        const exists = base.includes(episodeNumber);
+        const nextEpisodes = exists ? base.filter((ep) => ep !== episodeNumber) : [...base, episodeNumber];
+        const uniqueEpisodes = normalizeEpisodeNumbers(nextEpisodes, season.episodeCount || 999);
+
+        if (!exists && uniqueEpisodes.length > seriesPickerEpisodeLimit) {
+          push(`Series episode limit reached (${seriesPickerEpisodeLimit} left for cart).`, 'error');
+          return prev;
+        }
+        if (!uniqueEpisodes.length) return prev;
+
+        const normalized = normalizeSeriesSelection(
+          {
+            requestScope: uniqueEpisodes.length > 1 ? 'season' : 'episode',
+            seasonNumber,
+            episodeNumbers: uniqueEpisodes,
+            episodeNumber: uniqueEpisodes[0],
+            requestUnits: uniqueEpisodes.length,
+          },
+          'tv',
+          seriesPickerMeta.seasons
+        );
+        return { ...prev, ...normalized };
+      });
+      setSeriesExpandedSeason(seasonNumber);
+    },
+    [seriesPickerMeta.seasons, seriesPickerEpisodeLimit, push]
+  );
+
+  const requestAllUnavailableInSeason = useCallback(
+    (seasonNumber) => {
+      const episodes = episodeRowsForSeason(seriesPickerMeta.seasons, seasonNumber);
+      const unavailable = episodes.filter((ep) => !ep.availableNow).map((ep) => ep.episodeNumber);
+      if (!unavailable.length) {
+        push('All episodes in this season are already available.', 'info');
+        return;
+      }
+
+      const cap = Math.max(0, Math.min(seriesPickerEpisodeLimit, unavailable.length));
+      if (cap <= 0) {
+        push(`Series episode limit reached (${seriesPickerEpisodeLimit} left for cart).`, 'error');
+        return;
+      }
+
+      const selectedEpisodes = unavailable.slice(0, cap);
+      setSeriesPicker((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...normalizeSeriesSelection(
+                {
+                  requestScope: selectedEpisodes.length > 1 ? 'season' : 'episode',
+                  seasonNumber,
+                  episodeNumbers: selectedEpisodes,
+                  episodeNumber: selectedEpisodes[0] || null,
+                  requestUnits: selectedEpisodes.length,
+                },
+                'tv',
+                seriesPickerMeta.seasons
+              ),
+            }
+          : prev
+      );
+      setSeriesExpandedSeason(seasonNumber);
+      if (selectedEpisodes.length < unavailable.length) {
+        push(
+          `Selected ${selectedEpisodes.length}/${unavailable.length} unavailable episodes due to quota.`,
+          'info'
+        );
+      }
+    },
+    [seriesPickerMeta.seasons, seriesPickerEpisodeLimit, push]
+  );
 
   return (
     <Protected>
@@ -971,7 +1173,7 @@ export default function RequestPage() {
                     Request: {seriesPicker?.item?.title || 'Series'}
                   </div>
                   <p className="mt-1 text-sm text-neutral-300">
-                    Choose a season or a specific episode from TMDB data.
+                    Expand a season to select episodes. Episodes already in XUI are marked Available.
                   </p>
                 </div>
                 <button
@@ -1002,21 +1204,14 @@ export default function RequestPage() {
               <div className="mt-4 max-h-[48vh] space-y-2 overflow-auto pr-1">
                 {seasonRows(seriesPickerMeta.seasons).map((season) => {
                   const expanded = Number(seriesExpandedSeason || 0) === season.seasonNumber;
-                  const allEpisodesCount = season.episodeCount;
-                  const seasonCap = Math.max(
-                    0,
-                    Math.min(
-                      allEpisodesCount,
-                      Number(
-                        quota?.seriesEpisodesRemaining ??
-                          quota?.series?.remaining ??
-                          maxSeriesEpisodeLimit
-                      ) || 0
-                    )
-                  );
-                  const isSelectedSeason =
-                    seriesPicker.requestScope === 'season' &&
-                    Number(seriesPicker.seasonNumber || 0) === season.seasonNumber;
+                  const episodes = episodeRowsForSeason(seriesPickerMeta.seasons, season.seasonNumber);
+                  const unavailableEpisodes = episodes.filter((ep) => !ep.availableNow);
+                  const autoPickCap = Math.max(0, Math.min(seriesPickerEpisodeLimit, unavailableEpisodes.length));
+                  const activeSeason = Number(seriesPicker?.seasonNumber || 0) === season.seasonNumber;
+                  const selectedEpisodeNumbers = activeSeason
+                    ? normalizeEpisodeNumbers(seriesPicker?.episodeNumbers, season.episodeCount || 999)
+                    : [];
+                  const selectedSet = new Set(selectedEpisodeNumbers);
                   return (
                     <div key={season.seasonNumber} className="rounded-xl border border-neutral-800 bg-neutral-900/60">
                       <button
@@ -1032,7 +1227,10 @@ export default function RequestPage() {
                           <div className="truncate text-sm font-semibold text-neutral-100">
                             {season.name || `Season ${season.seasonNumber}`}
                           </div>
-                          <div className="text-xs text-neutral-400">{season.episodeCount} episodes</div>
+                          <div className="text-xs text-neutral-400">
+                            {season.episodeCount} episodes
+                            {selectedEpisodeNumbers.length > 0 ? ` • ${selectedEpisodeNumbers.length} selected` : ''}
+                          </div>
                         </div>
                         <div className="text-xs text-neutral-400">{expanded ? 'Hide' : 'Show'}</div>
                       </button>
@@ -1042,66 +1240,76 @@ export default function RequestPage() {
                           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                             <button
                               type="button"
-                              disabled={seasonCap <= 0}
-                              onClick={() =>
-                                setSeriesPicker((prev) =>
-                                  prev
-                                    ? {
-                                        ...prev,
-                                        requestScope: 'season',
-                                        seasonNumber: season.seasonNumber,
-                                        episodeNumber: null,
-                                        requestUnits: seasonCap,
-                                      }
-                                    : prev
-                                )
-                              }
+                              disabled={autoPickCap <= 0}
+                              onClick={() => requestAllUnavailableInSeason(season.seasonNumber)}
                               className={
                                 'rounded-lg border px-3 py-1.5 text-xs font-semibold transition ' +
-                                (isSelectedSeason
+                                (activeSeason && selectedEpisodeNumbers.length > 1
                                   ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
                                   : 'border-neutral-700 bg-neutral-900 text-neutral-200 hover:border-neutral-500') +
-                                (seasonCap <= 0 ? ' opacity-60' : '')
+                                (autoPickCap <= 0 ? ' opacity-60' : '')
                               }
                             >
-                              Request all episodes (max {Math.min(allEpisodesCount, maxSeriesEpisodeLimit)})
+                              Request all missing episodes (max {autoPickCap})
                             </button>
                             <div className="text-[11px] text-neutral-400">
-                              Remaining today: {Number(quota?.seriesEpisodesRemaining ?? quota?.series?.remaining ?? 0)}
+                              Episodes left for cart: {seriesPickerEpisodeLimit}
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8">
-                            {episodeOptionsForSeason(seriesPickerMeta.seasons, season.seasonNumber).map((ep) => {
-                              const isSelectedEpisode =
-                                seriesPicker.requestScope === 'episode' &&
-                                Number(seriesPicker.seasonNumber || 0) === season.seasonNumber &&
-                                Number(seriesPicker.episodeNumber || 0) === ep;
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            {episodes.map((episode) => {
+                              const isAvailableEpisode = Boolean(episode.availableNow);
+                              const isSelectedEpisode = activeSeason && selectedSet.has(episode.episodeNumber);
+                              const posterFallback =
+                                episode.stillPath ||
+                                season.posterPath ||
+                                seriesPicker?.item?.backdropPath ||
+                                seriesPicker?.item?.posterPath;
                               return (
                                 <button
-                                  key={`${season.seasonNumber}-${ep}`}
+                                  key={`${season.seasonNumber}-${episode.episodeNumber}`}
                                   type="button"
-                                  onClick={() =>
-                                    setSeriesPicker((prev) =>
-                                      prev
-                                        ? {
-                                            ...prev,
-                                            requestScope: 'episode',
-                                            seasonNumber: season.seasonNumber,
-                                            episodeNumber: ep,
-                                            requestUnits: 1,
-                                          }
-                                        : prev
-                                    )
-                                  }
+                                  disabled={isAvailableEpisode}
+                                  onClick={() => toggleSeriesEpisode(season.seasonNumber, episode.episodeNumber)}
                                   className={
-                                    'rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition ' +
+                                    'group relative overflow-hidden rounded-xl border text-left transition ' +
                                     (isSelectedEpisode
-                                      ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
-                                      : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
+                                      ? 'border-[var(--brand)] shadow-[0_0_0_1px_var(--brand)]'
+                                      : isAvailableEpisode
+                                        ? 'cursor-default border-emerald-500/30 bg-neutral-900/70'
+                                        : 'border-neutral-700 bg-neutral-900/70 hover:border-neutral-500')
                                   }
                                 >
-                                  Ep {ep}
+                                  <div className="relative aspect-video overflow-hidden bg-neutral-800">
+                                    <img
+                                      src={tmdbImage(posterFallback, 'w500')}
+                                      alt={`${seriesPicker?.item?.title || 'Series'} Episode ${episode.episodeNumber}`}
+                                      className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.03]"
+                                      loading="lazy"
+                                    />
+                                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-black/20 to-black/75" />
+                                    {isAvailableEpisode ? (
+                                      <span className="absolute left-2 top-2 rounded-full border border-emerald-500/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-100">
+                                        Available
+                                      </span>
+                                    ) : null}
+                                    {isSelectedEpisode ? (
+                                      <span className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full border border-white/35 bg-[var(--brand)] text-sm font-black text-white shadow-[0_8px_18px_rgba(0,0,0,0.35)]">
+                                        ✓
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <div className="px-2 py-2">
+                                    <div className="line-clamp-1 text-xs font-semibold text-neutral-100">
+                                      Ep {episode.episodeNumber}
+                                      {episode.name ? ` · ${episode.name}` : ''}
+                                    </div>
+                                    <div className="mt-0.5 text-[11px] text-neutral-400">
+                                      {episode.airDate || 'No air date'}
+                                      {episode.runtime ? ` • ${episode.runtime}m` : ''}
+                                    </div>
+                                  </div>
                                 </button>
                               );
                             })}
@@ -1114,9 +1322,9 @@ export default function RequestPage() {
               </div>
 
               <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-300">
-                Selected request: {normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons).requestDetailLabel}
-                {seriesPicker.requestScope === 'season'
-                  ? ` (${normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons).requestUnits} episodes)`
+                Selected request: {normalizedSeriesPickerSelection?.requestDetailLabel || 'None'}
+                {normalizedSeriesPickerSelection?.requestScope === 'season'
+                  ? ` (${normalizedSeriesPickerSelection?.requestUnits || 0} episodes)`
                   : ''}
               </div>
 

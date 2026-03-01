@@ -86,6 +86,21 @@ function mediaTypeNorm(value) {
   return s === 'tv' || s === 'series' ? 'tv' : 'movie';
 }
 
+function normalizeEpisodeNumbers(input) {
+  const out = [];
+  const seen = new Set();
+  for (const value of Array.isArray(input) ? input : []) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) continue;
+    const v = Math.floor(n);
+    if (v < 1 || v > 999) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out.sort((a, b) => a - b);
+}
+
 function dedupeItems(items) {
   const out = [];
   const seen = new Set();
@@ -108,7 +123,9 @@ function dedupeItems(items) {
       requestScope: String(raw?.requestScope || '').trim().toLowerCase(),
       seasonNumber: raw?.seasonNumber,
       episodeNumber: raw?.episodeNumber,
+      requestDetailLabel: String(raw?.requestDetailLabel || '').trim(),
       requestUnits: raw?.requestUnits ?? raw?.seasonEpisodeCount ?? raw?.requestedEpisodes,
+      episodeNumbers: normalizeEpisodeNumbers(raw?.episodeNumbers),
     });
   }
   return out;
