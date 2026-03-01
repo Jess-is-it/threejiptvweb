@@ -60,11 +60,13 @@ async function tmdb(path, apiKey, params) {
 
 function toCard(item, mediaType) {
   const title = String(item?.title || item?.name || '').trim();
+  const originalTitle = String(item?.original_title || item?.original_name || '').trim();
   const releaseDate = String(item?.release_date || item?.first_air_date || '').trim();
   return {
     tmdbId: Number(item?.id || 0) || null,
     mediaType,
     title,
+    originalTitle,
     overview: String(item?.overview || '').trim(),
     posterPath: String(item?.poster_path || '').trim(),
     backdropPath: String(item?.backdrop_path || '').trim(),

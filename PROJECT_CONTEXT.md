@@ -244,14 +244,14 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - XUI integration watchfolder IDs support legacy keys (`watchFolderId`, `watchFolderIdMovie`) and normalize to `watchFolderIdMovies`/`watchFolderIdSeries`.
 - Public request backend now enforces per-user daily quota (default `3`, with per-username overrides), dedupes by `mediaType + tmdbId`, supports reminder subscriptions, and exposes request-state lookups for request-card UI state.
 - Public request backend state/submit flows now use authenticated XUI catalog checks (via `streamBase`) to mark already-available titles as `Available Now` and block duplicate request submissions for titles already in XUI.
+- XUI availability detection for request cards now matches by TMDB id when present, with normalized title signatures (including compact/diacritic-safe forms and original title fallback) to improve `Available Now` tagging reliability.
 - Admin request backend now supports queue sorting by most requested first (`requestCount`), fixed status workflow (`pending`, `approved`, `available_now`, `rejected`, `archived`), and archive actions for completed/rejected cleanup.
 - When request status transitions to `available_now`, notifications are pushed to all usernames in `reminderSubscribers`.
 - Admin sidebar now includes dedicated `Requests` and `Request Settings` entries, with pages bound to `/api/admin/requests` and `/api/admin/request-settings`.
 - Admin Requests Queue now supports row selection + bulk status transitions + bulk archive actions; backend `PATCH /api/admin/requests` accepts bulk `ids` for `action=status`.
 - Admin Requests Queue status navigation now has quick filter links from KPI cards and row status badges (jump directly to matching queue filter tab).
 - Request-card secondary status labels now render using customizable request status tags from Request Settings for consistent labeling across public/admin surfaces.
-- Public `/request` page now includes TMDB infinite scroll, search + autosuggest + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
-- Request-page autosuggest now only opens for focused search input with 2+ characters, and closes on outside click or `Esc` for tighter UX.
+- Public `/request` page now includes TMDB infinite scroll, search + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
 - Request submit feedback now reports reason-specific skips (`already requested`, `already available`, `daily limit`) and keeps daily-limit-rejected items in the request cart for retry.
 - Header request CTA is now contextual by route (`Request` on Home, `Request Movie` on Movies pages, `Request Series` on Series pages) and routes to `/request?type=all|movie|tv`.
 - Playback proxy (`/api/proxy/hls`) uses an undici dispatcher with `bodyTimeout: 0` to avoid long VOD streams being cut mid-playback.

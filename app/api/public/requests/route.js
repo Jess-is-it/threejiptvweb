@@ -43,9 +43,23 @@ function compactActiveStates(items) {
 function normalizeTitle(value) {
   return String(value || '')
     .toLowerCase()
-    .replace(/[\u2019'":,!?()[\].\-]/g, '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function buildTitleSignatures(value) {
+  const base = normalizeTitle(value);
+  if (!base) return [];
+  const out = new Set([base, base.replace(/\s+/g, '')]);
+  const withoutTrailingYear = base.replace(/\s+\b(19|20)\d{2}\b$/, '').trim();
+  if (withoutTrailingYear && withoutTrailingYear !== base) {
+    out.add(withoutTrailingYear);
+    out.add(withoutTrailingYear.replace(/\s+/g, ''));
+  }
+  return [...out].filter(Boolean);
 }
 
 function parseYear(value) {
@@ -53,6 +67,17 @@ function parseYear(value) {
   if (!s) return '';
   const m = s.match(/^(\d{4})/);
   return m ? m[1] : '';
+}
+
+function parseTmdbId(value) {
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  const s = String(value || '').trim();
+  if (!s) return 0;
+  if (/^\d+$/.test(s)) return Number(s);
+  const tmdbTagged = s.match(/tmdb[^0-9]{0,6}(\d{2,9})/i);
+  if (tmdbTagged) return Number(tmdbTagged[1]);
+  return 0;
 }
 
 function mediaTypeNorm(value) {
@@ -74,6 +99,7 @@ function dedupeItems(items) {
       tmdbId,
       mediaType,
       title: String(raw?.title || '').trim(),
+      originalTitle: String(raw?.originalTitle || '').trim(),
       releaseDate: String(raw?.releaseDate || '').trim(),
       posterPath: String(raw?.posterPath || '').trim(),
       backdropPath: String(raw?.backdropPath || '').trim(),
@@ -103,30 +129,42 @@ async function loadXuiCatalog(streamBase) {
 
   const movieExact = new Set();
   const movieTitleOnly = new Set();
+  const movieTmdbIds = new Set();
   const seriesExact = new Set();
   const seriesTitleOnly = new Set();
+  const seriesTmdbIds = new Set();
 
   for (const row of Array.isArray(vod) ? vod : []) {
-    const title = normalizeTitle(row?.name || row?.title || '');
-    if (!title) continue;
+    const titleSignatures = buildTitleSignatures(row?.name || row?.title || '');
+    if (!titleSignatures.length) continue;
     const year = parseYear(row?.year || row?.releaseDate || row?.release_date);
-    movieTitleOnly.add(title);
-    if (year) movieExact.add(`${title}::${year}`);
+    const tmdbId = parseTmdbId(row?.tmdb || row?.tmdb_id || row?.tmdbId || row?.info?.tmdb || row?.info?.tmdb_id);
+    if (tmdbId > 0) movieTmdbIds.add(tmdbId);
+    for (const title of titleSignatures) {
+      movieTitleOnly.add(title);
+      if (year) movieExact.add(`${title}::${year}`);
+    }
   }
 
   for (const row of Array.isArray(series) ? series : []) {
-    const title = normalizeTitle(row?.name || row?.title || '');
-    if (!title) continue;
+    const titleSignatures = buildTitleSignatures(row?.name || row?.title || '');
+    if (!titleSignatures.length) continue;
     const year = parseYear(row?.year || row?.releaseDate || row?.release_date);
-    seriesTitleOnly.add(title);
-    if (year) seriesExact.add(`${title}::${year}`);
+    const tmdbId = parseTmdbId(row?.tmdb || row?.tmdb_id || row?.tmdbId || row?.info?.tmdb || row?.info?.tmdb_id);
+    if (tmdbId > 0) seriesTmdbIds.add(tmdbId);
+    for (const title of titleSignatures) {
+      seriesTitleOnly.add(title);
+      if (year) seriesExact.add(`${title}::${year}`);
+    }
   }
 
   const data = {
     movieExact,
     movieTitleOnly,
+    movieTmdbIds,
     seriesExact,
     seriesTitleOnly,
+    seriesTmdbIds,
   };
   xuiCatalogCache.set(s, { at: now, data });
   return data;
@@ -135,17 +173,38 @@ async function loadXuiCatalog(streamBase) {
 function isAvailableInXui(item, catalog) {
   if (!catalog || !item) return false;
   const mediaType = mediaTypeNorm(item.mediaType);
-  const title = normalizeTitle(item.title);
-  if (!title) return false;
+  const tmdbId = parseTmdbId(item.tmdbId);
+  if (tmdbId > 0) {
+    if (mediaType === 'tv' && catalog.seriesTmdbIds.has(tmdbId)) return true;
+    if (mediaType !== 'tv' && catalog.movieTmdbIds.has(tmdbId)) return true;
+  }
   const year = parseYear(item.releaseDate);
-  const exact = year ? `${title}::${year}` : '';
+  const titleSignatures = new Set([
+    ...buildTitleSignatures(item.title),
+    ...buildTitleSignatures(item.originalTitle),
+  ]);
+  if (!titleSignatures.size) return false;
 
   if (mediaType === 'tv') {
-    if (exact && catalog.seriesExact.has(exact)) return true;
-    return catalog.seriesTitleOnly.has(title);
+    if (year) {
+      for (const title of titleSignatures) {
+        if (catalog.seriesExact.has(`${title}::${year}`)) return true;
+      }
+    }
+    for (const title of titleSignatures) {
+      if (catalog.seriesTitleOnly.has(title)) return true;
+    }
+    return false;
   }
-  if (exact && catalog.movieExact.has(exact)) return true;
-  return catalog.movieTitleOnly.has(title);
+  if (year) {
+    for (const title of titleSignatures) {
+      if (catalog.movieExact.has(`${title}::${year}`)) return true;
+    }
+  }
+  for (const title of titleSignatures) {
+    if (catalog.movieTitleOnly.has(title)) return true;
+  }
+  return false;
 }
 
 function mergeRequestAndAvailabilityStates({ items, requestStates, catalog }) {

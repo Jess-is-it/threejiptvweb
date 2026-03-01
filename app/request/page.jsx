@@ -130,13 +130,8 @@ export default function RequestPage() {
   const [requestedModal, setRequestedModal] = useState(null);
   const [remindBusy, setRemindBusy] = useState(false);
 
-  const [suggestions, setSuggestions] = useState([]);
-  const [suggestOpen, setSuggestOpen] = useState(false);
-  const [searchFocused, setSearchFocused] = useState(false);
-
   const didApplyDefaultFilter = useRef(false);
   const sentinelRef = useRef(null);
-  const suggestBoxRef = useRef(null);
 
   useEffect(() => setType(initialType), [initialType]);
 
@@ -144,28 +139,6 @@ export default function RequestPage() {
     const t = setTimeout(() => setDebouncedQuery(query.trim()), 280);
     return () => clearTimeout(t);
   }, [query]);
-
-  useEffect(() => {
-    const onClick = (e) => {
-      if (!suggestOpen) return;
-      if (suggestBoxRef.current && !suggestBoxRef.current.contains(e.target)) {
-        setSuggestOpen(false);
-        setSearchFocused(false);
-      }
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        setSuggestOpen(false);
-        setSearchFocused(false);
-      }
-    };
-    window.addEventListener('mousedown', onClick);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('mousedown', onClick);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [suggestOpen]);
 
   const selectedKeys = useMemo(() => new Set(selected.map((x) => mediaKey(x))), [selected]);
 
@@ -217,6 +190,7 @@ export default function RequestPage() {
             tmdbId: x.tmdbId,
             mediaType: x.mediaType,
             title: x.title,
+            originalTitle: x.originalTitle,
             releaseDate: x.releaseDate,
             posterPath: x.posterPath,
             backdropPath: x.backdropPath,
@@ -306,40 +280,6 @@ export default function RequestPage() {
     return () => obs.disconnect();
   }, [catalogLoading, page, totalPages]);
 
-  useEffect(() => {
-    if (!suggestOpen || !searchFocused || !debouncedQuery || debouncedQuery.length < 2) {
-      setSuggestions([]);
-      return;
-    }
-    let alive = true;
-    const run = async () => {
-      const params = new URLSearchParams();
-      params.set('type', type);
-      params.set('page', '1');
-      params.set('q', debouncedQuery);
-      const r = await fetch(`/api/public/requests/catalog?${params.toString()}`, { cache: 'no-store' });
-      const j = await readJsonSafe(r);
-      if (!alive) return;
-      if (!r.ok || !j?.ok) {
-        setSuggestions([]);
-        return;
-      }
-      const rows = Array.isArray(j?.items) ? j.items : [];
-      const q = debouncedQuery.toLowerCase();
-      setSuggestions(
-        rows
-          .filter((x) => String(x?.title || '').toLowerCase().includes(q))
-          .slice(0, 6)
-      );
-    };
-    run().catch(() => {
-      if (alive) setSuggestions([]);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [debouncedQuery, type, suggestOpen, searchFocused]);
-
   const toggleSelect = useCallback(
     (item) => {
       const key = mediaKey(item);
@@ -410,6 +350,7 @@ export default function RequestPage() {
             tmdbId: x.tmdbId,
             mediaType: x.mediaType,
             title: x.title,
+            originalTitle: x.originalTitle,
             releaseDate: x.releaseDate,
             posterPath: x.posterPath,
             backdropPath: x.backdropPath,
@@ -514,20 +455,12 @@ export default function RequestPage() {
           ))}
         </div>
 
-        <div ref={suggestBoxRef} className="relative mb-4">
+        <div className="relative mb-4">
           <div className="flex items-center overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900">
             <Search size={16} className="ml-3 text-neutral-400" />
             <input
               value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                const next = String(e.target.value || '').trim();
-                setSuggestOpen(next.length >= 2);
-              }}
-              onFocus={() => {
-                setSearchFocused(true);
-                setSuggestOpen(String(query || '').trim().length >= 2);
-              }}
+              onChange={(e) => setQuery(e.target.value)}
               placeholder="Search title..."
               className="w-full bg-transparent px-3 py-3 text-sm outline-none"
             />
@@ -535,8 +468,6 @@ export default function RequestPage() {
               <button
                 onClick={() => {
                   setQuery('');
-                  setSuggestOpen(false);
-                  setSuggestions([]);
                 }}
                 className="mr-2 rounded-md p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
                 aria-label="Clear search"
@@ -546,31 +477,6 @@ export default function RequestPage() {
               </button>
             ) : null}
           </div>
-
-          {suggestOpen && suggestions.length ? (
-            <div className="absolute inset-x-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-xl">
-              {suggestions.map((s) => (
-                <button
-                  key={mediaKey(s)}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    setQuery(String(s?.title || ''));
-                    setSuggestOpen(false);
-                    setSearchFocused(false);
-                  }}
-                  className="flex w-full items-center gap-3 border-b border-neutral-800/70 px-3 py-2 text-left last:border-b-0 hover:bg-white/5"
-                >
-                  <img src={tmdbImage(s.posterPath, 'w154')} alt="" className="h-12 w-8 rounded object-cover" />
-                  <div className="min-w-0">
-                    <div className="truncate text-sm text-neutral-100">{s.title || 'Untitled'}</div>
-                    <div className="text-xs text-neutral-400">
-                      {(s.mediaType === 'tv' ? 'Series' : 'Movie') + (yearFromDate(s.releaseDate) ? ` • ${yearFromDate(s.releaseDate)}` : '')}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          ) : null}
         </div>
 
         <div className="mb-6 -mx-1 overflow-x-auto px-1">
