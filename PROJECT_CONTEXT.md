@@ -115,6 +115,9 @@ There is currently **no automated test suite**. Use:
 - Watch: `/watch/movie/[id]`, `/watch/series/[seriesId]/[episodeId]`, `/watch/live/[id]`
 - Admin auth: `/admin/login`, `/admin/setup`
 - Admin protected: `/admin`, `/admin/settings`, `/admin/secrets`, `/admin/admins`, `/admin/reports`
+- Admin request management:
+  - `/admin/requests` (request queue + status workflow + archive controls)
+  - `/admin/request-settings` (daily limits, default landing category, status labels)
 - AutoDownload admin:
   - `/admin/autodownload/engine`
   - `/admin/autodownload/storage`
@@ -243,6 +246,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Public request backend state/submit flows now use authenticated XUI catalog checks (via `streamBase`) to mark already-available titles as `Available Now` and block duplicate request submissions for titles already in XUI.
 - Admin request backend now supports queue sorting by most requested first (`requestCount`), fixed status workflow (`pending`, `approved`, `available_now`, `rejected`, `archived`), and archive actions for completed/rejected cleanup.
 - When request status transitions to `available_now`, notifications are pushed to all usernames in `reminderSubscribers`.
+- Admin sidebar now includes dedicated `Requests` and `Request Settings` entries, with pages bound to `/api/admin/requests` and `/api/admin/request-settings`.
 - Public `/request` page now includes TMDB infinite scroll, search + autosuggest + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
 - Header request CTA is now contextual by route (`Request` on Home, `Request Movie` on Movies pages, `Request Series` on Series pages) and routes to `/request?type=all|movie|tv`.
 - Playback proxy (`/api/proxy/hls`) uses an undici dispatcher with `bodyTimeout: 0` to avoid long VOD streams being cut mid-playback.
