@@ -559,9 +559,12 @@ export default function RequestPage() {
                   </span>
                 ) : null}
                 {resolved.state === 'requestable' && isSelected ? (
-                  <span className="absolute right-2 top-2 rounded-md bg-[var(--brand)] px-1.5 py-0.5 text-xs font-bold text-white">
-                    ☑
-                  </span>
+                  <>
+                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/65 via-black/15 to-black/45" />
+                    <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full border border-white/35 bg-[var(--brand)] text-lg font-black text-white shadow-[0_0_0_1px_rgba(0,0,0,0.2),0_8px_20px_rgba(0,0,0,0.35)]">
+                      ✓
+                    </span>
+                  </>
                 ) : null}
               </button>
             );
