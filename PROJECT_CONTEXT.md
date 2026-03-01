@@ -142,6 +142,7 @@ There is currently **no automated test suite**. Use:
 - Public feedback: `/api/public/reports`, `/api/public/notifications`
 - Public requests: `/api/public/requests` (`GET` quota/settings/active request states, `POST` actions: `submit|state|remind`)
   - includes TMDB request catalog endpoint `GET /api/public/requests/catalog` (supports request-page browse/search/infinite-scroll with `include_adult=false` and genre filters)
+  - includes TMDB series picker endpoint `GET /api/public/requests/series-options?tmdbId=<id>` (returns season/episode counts for scoped series requests)
 - AutoDownload: `/api/admin/autodownload/*` (engine, mount, download client, settings, processing, scheduler, xui, logs)
  - Request admin APIs:
    - `/api/admin/request-settings` (`GET`/`PUT`)
@@ -245,7 +246,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Public request backend now enforces per-user daily quota (default `3`, with per-username overrides), dedupes by `mediaType + tmdbId`, supports reminder subscriptions, and exposes request-state lookups for request-card UI state.
 - Public request backend state/submit flows now use authenticated XUI catalog checks (via `streamBase`) to mark already-available titles as `Available Now` and block duplicate request submissions for titles already in XUI.
 - XUI availability detection for request cards now matches by TMDB id when present, with normalized title signatures (including compact/diacritic-safe forms and original title fallback) to improve `Available Now` tagging reliability.
-- TV request entries now persist request-target metadata (`Whole Series`, `Season N`, or `Season N · Episode M`) so admin queue and availability notifications include the requested scope.
+- TV request entries now persist request-target metadata (`Season N` or `Season N · Episode M`) and request-episode units so admin queue/notifications keep scope context and series quotas can be enforced.
 - Admin request backend now supports queue sorting by most requested first (`requestCount`), fixed status workflow (`pending`, `approved`, `available_now`, `rejected`, `archived`), and archive actions for completed/rejected cleanup.
 - When request status transitions to `available_now`, notifications are pushed to all usernames in `reminderSubscribers`.
 - Admin sidebar now includes dedicated `Requests` and `Request Settings` entries, with pages bound to `/api/admin/requests` and `/api/admin/request-settings`.
@@ -254,7 +255,8 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Request-card secondary status labels now render using customizable request status tags from Request Settings for consistent labeling across public/admin surfaces.
 - Public `/request` page now includes TMDB infinite scroll, search + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
 - Selected requestable cards on `/request` now show a full-card dark gradient overlay plus a larger top-right check badge for clearer selected-state visibility.
-- Selecting a requestable series on `/request` now opens a scoped picker modal (whole series / specific season / specific episode) before adding to cart, with selected scope chips shown on cards and in the cart.
+- Selecting a requestable series on `/request` now opens a scoped picker modal (specific season / specific episode only) backed by TMDB season metadata; users pick from dropdowns (no manual season/episode typing), with selected scope chips shown on cards and in the cart.
+- Request Settings now include `seriesEpisodeLimitDefault` (default `8` per day), and request submission enforces this daily per-user series-episode quota alongside the title-count quota.
 - Request submit feedback now reports reason-specific skips (`already requested`, `already available`, `daily limit`) and keeps daily-limit-rejected items in the request cart for retry.
 - Header request CTA is now contextual by route (`Request` on Home, `Request Movie` on Movies pages, `Request Series` on Series pages) and routes to `/request?type=all|movie|tv`.
 - Playback proxy (`/api/proxy/hls`) uses an undici dispatcher with `bodyTimeout: 0` to avoid long VOD streams being cut mid-playback.

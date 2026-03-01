@@ -19,6 +19,7 @@ const xuiCatalogCache = new Map();
 function publicSettingsShape(settings) {
   return {
     dailyLimitDefault: Number(settings?.dailyLimitDefault || 3),
+    seriesEpisodeLimitDefault: Number(settings?.seriesEpisodeLimitDefault || 8),
     defaultLandingCategory: String(settings?.defaultLandingCategory || 'popular'),
     statusTags: settings?.statusTags || {},
   };
@@ -107,6 +108,7 @@ function dedupeItems(items) {
       requestScope: String(raw?.requestScope || '').trim().toLowerCase(),
       seasonNumber: raw?.seasonNumber,
       episodeNumber: raw?.episodeNumber,
+      requestUnits: raw?.requestUnits ?? raw?.seasonEpisodeCount ?? raw?.requestedEpisodes,
     });
   }
   return out;

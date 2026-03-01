@@ -22,6 +22,13 @@ function clampLimit(value, fallback = 3) {
   return Math.max(1, Math.min(20, v));
 }
 
+function clampSeriesEpisodeLimit(value, fallback = 8) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return Math.max(1, Math.min(200, v));
+}
+
 function normalizeUser(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -43,6 +50,7 @@ export default function AdminRequestSettingsPanel() {
   const [okMsg, setOkMsg] = useState('');
 
   const [dailyLimitDefault, setDailyLimitDefault] = useState(3);
+  const [seriesEpisodeLimitDefault, setSeriesEpisodeLimitDefault] = useState(8);
   const [defaultLandingCategory, setDefaultLandingCategory] = useState('popular');
   const [statusTagPending, setStatusTagPending] = useState('Pending');
   const [statusTagApproved, setStatusTagApproved] = useState('Approved');
@@ -65,6 +73,7 @@ export default function AdminRequestSettingsPanel() {
 
       const settings = j.settings || {};
       setDailyLimitDefault(clampLimit(settings?.dailyLimitDefault, 3));
+      setSeriesEpisodeLimitDefault(clampSeriesEpisodeLimit(settings?.seriesEpisodeLimitDefault, 8));
       setDefaultLandingCategory(String(settings?.defaultLandingCategory || 'popular').trim() || 'popular');
 
       setStatusTagPending(String(settings?.statusTags?.pending || 'Pending'));
@@ -103,6 +112,7 @@ export default function AdminRequestSettingsPanel() {
       const payload = {
         settings: {
           dailyLimitDefault: clampLimit(dailyLimitDefault, 3),
+          seriesEpisodeLimitDefault: clampSeriesEpisodeLimit(seriesEpisodeLimitDefault, 8),
           dailyLimitsByUsername: mapForSave,
           defaultLandingCategory,
           statusTags: {
@@ -165,10 +175,10 @@ export default function AdminRequestSettingsPanel() {
       <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
         <h2 className="text-lg font-semibold">Request Settings</h2>
         <p className="mt-1 text-sm text-[var(--admin-muted)]">
-          Configure daily request limits, default request-page landing category, and request status labels.
+          Configure daily title/series limits, default request-page landing category, and request status labels.
         </p>
 
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+        <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <div>
             <label className="mb-1 block text-xs text-[var(--admin-muted)]">Daily Request Limit (default)</label>
             <input
@@ -177,6 +187,19 @@ export default function AdminRequestSettingsPanel() {
               max={20}
               value={dailyLimitDefault}
               onChange={(e) => setDailyLimitDefault(clampLimit(e.target.value, 3))}
+              className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-[var(--admin-muted)]">
+              Daily Series Episode Limit (default)
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={seriesEpisodeLimitDefault}
+              onChange={(e) => setSeriesEpisodeLimitDefault(clampSeriesEpisodeLimit(e.target.value, 8))}
               className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
             />
           </div>

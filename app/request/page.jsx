@@ -75,7 +75,32 @@ function clampPositiveInt(value, min = 1, max = 999) {
   return v;
 }
 
-function normalizeSeriesSelection(input, mediaType) {
+function seasonRows(input) {
+  return (Array.isArray(input) ? input : [])
+    .map((x) => ({
+      seasonNumber: clampPositiveInt(x?.seasonNumber ?? x?.season_number, 1, 99),
+      episodeCount: clampPositiveInt(x?.episodeCount ?? x?.episode_count, 1, 500),
+      name: String(x?.name || '').trim(),
+      airDate: String(x?.airDate || x?.air_date || '').trim(),
+    }))
+    .filter((x) => Number(x.seasonNumber) > 0 && Number(x.episodeCount) > 0)
+    .sort((a, b) => a.seasonNumber - b.seasonNumber);
+}
+
+function findSeasonMeta(seasons, seasonNumber) {
+  const rows = seasonRows(seasons);
+  const target = clampPositiveInt(seasonNumber, 1, 99);
+  const found = rows.find((x) => x.seasonNumber === target);
+  return found || rows[0] || null;
+}
+
+function episodeOptionsForSeason(seasons, seasonNumber) {
+  const meta = findSeasonMeta(seasons, seasonNumber);
+  if (!meta?.episodeCount) return [];
+  return Array.from({ length: meta.episodeCount }, (_, i) => i + 1);
+}
+
+function normalizeSeriesSelection(input, mediaType, seasons = []) {
   const mt = String(mediaType || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
   if (mt !== 'tv') {
     return {
@@ -83,53 +108,52 @@ function normalizeSeriesSelection(input, mediaType) {
       seasonNumber: null,
       episodeNumber: null,
       requestDetailLabel: '',
+      requestUnits: 1,
     };
   }
 
-  const rawScope = String(input?.requestScope || input?.scope || 'series').trim().toLowerCase();
-  const requestScope =
-    rawScope === 'season' || rawScope === 'episode' ? rawScope : 'series';
-  const seasonNumber = clampPositiveInt(input?.seasonNumber ?? input?.season, 1, 99);
-  const episodeNumber = clampPositiveInt(input?.episodeNumber ?? input?.episode, 1, 999);
+  const requestScope = String(input?.requestScope || input?.scope || 'episode').trim().toLowerCase() === 'season' ? 'season' : 'episode';
+  const rawSeasonNumber = clampPositiveInt(input?.seasonNumber ?? input?.season, 1, 99);
+  const season = findSeasonMeta(seasons, rawSeasonNumber);
+  const seasonNumber = season?.seasonNumber || rawSeasonNumber || 1;
+  const fallbackEpisodeCount =
+    clampPositiveInt(input?.seasonEpisodeCount ?? input?.requestUnits ?? input?.requestedEpisodes, 1, 500) || 1;
+  const seasonEpisodeCount = Math.max(1, Number(season?.episodeCount || fallbackEpisodeCount));
 
   if (requestScope === 'season') {
-    const season = seasonNumber || 1;
     return {
       requestScope,
-      seasonNumber: season,
+      seasonNumber,
       episodeNumber: null,
-      requestDetailLabel: `Season ${season}`,
+      requestDetailLabel: `Season ${seasonNumber}`,
+      requestUnits: seasonEpisodeCount,
     };
   }
 
-  if (requestScope === 'episode') {
-    const season = seasonNumber || 1;
-    const episode = episodeNumber || 1;
-    return {
-      requestScope,
-      seasonNumber: season,
-      episodeNumber: episode,
-      requestDetailLabel: `Season ${season} · Episode ${episode}`,
-    };
-  }
-
+  const candidateEpisode = clampPositiveInt(input?.episodeNumber ?? input?.episode, 1, seasonEpisodeCount);
+  const episodeNumber = candidateEpisode || 1;
   return {
-    requestScope: 'series',
-    seasonNumber: null,
-    episodeNumber: null,
-    requestDetailLabel: 'Whole Series',
+    requestScope: 'episode',
+    seasonNumber,
+    episodeNumber,
+    requestDetailLabel: `Season ${seasonNumber} · Episode ${episodeNumber}`,
+    requestUnits: 1,
   };
 }
 
 function selectedDetailLabel(item) {
   const mt = String(item?.mediaType || '').toLowerCase();
   if (mt !== 'tv') return '';
-  return normalizeSeriesSelection(item, mt).requestDetailLabel;
+  if (String(item?.requestDetailLabel || '').trim()) return String(item.requestDetailLabel).trim();
+  return normalizeSeriesSelection(item, mt, []).requestDetailLabel;
 }
 
 function selectedCardChip(item) {
   const mt = String(item?.mediaType || '').toLowerCase();
   if (mt !== 'tv') return '';
+  if (String(item?.requestScope || '').toLowerCase() === 'season' && String(item?.requestDetailLabel || '').trim()) {
+    return String(item.requestDetailLabel).trim();
+  }
   const normalized = normalizeSeriesSelection(item, mt);
   if (normalized.requestScope === 'episode') {
     return `S${normalized.seasonNumber}E${normalized.episodeNumber}`;
@@ -188,9 +212,17 @@ export default function RequestPage() {
   const [catalogErr, setCatalogErr] = useState('');
 
   const [stateMap, setStateMap] = useState({});
-  const [quota, setQuota] = useState({ limit: 3, used: 0, remaining: 3 });
+  const [quota, setQuota] = useState({
+    limit: 3,
+    used: 0,
+    remaining: 3,
+    seriesEpisodeLimit: 8,
+    seriesEpisodesUsed: 0,
+    seriesEpisodesRemaining: 8,
+  });
   const [settings, setSettings] = useState({
     dailyLimitDefault: 3,
+    seriesEpisodeLimitDefault: 8,
     defaultLandingCategory: 'popular',
     statusTags: {},
   });
@@ -200,6 +232,12 @@ export default function RequestPage() {
   const [requestedModal, setRequestedModal] = useState(null);
   const [remindBusy, setRemindBusy] = useState(false);
   const [seriesPicker, setSeriesPicker] = useState(null);
+  const [seriesPickerMeta, setSeriesPickerMeta] = useState({
+    key: '',
+    loading: false,
+    error: '',
+    seasons: [],
+  });
 
   const didApplyDefaultFilter = useRef(false);
   const sentinelRef = useRef(null);
@@ -274,6 +312,7 @@ export default function RequestPage() {
             requestScope: x.requestScope,
             seasonNumber: x.seasonNumber,
             episodeNumber: x.episodeNumber,
+            requestUnits: x.requestUnits,
           })),
         }),
       });
@@ -359,6 +398,75 @@ export default function RequestPage() {
     return () => obs.disconnect();
   }, [catalogLoading, page, totalPages]);
 
+  useEffect(() => {
+    if (!seriesPicker?.item?.tmdbId) {
+      setSeriesPickerMeta({ key: '', loading: false, error: '', seasons: [] });
+      return;
+    }
+
+    const key = `${seriesPicker.item.tmdbId}`;
+    let alive = true;
+    setSeriesPickerMeta((prev) => ({
+      key,
+      loading: true,
+      error: '',
+      seasons: prev.key === key ? prev.seasons : [],
+    }));
+
+    const run = async () => {
+      const r = await fetch(
+        `/api/public/requests/series-options?tmdbId=${encodeURIComponent(seriesPicker.item.tmdbId)}`,
+        { cache: 'no-store' }
+      );
+      const j = await readJsonSafe(r);
+      if (!alive) return;
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to load series options.');
+      setSeriesPickerMeta({
+        key,
+        loading: false,
+        error: '',
+        seasons: seasonRows(j?.seasons),
+      });
+    };
+
+    run().catch((e) => {
+      if (!alive) return;
+      setSeriesPickerMeta((prev) => ({
+        ...prev,
+        key,
+        loading: false,
+        error: e?.message || 'Failed to load series options.',
+      }));
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [seriesPicker?.item?.tmdbId]);
+
+  useEffect(() => {
+    if (!seriesPicker || !seriesPickerMeta.seasons.length) return;
+    const normalized = normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons);
+    if (
+      normalized.seasonNumber === seriesPicker.seasonNumber &&
+      normalized.episodeNumber === seriesPicker.episodeNumber
+    ) {
+      return;
+    }
+    setSeriesPicker((prev) =>
+      prev
+        ? {
+            ...prev,
+            seasonNumber: normalized.seasonNumber,
+            episodeNumber: normalized.episodeNumber,
+          }
+        : prev
+    );
+  }, [
+    seriesPicker,
+    seriesPickerMeta.seasons,
+  ]);
+
   const removeSelectedItem = useCallback((item) => {
     const key = mediaKey(item);
     setSelected((prev) => prev.filter((x) => mediaKey(x) !== key));
@@ -368,10 +476,41 @@ export default function RequestPage() {
     (item) => {
       const key = mediaKey(item);
       setSelected((prev) => {
+        const nextItem =
+          String(item?.mediaType || '').toLowerCase() === 'tv'
+            ? { ...item, ...normalizeSeriesSelection(item, 'tv', seriesPickerMeta.seasons) }
+            : item;
         const idx = prev.findIndex((x) => mediaKey(x) === key);
+        const currentSeriesUnits = prev.reduce((sum, row) => {
+          if (String(row?.mediaType || '').toLowerCase() !== 'tv') return sum;
+          return sum + Math.max(1, Number(row?.requestUnits || 1));
+        }, 0);
+        const nextSeriesUnits = Math.max(1, Number(nextItem?.requestUnits || 1));
+        const seriesRemaining = Math.max(
+          0,
+          Number(
+            quota?.seriesEpisodesRemaining ??
+              quota?.series?.remaining ??
+              quota?.seriesEpisodeLimit ??
+              settings?.seriesEpisodeLimitDefault ??
+              8
+          )
+        );
+
+        if (String(nextItem?.mediaType || '').toLowerCase() === 'tv') {
+          const withoutCurrent =
+            idx >= 0 && String(prev[idx]?.mediaType || '').toLowerCase() === 'tv'
+              ? currentSeriesUnits - Math.max(1, Number(prev[idx]?.requestUnits || 1))
+              : currentSeriesUnits;
+          if (withoutCurrent + nextSeriesUnits > seriesRemaining) {
+            push(`Series limit reached (${seriesRemaining} episodes remaining today).`, 'error');
+            return prev;
+          }
+        }
+
         if (idx >= 0) {
           const next = [...prev];
-          next[idx] = item;
+          next[idx] = nextItem;
           return next;
         }
         const remaining = Math.max(0, Number(quota?.remaining ?? quota?.limit ?? 3));
@@ -379,10 +518,10 @@ export default function RequestPage() {
           push(`Daily request limit reached (${Number(quota?.limit || 3)} max).`, 'error');
           return prev;
         }
-        return [...prev, item];
+        return [...prev, nextItem];
       });
     },
-    [push, quota]
+    [push, quota, settings?.seriesEpisodeLimitDefault, seriesPickerMeta.seasons]
   );
 
   const toggleSelect = useCallback(
@@ -401,7 +540,7 @@ export default function RequestPage() {
     (item) => {
       const key = mediaKey(item);
       const existing = selectedByKey.get(key);
-      const normalized = normalizeSeriesSelection(existing || { requestScope: 'series' }, 'tv');
+      const normalized = normalizeSeriesSelection(existing || { requestScope: 'episode' }, 'tv', []);
       setSeriesPicker({
         item,
         requestScope: normalized.requestScope,
@@ -415,16 +554,21 @@ export default function RequestPage() {
 
   const applySeriesPicker = useCallback(() => {
     if (!seriesPicker?.item) return;
-    const normalized = normalizeSeriesSelection(seriesPicker, 'tv');
+    if (!seriesPickerMeta.seasons.length) {
+      push('Series details are still loading. Please wait.', 'error');
+      return;
+    }
+    const normalized = normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons);
     upsertSelectedItem({
       ...seriesPicker.item,
       requestScope: normalized.requestScope,
       seasonNumber: normalized.seasonNumber,
       episodeNumber: normalized.episodeNumber,
       requestDetailLabel: normalized.requestDetailLabel,
+      requestUnits: normalized.requestUnits,
     });
     setSeriesPicker(null);
-  }, [seriesPicker, upsertSelectedItem]);
+  }, [seriesPicker, seriesPickerMeta.seasons, push, upsertSelectedItem]);
 
   const removeSeriesPickerSelection = useCallback(() => {
     if (!seriesPicker?.item) return;
@@ -497,6 +641,7 @@ export default function RequestPage() {
             requestScope: x.requestScope,
             seasonNumber: x.seasonNumber,
             episodeNumber: x.episodeNumber,
+            requestUnits: x.requestUnits,
           })),
         }),
       });
@@ -510,14 +655,23 @@ export default function RequestPage() {
       const duplicates = Number(Array.isArray(j?.duplicates) ? j.duplicates.length : 0);
       const rejectedList = Array.isArray(j?.rejected) ? j.rejected : [];
       const rejectedByLimit = rejectedList.filter((x) => String(x?.reason || '') === 'daily_limit_exceeded');
+      const rejectedBySeriesEpisodeLimit = rejectedList.filter(
+        (x) => String(x?.reason || '') === 'series_episode_limit_exceeded'
+      );
       const rejectedByAvailable = rejectedList.filter((x) => String(x?.reason || '') === 'available_now');
       const rejectedOther = rejectedList.filter((x) => {
         const reason = String(x?.reason || '');
-        return reason !== 'daily_limit_exceeded' && reason !== 'available_now';
+        return (
+          reason !== 'daily_limit_exceeded' &&
+          reason !== 'series_episode_limit_exceeded' &&
+          reason !== 'available_now'
+        );
       });
 
       const keepSelection = new Set(
-        rejectedByLimit.map((x) => mediaKeyFromPair(x?.tmdbId, x?.mediaType))
+        [...rejectedByLimit, ...rejectedBySeriesEpisodeLimit].map((x) =>
+          mediaKeyFromPair(x?.tmdbId, x?.mediaType)
+        )
       );
       setSelected((prev) => prev.filter((x) => keepSelection.has(mediaKey(x))));
 
@@ -546,6 +700,14 @@ export default function RequestPage() {
           'error'
         );
       }
+      if (rejectedBySeriesEpisodeLimit.length > 0) {
+        push(
+          `Series episode limit reached. ${rejectedBySeriesEpisodeLimit.length} item${
+            rejectedBySeriesEpisodeLimit.length > 1 ? 's were' : ' was'
+          } kept in your cart.`,
+          'error'
+        );
+      }
       if (rejectedOther.length > 0) {
         push(
           `Skipped ${rejectedOther.length} title${
@@ -565,6 +727,10 @@ export default function RequestPage() {
   }, [selected, username, streamBase, updateStatesForItems, push]);
 
   const maxLimit = Number(quota?.limit || settings?.dailyLimitDefault || 3) || 3;
+  const maxSeriesEpisodeLimit =
+    Number(
+      (quota?.seriesEpisodeLimit ?? quota?.series?.limit ?? settings?.seriesEpisodeLimitDefault) || 8
+    ) || 8;
 
   return (
     <Protected>
@@ -572,7 +738,9 @@ export default function RequestPage() {
         <div className="mb-5">
           <h1 className="text-2xl font-bold">Request</h1>
           <p className="mt-1 text-sm text-neutral-300">
-            Choose titles to request. Daily limit: {maxLimit} (used {Number(quota?.used || 0)}).
+            Choose titles to request. Daily titles: {maxLimit} (used {Number(quota?.used || 0)}). Series episodes:
+            {' '}
+            {maxSeriesEpisodeLimit} (used {Number(quota?.seriesEpisodesUsed || quota?.series?.used || 0)}).
           </p>
         </div>
 
@@ -789,7 +957,7 @@ export default function RequestPage() {
                     Request: {seriesPicker?.item?.title || 'Series'}
                   </div>
                   <p className="mt-1 text-sm text-neutral-300">
-                    Choose if you want the whole series, a specific season, or one episode.
+                    Choose a season or a specific episode from TMDB data.
                   </p>
                 </div>
                 <button
@@ -801,9 +969,24 @@ export default function RequestPage() {
                 </button>
               </div>
 
-              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              {seriesPickerMeta.loading ? (
+                <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-sm text-neutral-300">
+                  Loading seasons and episodes…
+                </div>
+              ) : null}
+              {!seriesPickerMeta.loading && seriesPickerMeta.error ? (
+                <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                  {seriesPickerMeta.error}
+                </div>
+              ) : null}
+              {!seriesPickerMeta.loading && !seriesPickerMeta.error && !seasonRows(seriesPickerMeta.seasons).length ? (
+                <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-sm text-neutral-300">
+                  No season data found for this series.
+                </div>
+              ) : null}
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
                 {[
-                  { key: 'series', label: 'Whole Series' },
                   { key: 'season', label: 'Specific Season' },
                   { key: 'episode', label: 'Specific Episode' },
                 ].map((option) => (
@@ -825,42 +1008,69 @@ export default function RequestPage() {
                 ))}
               </div>
 
-              {seriesPicker.requestScope === 'season' || seriesPicker.requestScope === 'episode' ? (
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm text-neutral-300">
-                    <span className="mb-1 block text-xs text-neutral-400">Season Number</span>
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={seriesPicker.seasonNumber ?? ''}
-                      onChange={(e) =>
-                        setSeriesPicker((prev) => (prev ? { ...prev, seasonNumber: e.target.value } : prev))
-                      }
-                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)]"
-                    />
-                  </label>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="text-sm text-neutral-300">
+                  <span className="mb-1 block text-xs text-neutral-400">Season</span>
+                  <select
+                    value={findSeasonMeta(seriesPickerMeta.seasons, seriesPicker.seasonNumber)?.seasonNumber || ''}
+                    onChange={(e) =>
+                      setSeriesPicker((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              seasonNumber: clampPositiveInt(e.target.value, 1, 99) || 1,
+                            }
+                          : prev
+                      )
+                    }
+                    disabled={seriesPickerMeta.loading || !seasonRows(seriesPickerMeta.seasons).length}
+                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)] disabled:opacity-60"
+                  >
+                    {seasonRows(seriesPickerMeta.seasons).map((season) => (
+                      <option key={season.seasonNumber} value={season.seasonNumber}>
+                        {season.name || `Season ${season.seasonNumber}`} ({season.episodeCount} eps)
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-                  {seriesPicker.requestScope === 'episode' ? (
-                    <label className="text-sm text-neutral-300">
-                      <span className="mb-1 block text-xs text-neutral-400">Episode Number</span>
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={seriesPicker.episodeNumber ?? ''}
-                        onChange={(e) =>
-                          setSeriesPicker((prev) => (prev ? { ...prev, episodeNumber: e.target.value } : prev))
-                        }
-                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)]"
-                      />
-                    </label>
-                  ) : null}
-                </div>
-              ) : null}
+                {seriesPicker.requestScope === 'episode' ? (
+                  <label className="text-sm text-neutral-300">
+                    <span className="mb-1 block text-xs text-neutral-400">Episode</span>
+                    <select
+                      value={normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons).episodeNumber || ''}
+                      onChange={(e) =>
+                        setSeriesPicker((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                episodeNumber: clampPositiveInt(e.target.value, 1, 999) || 1,
+                              }
+                            : prev
+                        )
+                      }
+                      disabled={seriesPickerMeta.loading || !seasonRows(seriesPickerMeta.seasons).length}
+                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)] disabled:opacity-60"
+                    >
+                      {episodeOptionsForSeason(seriesPickerMeta.seasons, seriesPicker.seasonNumber).map((ep) => (
+                        <option key={ep} value={ep}>
+                          Episode {ep}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-300">
+                    This will request all episodes in the selected season.
+                  </div>
+                )}
+              </div>
 
               <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-300">
-                Selected request: {normalizeSeriesSelection(seriesPicker, 'tv').requestDetailLabel}
+                Selected request: {normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons).requestDetailLabel}
+                {seriesPicker.requestScope === 'season'
+                  ? ` (${normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons).requestUnits} episodes)`
+                  : ''}
               </div>
 
               <div className="mt-5 flex flex-wrap justify-end gap-2">
@@ -880,7 +1090,8 @@ export default function RequestPage() {
                 </button>
                 <button
                   onClick={applySeriesPicker}
-                  className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white"
+                  disabled={seriesPickerMeta.loading || Boolean(seriesPickerMeta.error) || !seasonRows(seriesPickerMeta.seasons).length}
+                  className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 >
                   {seriesPicker.editing ? 'Update Selection' : 'Add to Request Cart'}
                 </button>
@@ -895,7 +1106,13 @@ export default function RequestPage() {
               <div className="text-sm font-semibold text-neutral-100">
                 Your Requests ({selected.length}/{maxLimit})
               </div>
-              <div className="text-xs text-neutral-400">Remaining today: {Math.max(0, Number(quota?.remaining || 0))}</div>
+              <div className="text-right text-xs text-neutral-400">
+                <div>Titles left: {Math.max(0, Number(quota?.remaining || 0))}</div>
+                <div>
+                  Series episodes left:{' '}
+                  {Math.max(0, Number(quota?.seriesEpisodesRemaining ?? quota?.series?.remaining ?? 0))}
+                </div>
+              </div>
             </div>
             <div className="max-h-44 space-y-1 overflow-auto pr-1">
               {selected.map((item) => (
