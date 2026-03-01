@@ -116,9 +116,9 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
   const rawSeasonNumber = clampPositiveInt(input?.seasonNumber ?? input?.season, 1, 99);
   const season = findSeasonMeta(seasons, rawSeasonNumber);
   const seasonNumber = season?.seasonNumber || rawSeasonNumber || 1;
-  const fallbackEpisodeCount =
-    clampPositiveInt(input?.seasonEpisodeCount ?? input?.requestUnits ?? input?.requestedEpisodes, 1, 500) || 1;
-  const seasonEpisodeCount = Math.max(1, Number(season?.episodeCount || fallbackEpisodeCount));
+  const requestedUnits =
+    clampPositiveInt(input?.requestUnits ?? input?.seasonEpisodeCount ?? input?.requestedEpisodes, 1, 500) || null;
+  const seasonEpisodeCount = Math.max(1, Number(season?.episodeCount || requestedUnits || 1));
 
   if (requestScope === 'season') {
     return {
@@ -126,7 +126,7 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
       seasonNumber,
       episodeNumber: null,
       requestDetailLabel: `Season ${seasonNumber}`,
-      requestUnits: seasonEpisodeCount,
+      requestUnits: requestedUnits ? Math.min(seasonEpisodeCount, requestedUnits) : seasonEpisodeCount,
     };
   }
 
@@ -238,6 +238,7 @@ export default function RequestPage() {
     error: '',
     seasons: [],
   });
+  const [seriesExpandedSeason, setSeriesExpandedSeason] = useState(null);
 
   const didApplyDefaultFilter = useRef(false);
   const sentinelRef = useRef(null);
@@ -401,6 +402,7 @@ export default function RequestPage() {
   useEffect(() => {
     if (!seriesPicker?.item?.tmdbId) {
       setSeriesPickerMeta({ key: '', loading: false, error: '', seasons: [] });
+      setSeriesExpandedSeason(null);
       return;
     }
 
@@ -448,24 +450,35 @@ export default function RequestPage() {
     if (!seriesPicker || !seriesPickerMeta.seasons.length) return;
     const normalized = normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons);
     if (
+      normalized.requestScope === seriesPicker.requestScope &&
       normalized.seasonNumber === seriesPicker.seasonNumber &&
-      normalized.episodeNumber === seriesPicker.episodeNumber
+      normalized.episodeNumber === seriesPicker.episodeNumber &&
+      normalized.requestUnits === seriesPicker.requestUnits
     ) {
+      setSeriesExpandedSeason((prev) => prev || normalized.seasonNumber || null);
       return;
     }
     setSeriesPicker((prev) =>
       prev
         ? {
             ...prev,
+            requestScope: normalized.requestScope,
             seasonNumber: normalized.seasonNumber,
             episodeNumber: normalized.episodeNumber,
+            requestUnits: normalized.requestUnits,
           }
         : prev
     );
+    setSeriesExpandedSeason((prev) => prev || normalized.seasonNumber || null);
   }, [
     seriesPicker,
     seriesPickerMeta.seasons,
   ]);
+
+  const closeSeriesPicker = useCallback(() => {
+    setSeriesPicker(null);
+    setSeriesExpandedSeason(null);
+  }, []);
 
   const removeSelectedItem = useCallback((item) => {
     const key = mediaKey(item);
@@ -546,6 +559,7 @@ export default function RequestPage() {
         requestScope: normalized.requestScope,
         seasonNumber: normalized.seasonNumber || 1,
         episodeNumber: normalized.episodeNumber || 1,
+        requestUnits: Math.max(1, Number(existing?.requestUnits || normalized.requestUnits || 1)),
         editing: Boolean(existing),
       });
     },
@@ -567,14 +581,14 @@ export default function RequestPage() {
       requestDetailLabel: normalized.requestDetailLabel,
       requestUnits: normalized.requestUnits,
     });
-    setSeriesPicker(null);
-  }, [seriesPicker, seriesPickerMeta.seasons, push, upsertSelectedItem]);
+    closeSeriesPicker();
+  }, [seriesPicker, seriesPickerMeta.seasons, push, upsertSelectedItem, closeSeriesPicker]);
 
   const removeSeriesPickerSelection = useCallback(() => {
     if (!seriesPicker?.item) return;
     removeSelectedItem(seriesPicker.item);
-    setSeriesPicker(null);
-  }, [seriesPicker, removeSelectedItem]);
+    closeSeriesPicker();
+  }, [seriesPicker, removeSelectedItem, closeSeriesPicker]);
 
   const onCardClick = useCallback(
     (item) => {
@@ -947,7 +961,7 @@ export default function RequestPage() {
           <div className="fixed inset-0 z-[111]">
             <button
               className="absolute inset-0 bg-black/70"
-              onClick={() => setSeriesPicker(null)}
+              onClick={closeSeriesPicker}
               aria-label="Close"
             />
             <div className="absolute left-1/2 top-1/2 w-[min(620px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl">
@@ -961,7 +975,7 @@ export default function RequestPage() {
                   </p>
                 </div>
                 <button
-                  onClick={() => setSeriesPicker(null)}
+                  onClick={closeSeriesPicker}
                   className="rounded-md p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
                   aria-label="Close"
                 >
@@ -985,85 +999,118 @@ export default function RequestPage() {
                 </div>
               ) : null}
 
-              <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                {[
-                  { key: 'season', label: 'Specific Season' },
-                  { key: 'episode', label: 'Specific Episode' },
-                ].map((option) => (
-                  <button
-                    key={option.key}
-                    type="button"
-                    onClick={() =>
-                      setSeriesPicker((prev) => (prev ? { ...prev, requestScope: option.key } : prev))
-                    }
-                    className={
-                      'rounded-xl border px-3 py-2 text-left text-sm transition ' +
-                      (seriesPicker.requestScope === option.key
-                        ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
-                        : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
-                    }
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
+              <div className="mt-4 max-h-[48vh] space-y-2 overflow-auto pr-1">
+                {seasonRows(seriesPickerMeta.seasons).map((season) => {
+                  const expanded = Number(seriesExpandedSeason || 0) === season.seasonNumber;
+                  const allEpisodesCount = season.episodeCount;
+                  const seasonCap = Math.max(
+                    0,
+                    Math.min(
+                      allEpisodesCount,
+                      Number(
+                        quota?.seriesEpisodesRemaining ??
+                          quota?.series?.remaining ??
+                          maxSeriesEpisodeLimit
+                      ) || 0
+                    )
+                  );
+                  const isSelectedSeason =
+                    seriesPicker.requestScope === 'season' &&
+                    Number(seriesPicker.seasonNumber || 0) === season.seasonNumber;
+                  return (
+                    <div key={season.seasonNumber} className="rounded-xl border border-neutral-800 bg-neutral-900/60">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSeriesExpandedSeason((prev) =>
+                            Number(prev || 0) === season.seasonNumber ? null : season.seasonNumber
+                          )
+                        }
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-neutral-100">
+                            {season.name || `Season ${season.seasonNumber}`}
+                          </div>
+                          <div className="text-xs text-neutral-400">{season.episodeCount} episodes</div>
+                        </div>
+                        <div className="text-xs text-neutral-400">{expanded ? 'Hide' : 'Show'}</div>
+                      </button>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <label className="text-sm text-neutral-300">
-                  <span className="mb-1 block text-xs text-neutral-400">Season</span>
-                  <select
-                    value={findSeasonMeta(seriesPickerMeta.seasons, seriesPicker.seasonNumber)?.seasonNumber || ''}
-                    onChange={(e) =>
-                      setSeriesPicker((prev) =>
-                        prev
-                          ? {
-                              ...prev,
-                              seasonNumber: clampPositiveInt(e.target.value, 1, 99) || 1,
-                            }
-                          : prev
-                      )
-                    }
-                    disabled={seriesPickerMeta.loading || !seasonRows(seriesPickerMeta.seasons).length}
-                    className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)] disabled:opacity-60"
-                  >
-                    {seasonRows(seriesPickerMeta.seasons).map((season) => (
-                      <option key={season.seasonNumber} value={season.seasonNumber}>
-                        {season.name || `Season ${season.seasonNumber}`} ({season.episodeCount} eps)
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {seriesPicker.requestScope === 'episode' ? (
-                  <label className="text-sm text-neutral-300">
-                    <span className="mb-1 block text-xs text-neutral-400">Episode</span>
-                    <select
-                      value={normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons).episodeNumber || ''}
-                      onChange={(e) =>
-                        setSeriesPicker((prev) =>
-                          prev
-                            ? {
-                                ...prev,
-                                episodeNumber: clampPositiveInt(e.target.value, 1, 999) || 1,
+                      {expanded ? (
+                        <div className="border-t border-neutral-800 px-3 py-3">
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              disabled={seasonCap <= 0}
+                              onClick={() =>
+                                setSeriesPicker((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        requestScope: 'season',
+                                        seasonNumber: season.seasonNumber,
+                                        episodeNumber: null,
+                                        requestUnits: seasonCap,
+                                      }
+                                    : prev
+                                )
                               }
-                            : prev
-                        )
-                      }
-                      disabled={seriesPickerMeta.loading || !seasonRows(seriesPickerMeta.seasons).length}
-                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)] disabled:opacity-60"
-                    >
-                      {episodeOptionsForSeason(seriesPickerMeta.seasons, seriesPicker.seasonNumber).map((ep) => (
-                        <option key={ep} value={ep}>
-                          Episode {ep}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : (
-                  <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-300">
-                    This will request all episodes in the selected season.
-                  </div>
-                )}
+                              className={
+                                'rounded-lg border px-3 py-1.5 text-xs font-semibold transition ' +
+                                (isSelectedSeason
+                                  ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                                  : 'border-neutral-700 bg-neutral-900 text-neutral-200 hover:border-neutral-500') +
+                                (seasonCap <= 0 ? ' opacity-60' : '')
+                              }
+                            >
+                              Request all episodes (max {Math.min(allEpisodesCount, maxSeriesEpisodeLimit)})
+                            </button>
+                            <div className="text-[11px] text-neutral-400">
+                              Remaining today: {Number(quota?.seriesEpisodesRemaining ?? quota?.series?.remaining ?? 0)}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8">
+                            {episodeOptionsForSeason(seriesPickerMeta.seasons, season.seasonNumber).map((ep) => {
+                              const isSelectedEpisode =
+                                seriesPicker.requestScope === 'episode' &&
+                                Number(seriesPicker.seasonNumber || 0) === season.seasonNumber &&
+                                Number(seriesPicker.episodeNumber || 0) === ep;
+                              return (
+                                <button
+                                  key={`${season.seasonNumber}-${ep}`}
+                                  type="button"
+                                  onClick={() =>
+                                    setSeriesPicker((prev) =>
+                                      prev
+                                        ? {
+                                            ...prev,
+                                            requestScope: 'episode',
+                                            seasonNumber: season.seasonNumber,
+                                            episodeNumber: ep,
+                                            requestUnits: 1,
+                                          }
+                                        : prev
+                                    )
+                                  }
+                                  className={
+                                    'rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition ' +
+                                    (isSelectedEpisode
+                                      ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                                      : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
+                                  }
+                                >
+                                  Ep {ep}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-300">
@@ -1083,7 +1130,7 @@ export default function RequestPage() {
                   </button>
                 ) : null}
                 <button
-                  onClick={() => setSeriesPicker(null)}
+                  onClick={closeSeriesPicker}
                   className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 hover:border-neutral-500"
                 >
                   Cancel
