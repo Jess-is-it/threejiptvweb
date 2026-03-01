@@ -189,7 +189,8 @@ function sameSeasonEpisodePairList(left, right) {
   return true;
 }
 
-function normalizeSeriesSelection(input, mediaType, seasons = []) {
+function normalizeSeriesSelection(input, mediaType, seasons = [], options = {}) {
+  const allowEmpty = Boolean(options?.allowEmpty);
   const mt = String(mediaType || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
   if (mt !== 'tv') {
     return {
@@ -257,6 +258,22 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
       requestUnits: seasonEpisodePairsInput.length,
       episodeNumbers: [],
       seasonEpisodePairs: seasonEpisodePairsInput,
+    };
+  }
+
+  const hasNoEpisodeInput =
+    !episodeNumbersInput.length &&
+    !candidateEpisode &&
+    !clampPositiveInt(input?.requestUnits ?? input?.seasonEpisodeCount ?? input?.requestedEpisodes, 1, 500);
+  if (allowEmpty && hasNoEpisodeInput) {
+    return {
+      requestScope: 'season',
+      seasonNumber: null,
+      episodeNumber: null,
+      requestDetailLabel: '',
+      requestUnits: 0,
+      episodeNumbers: [],
+      seasonEpisodePairs: [],
     };
   }
 
@@ -625,7 +642,9 @@ export default function RequestPage() {
 
   useEffect(() => {
     if (!seriesPicker || !seriesPickerMeta.seasons.length) return;
-    const normalized = normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons);
+    const normalized = normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons, {
+      allowEmpty: true,
+    });
     if (
       normalized.requestScope === seriesPicker.requestScope &&
       normalized.seasonNumber === seriesPicker.seasonNumber &&
@@ -734,13 +753,23 @@ export default function RequestPage() {
     (item) => {
       const key = mediaKey(item);
       const existing = selectedByKey.get(key);
-      const normalized = normalizeSeriesSelection(existing || { requestScope: 'episode' }, 'tv', []);
+      const normalized = existing
+        ? normalizeSeriesSelection(existing, 'tv', [])
+        : {
+            requestScope: 'season',
+            seasonNumber: null,
+            episodeNumber: null,
+            requestDetailLabel: '',
+            requestUnits: 0,
+            episodeNumbers: [],
+            seasonEpisodePairs: [],
+          };
       setSeriesPicker({
         item,
-        requestScope: normalized.requestScope,
-        seasonNumber: normalized.seasonNumber || 1,
-        episodeNumber: normalized.episodeNumber || 1,
-        requestUnits: Math.max(1, Number(existing?.requestUnits || normalized.requestUnits || 1)),
+        requestScope: normalized.requestScope || 'season',
+        seasonNumber: normalized.seasonNumber || null,
+        episodeNumber: normalized.episodeNumber || null,
+        requestUnits: Math.max(0, Number(existing?.requestUnits ?? normalized.requestUnits ?? 0)),
         episodeNumbers: normalizeEpisodeNumbers(existing?.episodeNumbers || normalized.episodeNumbers, 999),
         seasonEpisodePairs: normalizeSeasonEpisodePairs(
           existing?.seasonEpisodePairs || normalized.seasonEpisodePairs,
@@ -758,7 +787,13 @@ export default function RequestPage() {
       push('Series details are still loading. Please wait.', 'error');
       return;
     }
-    const normalized = normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons);
+    const normalized = normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons, {
+      allowEmpty: true,
+    });
+    if (Number(normalized?.requestUnits || 0) <= 0) {
+      push('Select at least one episode first.', 'error');
+      return;
+    }
     upsertSelectedItem({
       ...seriesPicker.item,
       requestScope: normalized.requestScope,
@@ -948,7 +983,9 @@ export default function RequestPage() {
   }, 0);
   const seriesPickerEpisodeLimit = Math.max(0, seriesQuotaRemaining - seriesUnitsInOtherSelections);
   const normalizedSeriesPickerSelection = seriesPicker
-    ? normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons)
+    ? normalizeSeriesSelection(seriesPicker, 'tv', seriesPickerMeta.seasons, {
+        allowEmpty: true,
+      })
     : null;
 
   const toggleSeriesEpisode = useCallback(
