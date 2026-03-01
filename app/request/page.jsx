@@ -57,6 +57,16 @@ function yearFromDate(date) {
   return m ? m[1] : '';
 }
 
+function fmtDateTime(ts) {
+  const n = Number(ts || 0);
+  if (!n) return '—';
+  try {
+    return new Date(n).toLocaleString();
+  } catch {
+    return '—';
+  }
+}
+
 function requestStatusLabel(tags, status) {
   const s = String(status || '').toLowerCase();
   if (s === 'pending') return String(tags?.pending || 'Pending');
@@ -65,6 +75,16 @@ function requestStatusLabel(tags, status) {
   if (s === 'rejected') return String(tags?.rejected || 'Rejected');
   if (s === 'archived') return String(tags?.archived || 'Archived');
   return s ? s.replaceAll('_', ' ') : '';
+}
+
+function requestStatusTone(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'pending') return 'border-yellow-500/30 bg-yellow-500/15 text-yellow-100';
+  if (s === 'approved') return 'border-blue-500/30 bg-blue-500/15 text-blue-100';
+  if (s === 'available_now') return 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100';
+  if (s === 'rejected') return 'border-red-500/30 bg-red-500/15 text-red-100';
+  if (s === 'archived') return 'border-neutral-700 bg-neutral-800/40 text-neutral-200';
+  return 'border-neutral-700 bg-neutral-800/40 text-neutral-200';
 }
 
 function clampPositiveInt(value, min = 1, max = 999) {
@@ -393,6 +413,7 @@ export default function RequestPage() {
   const initialType = normalizeType(searchParams?.get('type'));
   const initialFilter = normalizeFilter(searchParams?.get('filter'));
 
+  const [viewMode, setViewMode] = useState('browse');
   const [type, setType] = useState(initialType);
   const [filter, setFilter] = useState(initialFilter);
   const [query, setQuery] = useState('');
@@ -419,6 +440,7 @@ export default function RequestPage() {
     defaultLandingCategory: 'popular',
     statusTags: {},
   });
+  const [myRequests, setMyRequests] = useState([]);
 
   const [selected, setSelected] = useState([]);
   const [submitting, setSubmitting] = useState(false);
@@ -463,7 +485,10 @@ export default function RequestPage() {
 
   const hydrateBaseData = useCallback(async () => {
     if (!username) return;
-    const r = await fetch(`/api/public/requests?username=${encodeURIComponent(username)}`, { cache: 'no-store' });
+    const params = new URLSearchParams();
+    params.set('username', username);
+    if (streamBase) params.set('streamBase', streamBase);
+    const r = await fetch(`/api/public/requests?${params.toString()}`, { cache: 'no-store' });
     const j = await readJsonSafe(r);
     if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to load request settings');
 
@@ -475,13 +500,14 @@ export default function RequestPage() {
 
     setStateMap((prev) => ({ ...prev, ...mapped }));
     setSettings(j?.settings || {});
+    setMyRequests(Array.isArray(j?.myRequests) ? j.myRequests : []);
     if (j?.quota) setQuota(j.quota);
 
     if (!didApplyDefaultFilter.current && !searchParams?.get('filter')) {
       setFilter(normalizeFilter(j?.settings?.defaultLandingCategory));
       didApplyDefaultFilter.current = true;
     }
-  }, [username, searchParams]);
+  }, [username, streamBase, searchParams]);
 
   const updateStatesForItems = useCallback(
     async (items) => {
@@ -931,6 +957,7 @@ export default function RequestPage() {
 
       if (j?.quota) setQuota(j.quota);
       await updateStatesForItems(selected);
+      await hydrateBaseData().catch(() => {});
 
       const created = Number(Array.isArray(j?.created) ? j.created.length : 0);
       const duplicates = Number(Array.isArray(j?.duplicates) ? j.duplicates.length : 0);
@@ -1005,7 +1032,7 @@ export default function RequestPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [selected, username, streamBase, updateStatesForItems, push]);
+  }, [selected, username, streamBase, updateStatesForItems, hydrateBaseData, push]);
 
   const maxLimit = Number(quota?.limit || settings?.dailyLimitDefault || 3) || 3;
   const maxSeriesEpisodeLimit =
@@ -1151,7 +1178,7 @@ export default function RequestPage() {
           </p>
         </div>
 
-        <div className="mb-4 flex flex-wrap gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           {[
             { id: 'all', label: 'All' },
             { id: 'movie', label: 'Movies' },
@@ -1159,10 +1186,13 @@ export default function RequestPage() {
           ].map((x) => (
             <button
               key={x.id}
-              onClick={() => setType(x.id)}
+              onClick={() => {
+                setViewMode('browse');
+                setType(x.id);
+              }}
               className={
                 'rounded-full border px-3 py-1.5 text-xs font-semibold transition ' +
-                (type === x.id
+                (viewMode === 'browse' && type === x.id
                   ? 'border-[var(--brand)] bg-[var(--brand)]/20 text-white'
                   : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
               }
@@ -1170,142 +1200,225 @@ export default function RequestPage() {
               {x.label}
             </button>
           ))}
+          <span className="px-1 text-sm text-neutral-600">|</span>
+          <button
+            onClick={() => setViewMode('mine')}
+            className={
+              'rounded-full border px-3 py-1.5 text-xs font-semibold transition ' +
+              (viewMode === 'mine'
+                ? 'border-[var(--brand)] bg-[var(--brand)]/20 text-white'
+                : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
+            }
+          >
+            My Requests{myRequests.length ? ` (${myRequests.length})` : ''}
+          </button>
         </div>
 
-        <div className="relative mb-4">
-          <div className="flex items-center overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900">
-            <Search size={16} className="ml-3 text-neutral-400" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search title..."
-              className="w-full bg-transparent px-3 py-3 text-sm outline-none"
-            />
-            {query ? (
-              <button
-                onClick={() => {
-                  setQuery('');
-                }}
-                className="mr-2 rounded-md p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
-                aria-label="Clear search"
-                title="Clear"
-              >
-                <X size={16} />
-              </button>
+        {viewMode === 'mine' ? (
+          <div className="space-y-3">
+            {!myRequests.length ? (
+              <div className="rounded-xl border border-neutral-800 bg-neutral-900/50 px-4 py-5 text-sm text-neutral-300">
+                You have no requests yet.
+              </div>
             ) : null}
-          </div>
-        </div>
-
-        <div className="mb-6 -mx-1 overflow-x-auto px-1">
-          <div className="flex w-max gap-2">
-            {FILTERS.map((g) => (
-              <button
-                key={g.id}
-                onClick={() => setFilter(g.id)}
-                className={
-                  'rounded-full border px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition ' +
-                  (filter === g.id
-                    ? 'border-[var(--brand)] bg-[var(--brand)]/20 text-white'
-                    : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
-                }
-              >
-                {g.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {catalogErr ? <div className="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{catalogErr}</div> : null}
-
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-          {catalog.map((item) => {
-            const key = mediaKey(item);
-            const resolved = resolveCardState(item);
-            const isSelected = selectedKeys.has(key);
-            const selectedItem = selectedByKey.get(key);
-            const selectedChip = selectedCardChip(selectedItem);
-            const statusText = String(resolved?.meta?.status || '').toLowerCase();
-            const statusDisplay = requestStatusLabel(settings?.statusTags, statusText);
-            return (
-              <button
-                key={key}
-                onClick={() => onCardClick(item)}
-                disabled={resolved.state === 'available'}
-                className={
-                  'group relative overflow-hidden rounded-xl border bg-neutral-900 text-left transition ' +
-                  (resolved.state === 'available'
-                    ? 'cursor-default border-emerald-500/40'
-                    : resolved.state === 'requested'
-                      ? 'border-amber-500/35 hover:border-amber-400/60'
-                      : isSelected
-                        ? 'border-[var(--brand)] shadow-[0_0_0_1px_var(--brand)]'
-                        : 'border-neutral-800 hover:border-neutral-600')
-                }
-                title={item.title || ''}
-              >
-                <div className="aspect-[2/3] overflow-hidden bg-neutral-800">
+            {myRequests.map((row) => {
+              const status = String(row?.status || '').toLowerCase();
+              const statusLabel = requestStatusLabel(settings?.statusTags, status);
+              const availableNow = Boolean(row?.availableNow);
+              const detail = String(row?.requestDetailLabel || '').trim();
+              return (
+                <div
+                  key={String(row?.id || `${row?.mediaType || 'movie'}:${row?.tmdbId || 0}`)}
+                  className="flex gap-3 rounded-xl border border-neutral-800 bg-neutral-900/60 p-3"
+                >
                   <img
-                    src={tmdbImage(item.posterPath)}
-                    alt={item.title || ''}
-                    className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.03]"
+                    src={tmdbImage(row?.posterPath, 'w342')}
+                    alt={String(row?.title || 'Requested title')}
+                    className="h-24 w-16 rounded-lg border border-neutral-800 object-cover sm:h-28 sm:w-20"
                     loading="lazy"
                   />
-                </div>
-                <div className="p-2">
-                  <div className="line-clamp-1 text-sm font-semibold text-neutral-100">{item.title || 'Untitled'}</div>
-                  <div className="mt-0.5 text-xs text-neutral-400">
-                    {item.mediaType === 'tv' ? 'Series' : 'Movie'}
-                    {yearFromDate(item.releaseDate) ? ` • ${yearFromDate(item.releaseDate)}` : ''}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="line-clamp-1 text-sm font-semibold text-neutral-100">
+                        {String(row?.title || 'Untitled')}
+                      </div>
+                      <span className={'rounded-full border px-2 py-0.5 text-[10px] font-semibold ' + requestStatusTone(status)}>
+                        {statusLabel || 'Pending'}
+                      </span>
+                      <span
+                        className={
+                          'rounded-full border px-2 py-0.5 text-[10px] font-semibold ' +
+                          (availableNow
+                            ? 'border-emerald-500/35 bg-emerald-500/15 text-emerald-100'
+                            : 'border-neutral-700 bg-neutral-800/40 text-neutral-200')
+                        }
+                      >
+                        {availableNow ? 'Available Now' : 'Awaiting Download'}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-neutral-400">
+                      {String(row?.mediaType || '').toLowerCase() === 'tv' ? 'Series' : 'Movie'}
+                      {yearFromDate(row?.releaseDate) ? ` • ${yearFromDate(row.releaseDate)}` : ''}
+                      {detail ? ` • ${detail}` : ''}
+                    </div>
+                    <div className="mt-2 grid gap-1 text-xs text-neutral-300 sm:grid-cols-2">
+                      <div>Requested: {fmtDateTime(row?.requestedAt)}</div>
+                      <div>Status Updated: {fmtDateTime(row?.statusUpdatedAt || row?.updatedAt)}</div>
+                      <div>State: {availableNow ? 'Downloaded/Available' : 'Pending'}</div>
+                      <div>
+                        Requested Units:{' '}
+                        {Math.max(
+                          1,
+                          Number(
+                            row?.requestUnits ||
+                              (String(row?.mediaType || '').toLowerCase() === 'tv' ? 1 : 1)
+                          )
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            <div className="relative mb-4">
+              <div className="flex items-center overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900">
+                <Search size={16} className="ml-3 text-neutral-400" />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search title..."
+                  className="w-full bg-transparent px-3 py-3 text-sm outline-none"
+                />
+                {query ? (
+                  <button
+                    onClick={() => {
+                      setQuery('');
+                    }}
+                    className="mr-2 rounded-md p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
+                    aria-label="Clear search"
+                    title="Clear"
+                  >
+                    <X size={16} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
 
-                {(resolved.state === 'available' || resolved.state === 'requested') ? (
-                  <div className="pointer-events-none absolute inset-x-0 top-0 bottom-0 bg-gradient-to-b from-black/80 via-black/35 to-transparent" />
-                ) : null}
-                {resolved.state === 'available' ? (
-                  <span className="absolute left-2 top-2 rounded-full border border-emerald-500/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-100">
-                    Available Now
-                  </span>
-                ) : null}
-                {resolved.state === 'requested' ? (
-                  <span className="absolute left-2 top-2 rounded-full border border-amber-500/40 bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
-                    Requested
-                  </span>
-                ) : null}
-                {resolved.state === 'requested' && statusText && statusText !== 'pending' ? (
-                  <span className="absolute left-2 top-7 rounded-full border border-white/20 bg-black/60 px-2 py-0.5 text-[10px] text-neutral-200">
-                    {statusDisplay}
-                  </span>
-                ) : null}
-                {resolved.state === 'requestable' && isSelected ? (
-                  <>
-                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/65 via-black/15 to-black/45" />
-                    <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full border border-white/35 bg-[var(--brand)] text-lg font-black text-white shadow-[0_0_0_1px_rgba(0,0,0,0.2),0_8px_20px_rgba(0,0,0,0.35)]">
-                      ✓
-                    </span>
-                    {selectedChip ? (
-                      <span className="absolute bottom-2 left-2 rounded-full border border-white/20 bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-neutral-100">
-                        {selectedChip}
+            <div className="mb-6 -mx-1 overflow-x-auto px-1">
+              <div className="flex w-max gap-2">
+                {FILTERS.map((g) => (
+                  <button
+                    key={g.id}
+                    onClick={() => setFilter(g.id)}
+                    className={
+                      'rounded-full border px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition ' +
+                      (filter === g.id
+                        ? 'border-[var(--brand)] bg-[var(--brand)]/20 text-white'
+                        : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
+                    }
+                  >
+                    {g.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {catalogErr ? <div className="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{catalogErr}</div> : null}
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+              {catalog.map((item) => {
+                const key = mediaKey(item);
+                const resolved = resolveCardState(item);
+                const isSelected = selectedKeys.has(key);
+                const selectedItem = selectedByKey.get(key);
+                const selectedChip = selectedCardChip(selectedItem);
+                const statusText = String(resolved?.meta?.status || '').toLowerCase();
+                const statusDisplay = requestStatusLabel(settings?.statusTags, statusText);
+                return (
+                  <button
+                    key={key}
+                    onClick={() => onCardClick(item)}
+                    disabled={resolved.state === 'available'}
+                    className={
+                      'group relative overflow-hidden rounded-xl border bg-neutral-900 text-left transition ' +
+                      (resolved.state === 'available'
+                        ? 'cursor-default border-emerald-500/40'
+                        : resolved.state === 'requested'
+                          ? 'border-amber-500/35 hover:border-amber-400/60'
+                          : isSelected
+                            ? 'border-[var(--brand)] shadow-[0_0_0_1px_var(--brand)]'
+                            : 'border-neutral-800 hover:border-neutral-600')
+                    }
+                    title={item.title || ''}
+                  >
+                    <div className="aspect-[2/3] overflow-hidden bg-neutral-800">
+                      <img
+                        src={tmdbImage(item.posterPath)}
+                        alt={item.title || ''}
+                        className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.03]"
+                        loading="lazy"
+                      />
+                    </div>
+                    <div className="p-2">
+                      <div className="line-clamp-1 text-sm font-semibold text-neutral-100">{item.title || 'Untitled'}</div>
+                      <div className="mt-0.5 text-xs text-neutral-400">
+                        {item.mediaType === 'tv' ? 'Series' : 'Movie'}
+                        {yearFromDate(item.releaseDate) ? ` • ${yearFromDate(item.releaseDate)}` : ''}
+                      </div>
+                    </div>
+
+                    {(resolved.state === 'available' || resolved.state === 'requested') ? (
+                      <div className="pointer-events-none absolute inset-x-0 top-0 bottom-0 bg-gradient-to-b from-black/80 via-black/35 to-transparent" />
+                    ) : null}
+                    {resolved.state === 'available' ? (
+                      <span className="absolute left-2 top-2 rounded-full border border-emerald-500/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-100">
+                        Available Now
                       </span>
                     ) : null}
-                  </>
-                ) : null}
-              </button>
-            );
-          })}
+                    {resolved.state === 'requested' ? (
+                      <span className="absolute left-2 top-2 rounded-full border border-amber-500/40 bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-100">
+                        Requested
+                      </span>
+                    ) : null}
+                    {resolved.state === 'requested' && statusText && statusText !== 'pending' ? (
+                      <span className="absolute left-2 top-7 rounded-full border border-white/20 bg-black/60 px-2 py-0.5 text-[10px] text-neutral-200">
+                        {statusDisplay}
+                      </span>
+                    ) : null}
+                    {resolved.state === 'requestable' && isSelected ? (
+                      <>
+                        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/65 via-black/15 to-black/45" />
+                        <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full border border-white/35 bg-[var(--brand)] text-lg font-black text-white shadow-[0_0_0_1px_rgba(0,0,0,0.2),0_8px_20px_rgba(0,0,0,0.35)]">
+                          ✓
+                        </span>
+                        {selectedChip ? (
+                          <span className="absolute bottom-2 left-2 rounded-full border border-white/20 bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-neutral-100">
+                            {selectedChip}
+                          </span>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </button>
+                );
+              })}
 
-          {!catalog.length && catalogLoading
-            ? Array.from({ length: 12 }, (_, i) => (
-                <div key={`rq-sk-${i}`} className="aspect-[2/3] animate-pulse rounded-xl bg-neutral-800/70" />
-              ))
-            : null}
-        </div>
+              {!catalog.length && catalogLoading
+                ? Array.from({ length: 12 }, (_, i) => (
+                    <div key={`rq-sk-${i}`} className="aspect-[2/3] animate-pulse rounded-xl bg-neutral-800/70" />
+                  ))
+                : null}
+            </div>
 
-        <div ref={sentinelRef} className="h-10" />
-        {catalogLoading && catalog.length ? <div className="text-sm text-neutral-400">Loading more...</div> : null}
-        {!catalogLoading && page >= totalPages && catalog.length ? (
-          <div className="text-sm text-neutral-500">You have reached the end.</div>
-        ) : null}
+            <div ref={sentinelRef} className="h-10" />
+            {catalogLoading && catalog.length ? <div className="text-sm text-neutral-400">Loading more...</div> : null}
+            {!catalogLoading && page >= totalPages && catalog.length ? (
+              <div className="text-sm text-neutral-500">You have reached the end.</div>
+            ) : null}
+          </>
+        )}
 
         {requestedModal ? (
           <div className="fixed inset-0 z-[110]">

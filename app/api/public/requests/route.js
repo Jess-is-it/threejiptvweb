@@ -86,6 +86,10 @@ function mediaTypeNorm(value) {
   return s === 'tv' || s === 'series' ? 'tv' : 'movie';
 }
 
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function normalizeEpisodeNumbers(input) {
   const out = [];
   const seen = new Set();
@@ -259,16 +263,57 @@ function mergeRequestAndAvailabilityStates({ items, requestStates, catalog }) {
   return out;
 }
 
+function myRequestsFromQueue({ rows, username, catalog }) {
+  const user = normalizeUsername(username);
+  if (!user) return [];
+  const out = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const requestedBy = Array.isArray(row?.requestedBy) ? row.requestedBy : [];
+    const mine = requestedBy.find((entry) => normalizeUsername(entry?.username) === user);
+    if (!mine) continue;
+    const availableFromStatus = String(row?.status || '').trim().toLowerCase() === 'available_now';
+    const availableFromCatalog = isAvailableInXui(row, catalog);
+    out.push({
+      id: String(row?.id || '').trim(),
+      tmdbId: Number(row?.tmdbId || 0),
+      mediaType: mediaTypeNorm(row?.mediaType),
+      title: String(row?.title || '').trim(),
+      releaseDate: String(row?.releaseDate || '').trim(),
+      posterPath: String(row?.posterPath || '').trim(),
+      backdropPath: String(row?.backdropPath || '').trim(),
+      overview: String(row?.overview || '').trim(),
+      status: String(row?.status || 'pending').trim().toLowerCase() || 'pending',
+      requestScope: String(row?.requestScope || '').trim().toLowerCase(),
+      seasonNumber: Number(row?.seasonNumber || 0) || null,
+      episodeNumber: Number(row?.episodeNumber || 0) || null,
+      requestDetailLabel: String(row?.requestDetailLabel || '').trim(),
+      requestUnits: Math.max(1, Number(mine?.requestUnits || row?.requestUnits || 1)),
+      episodeNumbers: normalizeEpisodeNumbers(row?.episodeNumbers),
+      seasonEpisodePairs: normalizeSeasonEpisodePairs(row?.seasonEpisodePairs),
+      requestedAt: Number(mine?.requestedAt || row?.requestedAt || 0) || 0,
+      statusUpdatedAt: Number(row?.statusUpdatedAt || row?.updatedAt || 0) || 0,
+      updatedAt: Number(row?.updatedAt || 0) || 0,
+      availableNow: Boolean(availableFromStatus || availableFromCatalog),
+    });
+  }
+  return out.sort((a, b) => Number(b?.requestedAt || 0) - Number(a?.requestedAt || 0));
+}
+
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
     const username = String(searchParams.get('username') || '').trim();
     if (!username) return NextResponse.json({ ok: false, error: 'Missing username' }, { status: 400 });
+    const streamBase = String(searchParams.get('streamBase') || '').trim();
 
-    const [queue, quota, settings] = await Promise.all([
+    const [activeQueue, allQueue, quota, settings, catalog] = await Promise.all([
       listRequestQueue({ status: 'active', includeArchived: false }),
+      listRequestQueue({ status: 'all', includeArchived: true }),
       getUserRequestQuota(username),
       getRequestSettings(),
+      streamBase
+        ? loadXuiCatalog(streamBase).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     return NextResponse.json(
@@ -276,7 +321,12 @@ export async function GET(req) {
         ok: true,
         quota,
         settings: publicSettingsShape(settings),
-        activeStates: compactActiveStates(queue.items),
+        activeStates: compactActiveStates(activeQueue.items),
+        myRequests: myRequestsFromQueue({
+          rows: allQueue.items,
+          username,
+          catalog,
+        }),
       },
       { status: 200 }
     );

@@ -140,7 +140,7 @@ There is currently **no automated test suite**. Use:
 - Playback proxy: `/api/proxy/hls` (rewrites playlists, proxies segments/keys, handles fallback)
 - Content APIs: `/api/xuione/*`, `/api/tmdb/*`
 - Public feedback: `/api/public/reports`, `/api/public/notifications`
-- Public requests: `/api/public/requests` (`GET` quota/settings/active request states, `POST` actions: `submit|state|remind`)
+- Public requests: `/api/public/requests` (`GET` quota/settings/active request states + per-user request history payload, `POST` actions: `submit|state|remind`)
   - includes TMDB request catalog endpoint `GET /api/public/requests/catalog` (supports request-page browse/search/infinite-scroll with `include_adult=false` and genre filters)
   - includes TMDB/XUI series picker endpoint `POST /api/public/requests/series-options` (body: `tmdbId`, optional `streamBase` + title/year hints) that returns season/episode rows with TMDB still images and per-episode XUI availability tags for scoped requests
 - AutoDownload: `/api/admin/autodownload/*` (engine, mount, download client, settings, processing, scheduler, xui, logs)
@@ -254,6 +254,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Admin Requests Queue status navigation now has quick filter links from KPI cards and row status badges (jump directly to matching queue filter tab).
 - Request-card secondary status labels now render using customizable request status tags from Request Settings for consistent labeling across public/admin surfaces.
 - Public `/request` page now includes TMDB infinite scroll, search + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
+- Public `/request` page includes a `My Requests` view (beside Movies/Series) showing user request history with status, requested date, status-updated date, and downloaded/available state.
 - Selected requestable cards on `/request` now show a full-card dark gradient overlay plus a larger top-right check badge for clearer selected-state visibility.
 - Selecting a requestable series on `/request` now opens a TMDB-backed scoped picker with collapsible season rows and larger episode cards (TMDB still background); it starts with no preselected episode, users can select episodes across multiple seasons, each season row shows current selected count, episodes already found in XUI are tagged `Available` and disabled, and `Request all missing episodes` auto-checks only not-yet-downloaded episodes (per season) up to remaining per-day series quota. The modal submit button shows selected-episode count, and if TMDB/XUI checks show all episodes already available the modal auto-closes and the series card is marked `Available Now`.
 - Request Settings now include `seriesEpisodeLimitDefault` (default `8` per day), and request submission enforces this daily per-user series-episode quota alongside the title-count quota.
