@@ -1166,7 +1166,7 @@ export default function RequestPage() {
               onClick={closeSeriesPicker}
               aria-label="Close"
             />
-            <div className="absolute left-1/2 top-1/2 w-[min(620px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl">
+            <div className="absolute left-1/2 top-1/2 w-[min(1240px,96vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-lg font-semibold text-neutral-100">
@@ -1201,7 +1201,7 @@ export default function RequestPage() {
                 </div>
               ) : null}
 
-              <div className="mt-4 max-h-[48vh] space-y-2 overflow-auto pr-1">
+              <div className="mt-4 max-h-[72vh] space-y-2 overflow-auto pr-1">
                 {seasonRows(seriesPickerMeta.seasons).map((season) => {
                   const expanded = Number(seriesExpandedSeason || 0) === season.seasonNumber;
                   const episodes = episodeRowsForSeason(seriesPickerMeta.seasons, season.seasonNumber);
