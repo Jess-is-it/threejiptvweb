@@ -113,16 +113,40 @@ export async function PATCH(req) {
     const action = String(body?.action || '').trim().toLowerCase();
 
     if (action === 'status') {
-      const result = await updateRequestStatus({
-        id: body?.id,
-        status: body?.status,
-      });
-      let notified = 0;
-      if (result?.changedToAvailableNow) {
-        const sent = await notifyAvailableNow(result.item);
-        notified = Number(sent?.notified || 0);
+      const ids = Array.isArray(body?.ids)
+        ? body.ids.map((x) => String(x || '').trim()).filter(Boolean)
+        : [];
+      if (!ids.length && body?.id) ids.push(String(body.id).trim());
+      if (!ids.length) {
+        return NextResponse.json({ ok: false, error: 'No request ids provided' }, { status: 400 });
       }
-      return NextResponse.json({ ok: true, item: result.item, notified }, { status: 200 });
+
+      const uniqIds = [...new Set(ids)];
+      let notified = 0;
+      const updatedItems = [];
+
+      for (const id of uniqIds) {
+        const result = await updateRequestStatus({
+          id,
+          status: body?.status,
+        });
+        if (result?.item) updatedItems.push(result.item);
+        if (result?.changedToAvailableNow) {
+          const sent = await notifyAvailableNow(result.item);
+          notified += Number(sent?.notified || 0);
+        }
+      }
+
+      return NextResponse.json(
+        {
+          ok: true,
+          updated: updatedItems.length,
+          item: updatedItems[0] || null,
+          items: updatedItems,
+          notified,
+        },
+        { status: 200 }
+      );
     }
 
     if (action === 'archive') {

@@ -247,6 +247,9 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Admin request backend now supports queue sorting by most requested first (`requestCount`), fixed status workflow (`pending`, `approved`, `available_now`, `rejected`, `archived`), and archive actions for completed/rejected cleanup.
 - When request status transitions to `available_now`, notifications are pushed to all usernames in `reminderSubscribers`.
 - Admin sidebar now includes dedicated `Requests` and `Request Settings` entries, with pages bound to `/api/admin/requests` and `/api/admin/request-settings`.
+- Admin Requests Queue now supports row selection + bulk status transitions + bulk archive actions; backend `PATCH /api/admin/requests` accepts bulk `ids` for `action=status`.
+- Admin Requests Queue status navigation now has quick filter links from KPI cards and row status badges (jump directly to matching queue filter tab).
+- Request-card secondary status labels now render using customizable request status tags from Request Settings for consistent labeling across public/admin surfaces.
 - Public `/request` page now includes TMDB infinite scroll, search + autosuggest + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
 - Request-page autosuggest now only opens for focused search input with 2+ characters, and closes on outside click or `Esc` for tighter UX.
 - Request submit feedback now reports reason-specific skips (`already requested`, `already available`, `daily limit`) and keeps daily-limit-rejected items in the request cart for retry.

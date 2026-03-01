@@ -57,6 +57,16 @@ function yearFromDate(date) {
   return m ? m[1] : '';
 }
 
+function requestStatusLabel(tags, status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'pending') return String(tags?.pending || 'Pending');
+  if (s === 'approved') return String(tags?.approved || 'Approved');
+  if (s === 'available_now') return String(tags?.availableNow || 'Available Now');
+  if (s === 'rejected') return String(tags?.rejected || 'Rejected');
+  if (s === 'archived') return String(tags?.archived || 'Archived');
+  return s ? s.replaceAll('_', ' ') : '';
+}
+
 function useToasts() {
   const [items, setItems] = useState([]);
   const push = useCallback((text, tone = 'info') => {
@@ -590,6 +600,7 @@ export default function RequestPage() {
             const resolved = resolveCardState(item);
             const isSelected = selectedKeys.has(key);
             const statusText = String(resolved?.meta?.status || '').toLowerCase();
+            const statusDisplay = requestStatusLabel(settings?.statusTags, statusText);
             return (
               <button
                 key={key}
@@ -635,7 +646,7 @@ export default function RequestPage() {
                 ) : null}
                 {resolved.state === 'requested' && statusText && statusText !== 'pending' ? (
                   <span className="absolute left-2 top-7 rounded-full border border-white/20 bg-black/60 px-2 py-0.5 text-[10px] text-neutral-200">
-                    {statusText.replace('_', ' ')}
+                    {statusDisplay}
                   </span>
                 ) : null}
                 {resolved.state === 'requestable' && isSelected ? (
