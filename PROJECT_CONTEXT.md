@@ -248,6 +248,8 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - When request status transitions to `available_now`, notifications are pushed to all usernames in `reminderSubscribers`.
 - Admin sidebar now includes dedicated `Requests` and `Request Settings` entries, with pages bound to `/api/admin/requests` and `/api/admin/request-settings`.
 - Public `/request` page now includes TMDB infinite scroll, search + autosuggest + clear, horizontal genre filters (`Popular`, `Tagalog`, `Anime`, `Action`, `Adventure`, `Comedy`, `Horror`, `Romance`, `Drama`, `Sci-fi`), request-card states (`Available Now`, `Requested`, requestable), reminder modal action, and a floating request cart with daily-limit enforcement.
+- Request-page autosuggest now only opens for focused search input with 2+ characters, and closes on outside click or `Esc` for tighter UX.
+- Request submit feedback now reports reason-specific skips (`already requested`, `already available`, `daily limit`) and keeps daily-limit-rejected items in the request cart for retry.
 - Header request CTA is now contextual by route (`Request` on Home, `Request Movie` on Movies pages, `Request Series` on Series pages) and routes to `/request?type=all|movie|tv`.
 - Playback proxy (`/api/proxy/hls`) uses an undici dispatcher with `bodyTimeout: 0` to avoid long VOD streams being cut mid-playback.
 - Movie watch page (`/watch/movie/[id]`) now prefers HLS first in `VideoPlayer` and falls back to MP4 only if needed.

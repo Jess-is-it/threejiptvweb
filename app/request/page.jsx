@@ -39,6 +39,11 @@ function mediaKey(item) {
   return `${type}:${Number(item?.tmdbId || 0)}`;
 }
 
+function mediaKeyFromPair(tmdbId, mediaType) {
+  const type = String(mediaType || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+  return `${type}:${Number(tmdbId || 0)}`;
+}
+
 function tmdbImage(path, size = 'w500') {
   const p = String(path || '').trim();
   if (!p) return '/images/placeholder.png';
@@ -117,6 +122,7 @@ export default function RequestPage() {
 
   const [suggestions, setSuggestions] = useState([]);
   const [suggestOpen, setSuggestOpen] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
 
   const didApplyDefaultFilter = useRef(false);
   const sentinelRef = useRef(null);
@@ -132,10 +138,23 @@ export default function RequestPage() {
   useEffect(() => {
     const onClick = (e) => {
       if (!suggestOpen) return;
-      if (suggestBoxRef.current && !suggestBoxRef.current.contains(e.target)) setSuggestOpen(false);
+      if (suggestBoxRef.current && !suggestBoxRef.current.contains(e.target)) {
+        setSuggestOpen(false);
+        setSearchFocused(false);
+      }
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        setSuggestOpen(false);
+        setSearchFocused(false);
+      }
     };
     window.addEventListener('mousedown', onClick);
-    return () => window.removeEventListener('mousedown', onClick);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onClick);
+      window.removeEventListener('keydown', onKey);
+    };
   }, [suggestOpen]);
 
   const selectedKeys = useMemo(() => new Set(selected.map((x) => mediaKey(x))), [selected]);
@@ -278,7 +297,7 @@ export default function RequestPage() {
   }, [catalogLoading, page, totalPages]);
 
   useEffect(() => {
-    if (!debouncedQuery || debouncedQuery.length < 2) {
+    if (!suggestOpen || !searchFocused || !debouncedQuery || debouncedQuery.length < 2) {
       setSuggestions([]);
       return;
     }
@@ -296,7 +315,12 @@ export default function RequestPage() {
         return;
       }
       const rows = Array.isArray(j?.items) ? j.items : [];
-      setSuggestions(rows.slice(0, 6));
+      const q = debouncedQuery.toLowerCase();
+      setSuggestions(
+        rows
+          .filter((x) => String(x?.title || '').toLowerCase().includes(q))
+          .slice(0, 6)
+      );
     };
     run().catch(() => {
       if (alive) setSuggestions([]);
@@ -304,7 +328,7 @@ export default function RequestPage() {
     return () => {
       alive = false;
     };
-  }, [debouncedQuery, type]);
+  }, [debouncedQuery, type, suggestOpen, searchFocused]);
 
   const toggleSelect = useCallback(
     (item) => {
@@ -388,16 +412,57 @@ export default function RequestPage() {
 
       if (j?.quota) setQuota(j.quota);
       await updateStatesForItems(selected);
-      setSelected([]);
 
       const created = Number(Array.isArray(j?.created) ? j.created.length : 0);
-      const rejected = Number(Array.isArray(j?.rejected) ? j.rejected.length : 0);
       const duplicates = Number(Array.isArray(j?.duplicates) ? j.duplicates.length : 0);
+      const rejectedList = Array.isArray(j?.rejected) ? j.rejected : [];
+      const rejectedByLimit = rejectedList.filter((x) => String(x?.reason || '') === 'daily_limit_exceeded');
+      const rejectedByAvailable = rejectedList.filter((x) => String(x?.reason || '') === 'available_now');
+      const rejectedOther = rejectedList.filter((x) => {
+        const reason = String(x?.reason || '');
+        return reason !== 'daily_limit_exceeded' && reason !== 'available_now';
+      });
+
+      const keepSelection = new Set(
+        rejectedByLimit.map((x) => mediaKeyFromPair(x?.tmdbId, x?.mediaType))
+      );
+      setSelected((prev) => prev.filter((x) => keepSelection.has(mediaKey(x))));
+
       if (created > 0) {
         push(`Submitted ${created} request${created > 1 ? 's' : ''}.`, 'success');
       }
-      if (rejected > 0 || duplicates > 0) {
-        push(`Skipped ${rejected + duplicates} title${rejected + duplicates > 1 ? 's' : ''}.`, 'info');
+      if (duplicates > 0) {
+        push(
+          `${duplicates} title${duplicates > 1 ? 's were' : ' was'} already requested.`,
+          'info'
+        );
+      }
+      if (rejectedByAvailable.length > 0) {
+        push(
+          `${rejectedByAvailable.length} title${
+            rejectedByAvailable.length > 1 ? 's are' : ' is'
+          } already available now.`,
+          'info'
+        );
+      }
+      if (rejectedByLimit.length > 0) {
+        push(
+          `Daily limit reached. ${rejectedByLimit.length} title${
+            rejectedByLimit.length > 1 ? 's were' : ' was'
+          } kept in your cart.`,
+          'error'
+        );
+      }
+      if (rejectedOther.length > 0) {
+        push(
+          `Skipped ${rejectedOther.length} title${
+            rejectedOther.length > 1 ? 's' : ''
+          } due to validation.`,
+          'info'
+        );
+      }
+      if (created === 0 && duplicates === 0 && rejectedList.length === 0) {
+        push('No new requests were submitted.', 'info');
       }
     } catch (e) {
       push(e?.message || 'Failed to submit requests', 'error');
@@ -446,9 +511,13 @@ export default function RequestPage() {
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setSuggestOpen(true);
+                const next = String(e.target.value || '').trim();
+                setSuggestOpen(next.length >= 2);
               }}
-              onFocus={() => setSuggestOpen(true)}
+              onFocus={() => {
+                setSearchFocused(true);
+                setSuggestOpen(String(query || '').trim().length >= 2);
+              }}
               placeholder="Search title..."
               className="w-full bg-transparent px-3 py-3 text-sm outline-none"
             />
@@ -457,6 +526,7 @@ export default function RequestPage() {
                 onClick={() => {
                   setQuery('');
                   setSuggestOpen(false);
+                  setSuggestions([]);
                 }}
                 className="mr-2 rounded-md p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
                 aria-label="Clear search"
@@ -476,6 +546,7 @@ export default function RequestPage() {
                   onClick={() => {
                     setQuery(String(s?.title || ''));
                     setSuggestOpen(false);
+                    setSearchFocused(false);
                   }}
                   className="flex w-full items-center gap-3 border-b border-neutral-800/70 px-3 py-2 text-left last:border-b-0 hover:bg-white/5"
                 >
