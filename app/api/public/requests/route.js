@@ -101,6 +101,22 @@ function normalizeEpisodeNumbers(input) {
   return out.sort((a, b) => a - b);
 }
 
+function normalizeSeasonEpisodePairs(input) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(input) ? input : []) {
+    const seasonNumber = Math.floor(Number((raw?.seasonNumber ?? raw?.season) || 0));
+    const episodeNumber = Math.floor(Number((raw?.episodeNumber ?? raw?.episode) || 0));
+    if (!Number.isFinite(seasonNumber) || seasonNumber < 1 || seasonNumber > 99) continue;
+    if (!Number.isFinite(episodeNumber) || episodeNumber < 1 || episodeNumber > 999) continue;
+    const key = `${seasonNumber}:${episodeNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ seasonNumber, episodeNumber });
+  }
+  return out.sort((a, b) => (a.seasonNumber === b.seasonNumber ? a.episodeNumber - b.episodeNumber : a.seasonNumber - b.seasonNumber));
+}
+
 function dedupeItems(items) {
   const out = [];
   const seen = new Set();
@@ -126,6 +142,7 @@ function dedupeItems(items) {
       requestDetailLabel: String(raw?.requestDetailLabel || '').trim(),
       requestUnits: raw?.requestUnits ?? raw?.seasonEpisodeCount ?? raw?.requestedEpisodes,
       episodeNumbers: normalizeEpisodeNumbers(raw?.episodeNumbers),
+      seasonEpisodePairs: normalizeSeasonEpisodePairs(raw?.seasonEpisodePairs),
     });
   }
   return out;

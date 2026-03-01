@@ -144,12 +144,47 @@ function formatEpisodeListLabel(episodes) {
   return `${rows.slice(0, 6).join(', ')} +${rows.length - 6} more`;
 }
 
+function normalizeSeasonEpisodePairs(input, seasons = []) {
+  const rows = seasonRows(seasons);
+  const seasonMap = new Map(rows.map((season) => [season.seasonNumber, season]));
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(input) ? input : []) {
+    const seasonNumber = clampPositiveInt(raw?.seasonNumber ?? raw?.season, 1, 99);
+    if (!seasonNumber) continue;
+    const season = seasonMap.get(seasonNumber);
+    const seasonEpisodeMax = Math.max(1, Number(season?.episodeCount || 999));
+    const episodeNumber = clampPositiveInt(raw?.episodeNumber ?? raw?.episode, 1, seasonEpisodeMax);
+    if (!episodeNumber) continue;
+    const key = `${seasonNumber}:${episodeNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ seasonNumber, episodeNumber });
+  }
+  return out.sort((a, b) => (a.seasonNumber === b.seasonNumber ? a.episodeNumber - b.episodeNumber : a.seasonNumber - b.seasonNumber));
+}
+
+function seasonEpisodePairKey(seasonNumber, episodeNumber) {
+  return `${Number(seasonNumber || 0)}:${Number(episodeNumber || 0)}`;
+}
+
 function sameNumberList(left, right) {
   const a = normalizeEpisodeNumbers(left, 999);
   const b = normalizeEpisodeNumbers(right, 999);
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sameSeasonEpisodePairList(left, right) {
+  const a = normalizeSeasonEpisodePairs(left, []);
+  const b = normalizeSeasonEpisodePairs(right, []);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].seasonNumber !== b[i].seasonNumber) return false;
+    if (a[i].episodeNumber !== b[i].episodeNumber) return false;
   }
   return true;
 }
@@ -175,6 +210,10 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
   const season = findSeasonMeta(seasons, rawSeasonNumber);
   const seasonNumber = season?.seasonNumber || rawSeasonNumber || 1;
   const seasonEpisodeCount = Math.max(1, Number(season?.episodeCount || 1));
+  const seasonEpisodePairsInput = normalizeSeasonEpisodePairs(
+    input?.seasonEpisodePairs ?? input?.requestedSeasonEpisodes,
+    seasons
+  );
   const requestUnitsInput =
     clampPositiveInt(input?.requestUnits ?? input?.seasonEpisodeCount ?? input?.requestedEpisodes, 1, 500) || null;
   const episodeNumbersInput = normalizeEpisodeNumbers(
@@ -182,6 +221,44 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
     seasonEpisodeCount
   );
   const candidateEpisode = clampPositiveInt(input?.episodeNumber ?? input?.episode, 1, seasonEpisodeCount);
+
+  if (seasonEpisodePairsInput.length > 0) {
+    const seasonSet = new Set(seasonEpisodePairsInput.map((pair) => pair.seasonNumber));
+    if (seasonEpisodePairsInput.length === 1) {
+      const only = seasonEpisodePairsInput[0];
+      return {
+        requestScope: 'episode',
+        seasonNumber: only.seasonNumber,
+        episodeNumber: only.episodeNumber,
+        requestDetailLabel: `Season ${only.seasonNumber} · Episode ${only.episodeNumber}`,
+        requestUnits: 1,
+        episodeNumbers: [only.episodeNumber],
+        seasonEpisodePairs: seasonEpisodePairsInput,
+      };
+    }
+    if (seasonSet.size === 1) {
+      const onlySeason = seasonEpisodePairsInput[0].seasonNumber;
+      const episodes = seasonEpisodePairsInput.map((pair) => pair.episodeNumber);
+      return {
+        requestScope: 'season',
+        seasonNumber: onlySeason,
+        episodeNumber: null,
+        requestDetailLabel: `Season ${onlySeason} · Episodes ${formatEpisodeListLabel(episodes)}`,
+        requestUnits: seasonEpisodePairsInput.length,
+        episodeNumbers: episodes,
+        seasonEpisodePairs: seasonEpisodePairsInput,
+      };
+    }
+    return {
+      requestScope: 'season',
+      seasonNumber: seasonEpisodePairsInput[0]?.seasonNumber || null,
+      episodeNumber: null,
+      requestDetailLabel: `${seasonEpisodePairsInput.length} episodes across ${seasonSet.size} seasons`,
+      requestUnits: seasonEpisodePairsInput.length,
+      episodeNumbers: [],
+      seasonEpisodePairs: seasonEpisodePairsInput,
+    };
+  }
 
   let episodeNumbers = episodeNumbersInput;
   if (!episodeNumbers.length && candidateEpisode) episodeNumbers = [candidateEpisode];
@@ -192,6 +269,7 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
   if (!episodeNumbers.length) episodeNumbers = [1];
 
   const requestUnits = Math.max(1, episodeNumbers.length);
+  const seasonEpisodePairs = episodeNumbers.map((episodeNumber) => ({ seasonNumber, episodeNumber }));
   if (requestUnits > 1 || requestScope === 'season') {
     return {
       requestScope: 'season',
@@ -200,6 +278,7 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
       requestDetailLabel: `Season ${seasonNumber} · Episodes ${formatEpisodeListLabel(episodeNumbers)}`,
       requestUnits,
       episodeNumbers,
+      seasonEpisodePairs,
     };
   }
 
@@ -211,6 +290,7 @@ function normalizeSeriesSelection(input, mediaType, seasons = []) {
     requestDetailLabel: `Season ${seasonNumber} · Episode ${episodeNumber}`,
     requestUnits: 1,
     episodeNumbers: [episodeNumber],
+    seasonEpisodePairs,
   };
 }
 
@@ -226,6 +306,10 @@ function selectedCardChip(item) {
   if (mt !== 'tv') return '';
   if (String(item?.requestScope || '').toLowerCase() === 'season' && String(item?.requestDetailLabel || '').trim()) {
     const units = Math.max(1, Number(item?.requestUnits || 1));
+    const seasonCount = new Set(
+      normalizeSeasonEpisodePairs(item?.seasonEpisodePairs, []).map((pair) => pair.seasonNumber)
+    ).size;
+    if (seasonCount > 1 && units > 1) return `${units} eps`;
     const seasonNumber = Number(item?.seasonNumber || 0);
     if (seasonNumber > 0 && units > 1) return `S${seasonNumber} • ${units} eps`;
     return String(item.requestDetailLabel).trim();
@@ -392,6 +476,7 @@ export default function RequestPage() {
             requestDetailLabel: x.requestDetailLabel,
             requestUnits: x.requestUnits,
             episodeNumbers: normalizeEpisodeNumbers(x.episodeNumbers, 999),
+            seasonEpisodePairs: normalizeSeasonEpisodePairs(x.seasonEpisodePairs, []),
           })),
         }),
       });
@@ -546,7 +631,8 @@ export default function RequestPage() {
       normalized.seasonNumber === seriesPicker.seasonNumber &&
       normalized.episodeNumber === seriesPicker.episodeNumber &&
       normalized.requestUnits === seriesPicker.requestUnits &&
-      sameNumberList(normalized.episodeNumbers, seriesPicker.episodeNumbers)
+      sameNumberList(normalized.episodeNumbers, seriesPicker.episodeNumbers) &&
+      sameSeasonEpisodePairList(normalized.seasonEpisodePairs, seriesPicker.seasonEpisodePairs)
     ) {
       setSeriesExpandedSeason((prev) => prev || normalized.seasonNumber || null);
       return;
@@ -560,6 +646,7 @@ export default function RequestPage() {
             episodeNumber: normalized.episodeNumber,
             requestUnits: normalized.requestUnits,
             episodeNumbers: normalized.episodeNumbers,
+            seasonEpisodePairs: normalized.seasonEpisodePairs,
           }
         : prev
     );
@@ -655,10 +742,14 @@ export default function RequestPage() {
         episodeNumber: normalized.episodeNumber || 1,
         requestUnits: Math.max(1, Number(existing?.requestUnits || normalized.requestUnits || 1)),
         episodeNumbers: normalizeEpisodeNumbers(existing?.episodeNumbers || normalized.episodeNumbers, 999),
+        seasonEpisodePairs: normalizeSeasonEpisodePairs(
+          existing?.seasonEpisodePairs || normalized.seasonEpisodePairs,
+          seriesPickerMeta.seasons
+        ),
         editing: Boolean(existing),
       });
     },
-    [selectedByKey]
+    [selectedByKey, seriesPickerMeta.seasons]
   );
 
   const applySeriesPicker = useCallback(() => {
@@ -676,6 +767,7 @@ export default function RequestPage() {
       requestDetailLabel: normalized.requestDetailLabel,
       requestUnits: normalized.requestUnits,
       episodeNumbers: normalized.episodeNumbers,
+      seasonEpisodePairs: normalized.seasonEpisodePairs,
     });
     closeSeriesPicker();
   }, [seriesPicker, seriesPickerMeta.seasons, push, upsertSelectedItem, closeSeriesPicker]);
@@ -754,6 +846,7 @@ export default function RequestPage() {
             requestDetailLabel: x.requestDetailLabel,
             requestUnits: x.requestUnits,
             episodeNumbers: normalizeEpisodeNumbers(x.episodeNumbers, 999),
+            seasonEpisodePairs: normalizeSeasonEpisodePairs(x.seasonEpisodePairs, []),
           })),
         }),
       });
@@ -860,6 +953,7 @@ export default function RequestPage() {
 
   const toggleSeriesEpisode = useCallback(
     (seasonNumber, episodeNumber) => {
+      if (!seriesPicker) return;
       const season = findSeasonMeta(seriesPickerMeta.seasons, seasonNumber);
       if (!season) return;
       const episode = episodeRowsForSeason(seriesPickerMeta.seasons, seasonNumber).find(
@@ -871,40 +965,50 @@ export default function RequestPage() {
         return;
       }
 
-      setSeriesPicker((prev) => {
-        if (!prev) return prev;
-        const sameSeason = Number(prev.seasonNumber || 0) === Number(seasonNumber);
-        const base = sameSeason ? normalizeEpisodeNumbers(prev.episodeNumbers, 999) : [];
-        const exists = base.includes(episodeNumber);
-        const nextEpisodes = exists ? base.filter((ep) => ep !== episodeNumber) : [...base, episodeNumber];
-        const uniqueEpisodes = normalizeEpisodeNumbers(nextEpisodes, season.episodeCount || 999);
+      const basePairs = normalizeSeasonEpisodePairs(
+        normalizedSeriesPickerSelection?.seasonEpisodePairs,
+        seriesPickerMeta.seasons
+      );
+      const key = seasonEpisodePairKey(seasonNumber, episodeNumber);
+      const exists = basePairs.some(
+        (pair) => seasonEpisodePairKey(pair.seasonNumber, pair.episodeNumber) === key
+      );
+      const nextPairs = exists
+        ? basePairs.filter((pair) => seasonEpisodePairKey(pair.seasonNumber, pair.episodeNumber) !== key)
+        : [...basePairs, { seasonNumber, episodeNumber }];
+      const uniquePairs = normalizeSeasonEpisodePairs(nextPairs, seriesPickerMeta.seasons);
+      if (!exists && uniquePairs.length > seriesPickerEpisodeLimit) {
+        push(`Series episode limit reached (${seriesPickerEpisodeLimit} left for cart).`, 'error');
+        return;
+      }
+      if (!uniquePairs.length) return;
 
-        if (!exists && uniqueEpisodes.length > seriesPickerEpisodeLimit) {
-          push(`Series episode limit reached (${seriesPickerEpisodeLimit} left for cart).`, 'error');
-          return prev;
-        }
-        if (!uniqueEpisodes.length) return prev;
-
-        const normalized = normalizeSeriesSelection(
-          {
-            requestScope: uniqueEpisodes.length > 1 ? 'season' : 'episode',
-            seasonNumber,
-            episodeNumbers: uniqueEpisodes,
-            episodeNumber: uniqueEpisodes[0],
-            requestUnits: uniqueEpisodes.length,
-          },
-          'tv',
-          seriesPickerMeta.seasons
-        );
-        return { ...prev, ...normalized };
-      });
+      const normalized = normalizeSeriesSelection(
+        {
+          requestScope: uniquePairs.length > 1 ? 'season' : 'episode',
+          seasonEpisodePairs: uniquePairs,
+          seasonNumber: uniquePairs[0]?.seasonNumber || seasonNumber,
+          episodeNumber: uniquePairs[0]?.episodeNumber || episodeNumber,
+          requestUnits: uniquePairs.length,
+        },
+        'tv',
+        seriesPickerMeta.seasons
+      );
+      setSeriesPicker((prev) => (prev ? { ...prev, ...normalized } : prev));
       setSeriesExpandedSeason(seasonNumber);
     },
-    [seriesPickerMeta.seasons, seriesPickerEpisodeLimit, push]
+    [
+      seriesPicker,
+      seriesPickerMeta.seasons,
+      seriesPickerEpisodeLimit,
+      normalizedSeriesPickerSelection?.seasonEpisodePairs,
+      push,
+    ]
   );
 
   const requestAllUnavailableInSeason = useCallback(
     (seasonNumber) => {
+      if (!seriesPicker) return;
       const episodes = episodeRowsForSeason(seriesPickerMeta.seasons, seasonNumber);
       const unavailable = episodes.filter((ep) => !ep.availableNow).map((ep) => ep.episodeNumber);
       if (!unavailable.length) {
@@ -912,40 +1016,49 @@ export default function RequestPage() {
         return;
       }
 
-      const cap = Math.max(0, Math.min(seriesPickerEpisodeLimit, unavailable.length));
+      const basePairs = normalizeSeasonEpisodePairs(
+        normalizedSeriesPickerSelection?.seasonEpisodePairs,
+        seriesPickerMeta.seasons
+      );
+      const keepPairs = basePairs.filter((pair) => Number(pair.seasonNumber) !== Number(seasonNumber));
+      const remainingSlots = Math.max(0, seriesPickerEpisodeLimit - keepPairs.length);
+      const cap = Math.max(0, Math.min(remainingSlots, unavailable.length));
       if (cap <= 0) {
         push(`Series episode limit reached (${seriesPickerEpisodeLimit} left for cart).`, 'error');
         return;
       }
 
-      const selectedEpisodes = unavailable.slice(0, cap);
-      setSeriesPicker((prev) =>
-        prev
-          ? {
-              ...prev,
-              ...normalizeSeriesSelection(
-                {
-                  requestScope: selectedEpisodes.length > 1 ? 'season' : 'episode',
-                  seasonNumber,
-                  episodeNumbers: selectedEpisodes,
-                  episodeNumber: selectedEpisodes[0] || null,
-                  requestUnits: selectedEpisodes.length,
-                },
-                'tv',
-                seriesPickerMeta.seasons
-              ),
-            }
-          : prev
+      const seasonPairs = unavailable
+        .slice(0, cap)
+        .map((episodeNumber) => ({ seasonNumber, episodeNumber }));
+      const mergedPairs = normalizeSeasonEpisodePairs([...keepPairs, ...seasonPairs], seriesPickerMeta.seasons);
+      const normalized = normalizeSeriesSelection(
+        {
+          requestScope: mergedPairs.length > 1 ? 'season' : 'episode',
+          seasonEpisodePairs: mergedPairs,
+          seasonNumber: mergedPairs[0]?.seasonNumber || seasonNumber,
+          episodeNumber: mergedPairs[0]?.episodeNumber || null,
+          requestUnits: mergedPairs.length,
+        },
+        'tv',
+        seriesPickerMeta.seasons
       );
-      setSeriesExpandedSeason(seasonNumber);
-      if (selectedEpisodes.length < unavailable.length) {
+      if (seasonPairs.length < unavailable.length) {
         push(
-          `Selected ${selectedEpisodes.length}/${unavailable.length} unavailable episodes due to quota.`,
+          `Selected ${seasonPairs.length}/${unavailable.length} missing episodes for this season due to quota.`,
           'info'
         );
       }
+      setSeriesPicker((prev) => (prev ? { ...prev, ...normalized } : prev));
+      setSeriesExpandedSeason(seasonNumber);
     },
-    [seriesPickerMeta.seasons, seriesPickerEpisodeLimit, push]
+    [
+      seriesPicker,
+      seriesPickerMeta.seasons,
+      seriesPickerEpisodeLimit,
+      normalizedSeriesPickerSelection?.seasonEpisodePairs,
+      push,
+    ]
   );
 
   return (
@@ -1207,11 +1320,15 @@ export default function RequestPage() {
                   const episodes = episodeRowsForSeason(seriesPickerMeta.seasons, season.seasonNumber);
                   const unavailableEpisodes = episodes.filter((ep) => !ep.availableNow);
                   const autoPickCap = Math.max(0, Math.min(seriesPickerEpisodeLimit, unavailableEpisodes.length));
-                  const activeSeason = Number(seriesPicker?.seasonNumber || 0) === season.seasonNumber;
-                  const selectedEpisodeNumbers = activeSeason
-                    ? normalizeEpisodeNumbers(seriesPicker?.episodeNumbers, season.episodeCount || 999)
-                    : [];
+                  const selectedPairs = normalizeSeasonEpisodePairs(
+                    normalizedSeriesPickerSelection?.seasonEpisodePairs,
+                    seriesPickerMeta.seasons
+                  );
+                  const selectedEpisodeNumbers = selectedPairs
+                    .filter((pair) => Number(pair.seasonNumber) === Number(season.seasonNumber))
+                    .map((pair) => pair.episodeNumber);
                   const selectedSet = new Set(selectedEpisodeNumbers);
+                  const activeSeason = selectedEpisodeNumbers.length > 0;
                   return (
                     <div key={season.seasonNumber} className="rounded-xl border border-neutral-800 bg-neutral-900/60">
                       <button
@@ -1345,10 +1462,18 @@ export default function RequestPage() {
                 </button>
                 <button
                   onClick={applySeriesPicker}
-                  disabled={seriesPickerMeta.loading || Boolean(seriesPickerMeta.error) || !seasonRows(seriesPickerMeta.seasons).length}
+                  disabled={
+                    seriesPickerMeta.loading ||
+                    Boolean(seriesPickerMeta.error) ||
+                    !seasonRows(seriesPickerMeta.seasons).length ||
+                    !Number(normalizedSeriesPickerSelection?.requestUnits || 0)
+                  }
                   className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 >
                   {seriesPicker.editing ? 'Update Selection' : 'Add to Request Cart'}
+                  {Number(normalizedSeriesPickerSelection?.requestUnits || 0) > 0
+                    ? ` (${Number(normalizedSeriesPickerSelection?.requestUnits || 0)})`
+                    : ''}
                 </button>
               </div>
             </div>
