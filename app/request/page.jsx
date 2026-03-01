@@ -125,6 +125,22 @@ function episodeRowsForSeason(seasons, seasonNumber) {
   });
 }
 
+function seriesAvailabilityCounts(seasons) {
+  const rows = seasonRows(seasons);
+  let total = 0;
+  let available = 0;
+  for (const season of rows) {
+    const episodes = episodeRowsForSeason(rows, season.seasonNumber);
+    total += episodes.length;
+    available += episodes.filter((episode) => episode.availableNow).length;
+  }
+  return {
+    total,
+    available,
+    allAvailable: total > 0 && available >= total,
+  };
+}
+
 function normalizeEpisodeNumbers(input, maxEpisode = 999) {
   const out = [];
   const seen = new Set();
@@ -679,6 +695,31 @@ export default function RequestPage() {
     setSeriesPicker(null);
     setSeriesExpandedSeason(null);
   }, []);
+
+  useEffect(() => {
+    if (!seriesPicker?.item) return;
+    if (seriesPickerMeta.loading || seriesPickerMeta.error) return;
+    const summary = seriesAvailabilityCounts(seriesPickerMeta.seasons);
+    if (!summary.allAvailable) return;
+    const key = mediaKey(seriesPicker.item);
+    setStateMap((prev) => ({
+      ...prev,
+      [key]: {
+        state: 'available',
+        availableNow: true,
+      },
+    }));
+    setSelected((prev) => prev.filter((item) => mediaKey(item) !== key));
+    push('This series is already fully available on your server.', 'info');
+    closeSeriesPicker();
+  }, [
+    seriesPicker,
+    seriesPickerMeta.loading,
+    seriesPickerMeta.error,
+    seriesPickerMeta.seasons,
+    closeSeriesPicker,
+    push,
+  ]);
 
   const removeSelectedItem = useCallback((item) => {
     const key = mediaKey(item);
