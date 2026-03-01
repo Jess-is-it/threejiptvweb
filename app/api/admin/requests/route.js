@@ -16,6 +16,18 @@ function mediaLabel(mediaType) {
   return String(mediaType || '').toLowerCase() === 'tv' ? 'Series' : 'Movie';
 }
 
+function requestTargetLabel(row) {
+  if (String(row?.mediaType || '').toLowerCase() !== 'tv') return '';
+  const label = String(row?.requestDetailLabel || '').trim();
+  if (label) return label;
+  const scope = String(row?.requestScope || '').trim().toLowerCase();
+  const season = Number(row?.seasonNumber || 0);
+  const episode = Number(row?.episodeNumber || 0);
+  if (scope === 'season' && season > 0) return `Season ${season}`;
+  if (scope === 'episode' && season > 0 && episode > 0) return `Season ${season} · Episode ${episode}`;
+  return 'Whole Series';
+}
+
 function uniqueReminderUsers(row) {
   const out = [];
   const seen = new Set();
@@ -35,7 +47,9 @@ async function notifyAvailableNow(row) {
 
   const title = String(row?.title || '').trim() || `TMDB #${row?.tmdbId || ''}`;
   const label = mediaLabel(row?.mediaType);
-  const text = `${label} "${title}" is now available on 3J TV.`;
+  const target = requestTargetLabel(row);
+  const titleWithTarget = target ? `${title} (${target})` : title;
+  const text = `${label} "${titleWithTarget}" is now available on 3J TV.`;
 
   const settled = await Promise.allSettled(
     users.map((username) =>
@@ -43,7 +57,7 @@ async function notifyAvailableNow(row) {
         username,
         type: 'request',
         requestId: row?.id || null,
-        title: `Available Now - ${title}`,
+        title: `Available Now - ${titleWithTarget}`,
         message: text,
         meta: {
           tmdbId: Number(row?.tmdbId || 0) || null,

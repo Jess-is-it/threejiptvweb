@@ -43,6 +43,20 @@ function mediaLabel(type) {
   return String(type || '').toLowerCase() === 'tv' ? 'Series' : 'Movie';
 }
 
+function requestTargetLabel(row) {
+  if (String(row?.mediaType || '').toLowerCase() !== 'tv') return '';
+  const label = String(row?.requestDetailLabel || '').trim();
+  if (label) return label;
+  const scope = String(row?.requestScope || '').toLowerCase();
+  if (scope === 'season' && Number(row?.seasonNumber || 0) > 0) {
+    return `Season ${Number(row.seasonNumber)}`;
+  }
+  if (scope === 'episode' && Number(row?.seasonNumber || 0) > 0 && Number(row?.episodeNumber || 0) > 0) {
+    return `Season ${Number(row.seasonNumber)} · Episode ${Number(row.episodeNumber)}`;
+  }
+  return 'Whole Series';
+}
+
 function statusTone(status) {
   const s = String(status || '').toLowerCase();
   if (s === 'pending') return 'border-yellow-500/30 bg-yellow-500/10 text-yellow-200';
@@ -418,6 +432,7 @@ export default function AdminRequestsPanel() {
                           <div className="min-w-0">
                             <div className="truncate font-medium">{row?.title || `TMDB #${row?.tmdbId || ''}`}</div>
                             <div className="truncate text-xs text-[var(--admin-muted)]">
+                              {requestTargetLabel(row) ? `${requestTargetLabel(row)} · ` : ''}
                               TMDB {row?.tmdbId || '—'}
                               {row?.releaseDate ? ` · ${String(row.releaseDate).slice(0, 4)}` : ''}
                             </div>

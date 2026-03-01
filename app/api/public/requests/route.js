@@ -104,6 +104,9 @@ function dedupeItems(items) {
       posterPath: String(raw?.posterPath || '').trim(),
       backdropPath: String(raw?.backdropPath || '').trim(),
       overview: String(raw?.overview || '').trim(),
+      requestScope: String(raw?.requestScope || '').trim().toLowerCase(),
+      seasonNumber: raw?.seasonNumber,
+      episodeNumber: raw?.episodeNumber,
     });
   }
   return out;

@@ -67,6 +67,76 @@ function requestStatusLabel(tags, status) {
   return s ? s.replaceAll('_', ' ') : '';
 }
 
+function clampPositiveInt(value, min = 1, max = 999) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const v = Math.floor(n);
+  if (v < min || v > max) return null;
+  return v;
+}
+
+function normalizeSeriesSelection(input, mediaType) {
+  const mt = String(mediaType || '').toLowerCase() === 'tv' ? 'tv' : 'movie';
+  if (mt !== 'tv') {
+    return {
+      requestScope: 'title',
+      seasonNumber: null,
+      episodeNumber: null,
+      requestDetailLabel: '',
+    };
+  }
+
+  const rawScope = String(input?.requestScope || input?.scope || 'series').trim().toLowerCase();
+  const requestScope =
+    rawScope === 'season' || rawScope === 'episode' ? rawScope : 'series';
+  const seasonNumber = clampPositiveInt(input?.seasonNumber ?? input?.season, 1, 99);
+  const episodeNumber = clampPositiveInt(input?.episodeNumber ?? input?.episode, 1, 999);
+
+  if (requestScope === 'season') {
+    const season = seasonNumber || 1;
+    return {
+      requestScope,
+      seasonNumber: season,
+      episodeNumber: null,
+      requestDetailLabel: `Season ${season}`,
+    };
+  }
+
+  if (requestScope === 'episode') {
+    const season = seasonNumber || 1;
+    const episode = episodeNumber || 1;
+    return {
+      requestScope,
+      seasonNumber: season,
+      episodeNumber: episode,
+      requestDetailLabel: `Season ${season} · Episode ${episode}`,
+    };
+  }
+
+  return {
+    requestScope: 'series',
+    seasonNumber: null,
+    episodeNumber: null,
+    requestDetailLabel: 'Whole Series',
+  };
+}
+
+function selectedDetailLabel(item) {
+  const mt = String(item?.mediaType || '').toLowerCase();
+  if (mt !== 'tv') return '';
+  return normalizeSeriesSelection(item, mt).requestDetailLabel;
+}
+
+function selectedCardChip(item) {
+  const mt = String(item?.mediaType || '').toLowerCase();
+  if (mt !== 'tv') return '';
+  const normalized = normalizeSeriesSelection(item, mt);
+  if (normalized.requestScope === 'episode') {
+    return `S${normalized.seasonNumber}E${normalized.episodeNumber}`;
+  }
+  return normalized.requestDetailLabel;
+}
+
 function useToasts() {
   const [items, setItems] = useState([]);
   const push = useCallback((text, tone = 'info') => {
@@ -129,6 +199,7 @@ export default function RequestPage() {
   const [submitting, setSubmitting] = useState(false);
   const [requestedModal, setRequestedModal] = useState(null);
   const [remindBusy, setRemindBusy] = useState(false);
+  const [seriesPicker, setSeriesPicker] = useState(null);
 
   const didApplyDefaultFilter = useRef(false);
   const sentinelRef = useRef(null);
@@ -140,7 +211,12 @@ export default function RequestPage() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const selectedKeys = useMemo(() => new Set(selected.map((x) => mediaKey(x))), [selected]);
+  const selectedByKey = useMemo(() => {
+    const out = new Map();
+    for (const item of selected) out.set(mediaKey(item), item);
+    return out;
+  }, [selected]);
+  const selectedKeys = useMemo(() => new Set(selectedByKey.keys()), [selectedByKey]);
 
   const resolveCardState = useCallback(
     (item) => {
@@ -195,6 +271,9 @@ export default function RequestPage() {
             posterPath: x.posterPath,
             backdropPath: x.backdropPath,
             overview: x.overview,
+            requestScope: x.requestScope,
+            seasonNumber: x.seasonNumber,
+            episodeNumber: x.episodeNumber,
           })),
         }),
       });
@@ -280,12 +359,21 @@ export default function RequestPage() {
     return () => obs.disconnect();
   }, [catalogLoading, page, totalPages]);
 
-  const toggleSelect = useCallback(
+  const removeSelectedItem = useCallback((item) => {
+    const key = mediaKey(item);
+    setSelected((prev) => prev.filter((x) => mediaKey(x) !== key));
+  }, []);
+
+  const upsertSelectedItem = useCallback(
     (item) => {
       const key = mediaKey(item);
       setSelected((prev) => {
-        const exists = prev.some((x) => mediaKey(x) === key);
-        if (exists) return prev.filter((x) => mediaKey(x) !== key);
+        const idx = prev.findIndex((x) => mediaKey(x) === key);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = item;
+          return next;
+        }
         const remaining = Math.max(0, Number(quota?.remaining ?? quota?.limit ?? 3));
         if (prev.length >= remaining) {
           push(`Daily request limit reached (${Number(quota?.limit || 3)} max).`, 'error');
@@ -297,6 +385,53 @@ export default function RequestPage() {
     [push, quota]
   );
 
+  const toggleSelect = useCallback(
+    (item) => {
+      const key = mediaKey(item);
+      if (selectedByKey.has(key)) {
+        removeSelectedItem(item);
+        return;
+      }
+      upsertSelectedItem(item);
+    },
+    [selectedByKey, removeSelectedItem, upsertSelectedItem]
+  );
+
+  const openSeriesPicker = useCallback(
+    (item) => {
+      const key = mediaKey(item);
+      const existing = selectedByKey.get(key);
+      const normalized = normalizeSeriesSelection(existing || { requestScope: 'series' }, 'tv');
+      setSeriesPicker({
+        item,
+        requestScope: normalized.requestScope,
+        seasonNumber: normalized.seasonNumber || 1,
+        episodeNumber: normalized.episodeNumber || 1,
+        editing: Boolean(existing),
+      });
+    },
+    [selectedByKey]
+  );
+
+  const applySeriesPicker = useCallback(() => {
+    if (!seriesPicker?.item) return;
+    const normalized = normalizeSeriesSelection(seriesPicker, 'tv');
+    upsertSelectedItem({
+      ...seriesPicker.item,
+      requestScope: normalized.requestScope,
+      seasonNumber: normalized.seasonNumber,
+      episodeNumber: normalized.episodeNumber,
+      requestDetailLabel: normalized.requestDetailLabel,
+    });
+    setSeriesPicker(null);
+  }, [seriesPicker, upsertSelectedItem]);
+
+  const removeSeriesPickerSelection = useCallback(() => {
+    if (!seriesPicker?.item) return;
+    removeSelectedItem(seriesPicker.item);
+    setSeriesPicker(null);
+  }, [seriesPicker, removeSelectedItem]);
+
   const onCardClick = useCallback(
     (item) => {
       const resolved = resolveCardState(item);
@@ -305,9 +440,13 @@ export default function RequestPage() {
         setRequestedModal({ item, meta: resolved.meta || {} });
         return;
       }
+      if (String(item?.mediaType || '').toLowerCase() === 'tv') {
+        openSeriesPicker(item);
+        return;
+      }
       toggleSelect(item);
     },
-    [resolveCardState, toggleSelect]
+    [resolveCardState, toggleSelect, openSeriesPicker]
   );
 
   const sendRemind = useCallback(async () => {
@@ -355,6 +494,9 @@ export default function RequestPage() {
             posterPath: x.posterPath,
             backdropPath: x.backdropPath,
             overview: x.overview,
+            requestScope: x.requestScope,
+            seasonNumber: x.seasonNumber,
+            episodeNumber: x.episodeNumber,
           })),
         }),
       });
@@ -505,6 +647,8 @@ export default function RequestPage() {
             const key = mediaKey(item);
             const resolved = resolveCardState(item);
             const isSelected = selectedKeys.has(key);
+            const selectedItem = selectedByKey.get(key);
+            const selectedChip = selectedCardChip(selectedItem);
             const statusText = String(resolved?.meta?.status || '').toLowerCase();
             const statusDisplay = requestStatusLabel(settings?.statusTags, statusText);
             return (
@@ -564,6 +708,11 @@ export default function RequestPage() {
                     <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full border border-white/35 bg-[var(--brand)] text-lg font-black text-white shadow-[0_0_0_1px_rgba(0,0,0,0.2),0_8px_20px_rgba(0,0,0,0.35)]">
                       ✓
                     </span>
+                    {selectedChip ? (
+                      <span className="absolute bottom-2 left-2 rounded-full border border-white/20 bg-black/60 px-2 py-0.5 text-[10px] font-semibold text-neutral-100">
+                        {selectedChip}
+                      </span>
+                    ) : null}
                   </>
                 ) : null}
               </button>
@@ -593,6 +742,11 @@ export default function RequestPage() {
                   <p className="mt-2 text-sm text-neutral-300">
                     This title has already been requested and is awaiting download today.
                   </p>
+                  {String(requestedModal?.meta?.requestDetailLabel || '').trim() ? (
+                    <p className="mt-2 text-xs text-neutral-400">
+                      Requested as: {String(requestedModal.meta.requestDetailLabel).trim()}
+                    </p>
+                  ) : null}
                 </div>
                 <button
                   onClick={() => setRequestedModal(null)}
@@ -621,6 +775,120 @@ export default function RequestPage() {
           </div>
         ) : null}
 
+        {seriesPicker ? (
+          <div className="fixed inset-0 z-[111]">
+            <button
+              className="absolute inset-0 bg-black/70"
+              onClick={() => setSeriesPicker(null)}
+              aria-label="Close"
+            />
+            <div className="absolute left-1/2 top-1/2 w-[min(620px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-neutral-700 bg-neutral-950 p-5 shadow-2xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-neutral-100">
+                    Request: {seriesPicker?.item?.title || 'Series'}
+                  </div>
+                  <p className="mt-1 text-sm text-neutral-300">
+                    Choose if you want the whole series, a specific season, or one episode.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSeriesPicker(null)}
+                  className="rounded-md p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
+                  aria-label="Close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                {[
+                  { key: 'series', label: 'Whole Series' },
+                  { key: 'season', label: 'Specific Season' },
+                  { key: 'episode', label: 'Specific Episode' },
+                ].map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() =>
+                      setSeriesPicker((prev) => (prev ? { ...prev, requestScope: option.key } : prev))
+                    }
+                    className={
+                      'rounded-xl border px-3 py-2 text-left text-sm transition ' +
+                      (seriesPicker.requestScope === option.key
+                        ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                        : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-500')
+                    }
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
+              {seriesPicker.requestScope === 'season' || seriesPicker.requestScope === 'episode' ? (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm text-neutral-300">
+                    <span className="mb-1 block text-xs text-neutral-400">Season Number</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={seriesPicker.seasonNumber ?? ''}
+                      onChange={(e) =>
+                        setSeriesPicker((prev) => (prev ? { ...prev, seasonNumber: e.target.value } : prev))
+                      }
+                      className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)]"
+                    />
+                  </label>
+
+                  {seriesPicker.requestScope === 'episode' ? (
+                    <label className="text-sm text-neutral-300">
+                      <span className="mb-1 block text-xs text-neutral-400">Episode Number</span>
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={seriesPicker.episodeNumber ?? ''}
+                        onChange={(e) =>
+                          setSeriesPicker((prev) => (prev ? { ...prev, episodeNumber: e.target.value } : prev))
+                        }
+                        className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 outline-none focus:border-[var(--brand)]"
+                      />
+                    </label>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-300">
+                Selected request: {normalizeSeriesSelection(seriesPicker, 'tv').requestDetailLabel}
+              </div>
+
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                {seriesPicker.editing ? (
+                  <button
+                    onClick={removeSeriesPickerSelection}
+                    className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200 hover:bg-red-500/20"
+                  >
+                    Remove from Cart
+                  </button>
+                ) : null}
+                <button
+                  onClick={() => setSeriesPicker(null)}
+                  className="rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 hover:border-neutral-500"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={applySeriesPicker}
+                  className="rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-semibold text-white"
+                >
+                  {seriesPicker.editing ? 'Update Selection' : 'Add to Request Cart'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {selected.length ? (
           <div className="fixed bottom-3 left-3 right-3 z-[105] rounded-2xl border border-neutral-700 bg-neutral-950/95 p-3 shadow-2xl backdrop-blur sm:left-auto sm:right-4 sm:w-[min(420px,92vw)]">
             <div className="mb-2 flex items-center justify-between">
@@ -636,6 +904,7 @@ export default function RequestPage() {
                     <div className="truncate text-neutral-100">{item.title || 'Untitled'}</div>
                     <div className="text-neutral-400">
                       {item.mediaType === 'tv' ? 'Series' : 'Movie'}
+                      {item.mediaType === 'tv' && selectedDetailLabel(item) ? ` • ${selectedDetailLabel(item)}` : ''}
                       {yearFromDate(item.releaseDate) ? ` • ${yearFromDate(item.releaseDate)}` : ''}
                     </div>
                   </div>
