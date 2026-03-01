@@ -1257,7 +1257,7 @@ export default function RequestPage() {
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div className="flex flex-wrap gap-2">
                             {episodes.map((episode) => {
                               const isAvailableEpisode = Boolean(episode.availableNow);
                               const isSelectedEpisode = activeSeason && selectedSet.has(episode.episodeNumber);
@@ -1273,7 +1273,7 @@ export default function RequestPage() {
                                   disabled={isAvailableEpisode}
                                   onClick={() => toggleSeriesEpisode(season.seasonNumber, episode.episodeNumber)}
                                   className={
-                                    'group relative overflow-hidden rounded-xl border text-left transition ' +
+                                    'group relative w-[180px] overflow-hidden rounded-xl border text-left transition sm:w-[190px] ' +
                                     (isSelectedEpisode
                                       ? 'border-[var(--brand)] shadow-[0_0_0_1px_var(--brand)]'
                                       : isAvailableEpisode
