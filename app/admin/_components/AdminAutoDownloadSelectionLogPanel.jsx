@@ -383,6 +383,7 @@ export default function AdminAutoDownloadSelectionLogPanel() {
           <thead className="bg-[var(--admin-surface-2)] text-xs text-[var(--admin-muted)]">
             <tr>
               <th className="px-3 py-2">Run time</th>
+              <th className="px-3 py-2">Release date</th>
               <th className="px-3 py-2">Total</th>
               <th className="px-3 py-2">Recent Anim</th>
               <th className="px-3 py-2">Recent Live</th>
@@ -403,6 +404,10 @@ export default function AdminAutoDownloadSelectionLogPanel() {
               >
                 <td className="px-3 py-2 text-xs text-[var(--admin-muted)]">
                   {x.runAt ? new Date(x.runAt).toLocaleString() : '—'}
+                </td>
+                <td className="px-3 py-2 text-xs text-[var(--admin-muted)]">
+                  {x.releaseDate || '—'}
+                  {x.releaseTag ? ` · ${x.releaseTag}` : ''}
                 </td>
                 <td className="px-3 py-2">
                   <Num v={x.totalSelected} />
@@ -433,7 +438,7 @@ export default function AdminAutoDownloadSelectionLogPanel() {
             ))}
             {!loading && logs.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-3 py-6 text-center text-sm text-[var(--admin-muted)]">
+                <td colSpan={11} className="px-3 py-6 text-center text-sm text-[var(--admin-muted)]">
                   No selection runs yet.
                 </td>
               </tr>
@@ -453,7 +458,7 @@ export default function AdminAutoDownloadSelectionLogPanel() {
                 <div className="text-base font-semibold">Movies Jobs</div>
                 <div className="mt-1 text-xs text-[var(--admin-muted)]">
                   Run: {selectedRun?.runAt ? new Date(selectedRun.runAt).toLocaleString() : '—'} · Selected:{' '}
-                  <Num v={selectedRun?.totalSelected} />
+                  <Num v={selectedRun?.totalSelected} /> · Release: {selectedRun?.releaseDate || '—'}
                 </div>
               </div>
               <button

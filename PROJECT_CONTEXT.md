@@ -140,6 +140,7 @@ There is currently **no automated test suite**. Use:
 - Playback proxy: `/api/proxy/hls` (rewrites playlists, proxies segments/keys, handles fallback)
 - Content APIs: `/api/xuione/*`, `/api/tmdb/*`
 - Public feedback: `/api/public/reports`, `/api/public/notifications`
+- Public AutoDownload upcoming: `/api/public/autodownload/upcoming` (`GET` upcoming/released lists, `POST` reminder subscribe), `/api/public/autodownload/upcoming/details` (TMDB-enriched details for upcoming/released queue items)
 - Public requests: `/api/public/requests` (`GET` quota/settings/active request states + per-user request history payload, `POST` actions: `submit|state|remind`)
   - includes TMDB request catalog endpoint `GET /api/public/requests/catalog` (supports request-page browse/search/infinite-scroll with `include_adult=false` and genre filters)
   - includes TMDB/XUI series picker endpoint `POST /api/public/requests/series-options` (body: `tmdbId`, optional `streamBase` + title/year hints) that returns season/episode rows with TMDB still images and per-episode XUI availability tags for scoped requests
@@ -182,6 +183,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - `reports`, `notifications`
 - `requestSettings` (daily limit default, per-username daily overrides, default landing category, customizable display labels for fixed request statuses)
 - `requests` (one row per TMDB media id + media type, deduped globally, with requesters/reminder subscribers, status workflow, archive support)
+- `upcomingReminders` (per TMDB media row reminder subscribers used by Worth-to-wait notifications)
 - `engineHosts`, `mountSettings`, `mountStatus`
 - `autodownloadSettings`
 - `downloadsMovies`, `downloadsSeries`
@@ -203,6 +205,13 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Download source provider health/backoff/log orchestration: `lib/server/autodownload/sourceProvidersService.js`
 - Provider adapter engine modules: `lib/server/autodownload/providers/*`, `sourceEngine.js`, `ranking.js`, `filters.js`
 - AutoDownload staging folders are under `<mountDir>/qBittorrent/Movies` and `<mountDir>/qBittorrent/Series`; final library categories/genres stay under `<mountDir>/Movies` and `<mountDir>/Series`.
+- AutoDownload library folder defaults now use `Downloaded and Processing` (downloaded stage) and `Cleaned and Ready` (processing hold stage) for both Movies and Series.
+- AutoDownload selection runs stamp release metadata (`releaseDate`, `releaseTag`, timezone, delay-days) into queue records + selection logs; release delay is configurable in AutoDownload Settings (`release.delayDays`, default 3, timezone default `Asia/Manila`).
+- Processing now cleans completed items into per-release hold folders under `Cleaned and Ready/ReldateM-D-YY/*`; final category/genre placement is deferred until release date.
+- Scheduler timeout flow now emits timed-out metadata and performs same-log replacements (same `selectionLogId` + release date/tag) before release date.
+- Release workflow is date-driven: when due, cleaned held items move to final library paths, not-ready items are dropped/deleted, watchfolder pending flags are set, and reminder subscribers receive availability notifications.
+- Public Home now includes queue-backed `Worth to wait` (upcoming held items) and `Recently Added` (released queue items) rows from the new public AutoDownload upcoming APIs.
+- Movie/Series detail pages support `?upcoming=1` mode for Worth-to-wait titles with TMDB metadata + trailer/cast + reminder action; released rows route back to normal detail pages.
 - CIFS mount orchestration now applies `uid/gid` ownership mapping (resolved to numeric IDs when needed) in test/mount/status auto-remount flows, preventing qB `Permission denied` writes on NAS-mounted `qBittorrent/*/1-Downloading`.
 - AutoDownload Settings modal validates HH:MM schedule inputs client-side; valid times now correctly enable Save in `Edit Enable & Schedule`.
 - AutoDownload Settings now include source-quality gates (`sourceFilters.minMovieSeeders`, `sourceFilters.minSeriesSeeders`) in addition to size limits.
