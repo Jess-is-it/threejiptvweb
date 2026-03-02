@@ -156,6 +156,7 @@ There is currently **no automated test suite**. Use:
     - `POST /api/admin/autodownload/sources/test-all`
     - `GET /api/admin/autodownload/sources/logs` (supports provider/domain/status/error filters)
     - `DELETE /api/admin/autodownload/sources/logs` (clear provider/all logs + reset domain health cache)
+  - processing log endpoint `DELETE /api/admin/autodownload/processing-log` clears all Processing Log entries from admin DB
   - queue creation endpoint `POST /api/admin/autodownload/downloads` is TMDB-only (manual URL add is disabled in admin UI/API)
   - bulk queue endpoint `POST /api/admin/autodownload/downloads/bulk` supports temporary admin bulk actions (currently `delete_all`)
   - scheduler tick endpoint `POST /api/admin/autodownload/scheduler/tick` supports optional scoped runs via body/query `type=movie|series|all`
