@@ -42,6 +42,28 @@ function tmdbIdFromJob(item) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+function prefersQueueRow(next, current, { runId = '' } = {}) {
+  if (!current) return true;
+  if (!next) return false;
+
+  const rid = String(runId || '').trim();
+  const nextSameRun = rid && String(next?.selectionLogId || '').trim() === rid;
+  const curSameRun = rid && String(current?.selectionLogId || '').trim() === rid;
+  if (nextSameRun !== curSameRun) return nextSameRun;
+
+  const nextDeleted = String(next?.status || '').trim().toLowerCase() === 'deleted';
+  const curDeleted = String(current?.status || '').trim().toLowerCase() === 'deleted';
+  if (nextDeleted !== curDeleted) return !nextDeleted;
+
+  const nextAddedAt = Number(next?.addedAt || 0) || 0;
+  const curAddedAt = Number(current?.addedAt || 0) || 0;
+  if (nextAddedAt !== curAddedAt) return nextAddedAt > curAddedAt;
+
+  const nextUpdatedAt = Number(next?.updatedAt || next?.cleanedAt || next?.completedAt || 0) || 0;
+  const curUpdatedAt = Number(current?.updatedAt || current?.cleanedAt || current?.completedAt || 0) || 0;
+  return nextUpdatedAt > curUpdatedAt;
+}
+
 function StatusPill({ status }) {
   const s = String(status || '').toLowerCase();
   const cls =
@@ -125,11 +147,15 @@ export default function AdminAutoDownloadSelectionLogPanel() {
       const allJobs = Array.isArray(j.items) ? j.items : [];
       const runRows = Array.isArray(run?.selectedItems) ? run.selectedItems : [];
       const runTmdbIds = new Set(runRows.map((x) => tmdbIdFromJob(x)).filter((x) => x > 0));
-      const queueByTmdb = new Map(
-        allJobs
-          .map((x) => [tmdbIdFromJob(x), x])
-          .filter(([id]) => id > 0)
-      );
+      const queueByTmdb = new Map();
+      for (const job of allJobs) {
+        const tmdbId = tmdbIdFromJob(job);
+        if (!tmdbId) continue;
+        const prev = queueByTmdb.get(tmdbId);
+        if (prefersQueueRow(job, prev, { runId: run?.id })) {
+          queueByTmdb.set(tmdbId, job);
+        }
+      }
 
       if (!runRows.length) {
         setJobs([]);

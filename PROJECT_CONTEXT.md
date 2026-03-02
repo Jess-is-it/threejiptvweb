@@ -235,6 +235,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - YTS source links now prefer tracker-backed `.torrent` download URLs (with enriched magnet fallback), improving peer discovery vs legacy trackerless BTIH-only magnets.
 - Movies/Series admin pages no longer expose any manual add action; queue seeding is automatic from selection strategy.
 - Movies page now focuses on `Selection Log` only; clicking a run row opens a modal scoped to that run’s selected TMDB items, merged with current queue state (the previous Jobs-tab table is moved into this modal flow).
+- Movies Selection Log modal now resolves each TMDB row to the best queue record by priority (`same selectionLogId` first, then non-deleted/latest), preventing stale historical `Deleted` rows from overriding current-run items.
 - Movies page no longer renders a single-item top subnav tab (`Selection Log`) to reduce redundant UI.
 - Movies Selection Log modal is rendered above admin shell layers (sidebar/topbar) for full-focus inspection.
 - Movies Selection Log includes temporary QA controls: `Trigger AutoDownload Once`, `Delete All` (queue + qB + optional NAS purge), and `Clear Log`.
