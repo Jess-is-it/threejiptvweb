@@ -224,7 +224,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Scheduler now detects movie dispatch failures caused by size-limit rejections and runs an immediate supplemental movie selection (without updating daily `lastMoviesRunAt`) to replace rejected slots, then performs a follow-up movie dispatch pass for those replacements.
 - YTS source links now prefer tracker-backed `.torrent` download URLs (with enriched magnet fallback), improving peer discovery vs legacy trackerless BTIH-only magnets.
 - Movies/Series admin pages no longer expose any manual add action; queue seeding is automatic from selection strategy.
-- Movies page now focuses on `Selection Log` only; clicking a run row opens a modal that contains the Movies jobs table (the previous Jobs-tab table is moved into this modal flow).
+- Movies page now focuses on `Selection Log` only; clicking a run row opens a modal scoped to that run’s selected TMDB items, merged with current queue state (the previous Jobs-tab table is moved into this modal flow).
 - Movies page no longer renders a single-item top subnav tab (`Selection Log`) to reduce redundant UI.
 - Movies Selection Log modal is rendered above admin shell layers (sidebar/topbar) for full-focus inspection.
 - Movies Selection Log includes temporary QA controls: `Trigger AutoDownload Once`, `Delete All` (queue + qB + optional NAS purge), and `Clear Log`.
@@ -237,7 +237,8 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Dispatch now iterates past failed queued candidates (e.g., `No valid source found`) until it starts the per-type target count, instead of stopping at the first failed subset.
 - Scheduler tick API no longer forces runs just because caller is an admin; force mode requires explicit `force=true`.
 - Scheduled dispatch is tied to fresh selection runs (or explicit force), so automatic queue starts happen at selection schedule time rather than every timer tick throughout the day.
-- `GET /api/admin/autodownload/downloads?type=movie|series` now performs first-run auto-seeding checks for both queues when empty (using `lastMoviesRunAt` / `lastSeriesRunAt`), so Movies/Series can populate without manual queue add.
+- `GET /api/admin/autodownload/downloads?type=movie|series` performs first-run auto-seeding checks for both queues when empty (using `lastMoviesRunAt` / `lastSeriesRunAt`) and auto-dispatches pending queued rows by default; pass `seed=0` and/or `dispatch=0` to read queue state without those side effects.
+- Selection dedupe now uses active queue rows plus library-inventory/final-library checks (not historical processing logs), so previously deleted test titles can be re-selected when they are no longer in the library.
 - Selection engine supports both `runMovieSelectionJob` and `runSeriesSelectionJob`; scheduler ticks can run both or a scoped type (`movie`/`series`) for manual test triggers.
 - AutoDownload Settings now include both Movie Selection Strategy and Series Selection Strategy blocks.
 - XUI Watchfolder Trigger controls are managed from `/admin/autodownload/xui` (XUI Integration page), not `/admin/autodownload/settings`.
