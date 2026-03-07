@@ -122,6 +122,29 @@ const dayItems = [
 
 const FIXED_CATEGORIES = ['English', 'Asian'];
 const DEFAULT_TIMEZONE = 'Asia/Manila';
+const DEFAULT_CLEANING_TEMPLATES = {
+  movieFolder: '{title} ({year})-{quality}',
+  movieFile: '{title} ({year})-{quality}',
+  movieSubtitle: '{title} ({year})-{quality}.{lang}',
+  seriesFolder: '{title} ({year})',
+  seriesSeasonFolder: 'Season {season}',
+  seriesEpisode: '{title} - S{season}E{episode}',
+  seriesSubtitle: '{title} - S{season}E{episode}.{lang}',
+};
+
+function renderTemplatePreview(template, tokenValues, fallback = 'Untitled') {
+  const raw = String(template || '').trim();
+  if (!raw) return fallback;
+  const rendered = raw.replace(/\{([a-z_]+)\}/gi, (_, key) => String(tokenValues?.[String(key || '').toLowerCase()] ?? ''));
+  const collapsed = rendered
+    .replace(/\s+/g, ' ')
+    .replace(/\(\s*\)/g, '')
+    .replace(/-+/g, '-')
+    .replace(/\.+/g, '.')
+    .replace(/^[\s._-]+|[\s._-]+$/g, '')
+    .trim();
+  return collapsed || fallback;
+}
 
 function useTimezones() {
   return useMemo(() => {
@@ -178,6 +201,17 @@ export default function AdminAutoDownloadSettingsPanel() {
 
   const [timeoutEnabled, setTimeoutEnabled] = useState(false);
   const [maxWaitHours, setMaxWaitHours] = useState(6);
+  const [strictSeriesReplacement, setStrictSeriesReplacement] = useState(true);
+  const [deletePartialSeriesOnReplacementFailure, setDeletePartialSeriesOnReplacementFailure] = useState(true);
+  const [cleaningEnabled, setCleaningEnabled] = useState(true);
+  const [createMovieFolderIfMissing, setCreateMovieFolderIfMissing] = useState(true);
+  const [movieFolderTemplate, setMovieFolderTemplate] = useState(DEFAULT_CLEANING_TEMPLATES.movieFolder);
+  const [movieFileTemplate, setMovieFileTemplate] = useState(DEFAULT_CLEANING_TEMPLATES.movieFile);
+  const [movieSubtitleTemplate, setMovieSubtitleTemplate] = useState(DEFAULT_CLEANING_TEMPLATES.movieSubtitle);
+  const [seriesFolderTemplate, setSeriesFolderTemplate] = useState(DEFAULT_CLEANING_TEMPLATES.seriesFolder);
+  const [seriesSeasonFolderTemplate, setSeriesSeasonFolderTemplate] = useState(DEFAULT_CLEANING_TEMPLATES.seriesSeasonFolder);
+  const [seriesEpisodeTemplate, setSeriesEpisodeTemplate] = useState(DEFAULT_CLEANING_TEMPLATES.seriesEpisode);
+  const [seriesSubtitleTemplate, setSeriesSubtitleTemplate] = useState(DEFAULT_CLEANING_TEMPLATES.seriesSubtitle);
   const [releaseDelayDays, setReleaseDelayDays] = useState(3);
 
   const [videoExtsText, setVideoExtsText] = useState('mkv, mp4, avi, mov, wmv, m4v, mpg, mpeg, ts, webm');
@@ -230,6 +264,18 @@ export default function AdminAutoDownloadSettingsPanel() {
 
       setTimeoutEnabled(Boolean(s?.timeoutChecker?.enabled));
       setMaxWaitHours(Number(s?.timeoutChecker?.maxWaitHours ?? 6) || 6);
+      setStrictSeriesReplacement(s?.timeoutChecker?.strictSeriesReplacement !== false);
+      setDeletePartialSeriesOnReplacementFailure(s?.timeoutChecker?.deletePartialSeriesOnReplacementFailure !== false);
+      setCleaningEnabled(s?.cleaning?.enabled !== false);
+      setCreateMovieFolderIfMissing(s?.cleaning?.createMovieFolderIfMissing !== false);
+      const tpl = s?.cleaning?.templates || {};
+      setMovieFolderTemplate(String(tpl?.movieFolder || DEFAULT_CLEANING_TEMPLATES.movieFolder));
+      setMovieFileTemplate(String(tpl?.movieFile || DEFAULT_CLEANING_TEMPLATES.movieFile));
+      setMovieSubtitleTemplate(String(tpl?.movieSubtitle || DEFAULT_CLEANING_TEMPLATES.movieSubtitle));
+      setSeriesFolderTemplate(String(tpl?.seriesFolder || DEFAULT_CLEANING_TEMPLATES.seriesFolder));
+      setSeriesSeasonFolderTemplate(String(tpl?.seriesSeasonFolder || DEFAULT_CLEANING_TEMPLATES.seriesSeasonFolder));
+      setSeriesEpisodeTemplate(String(tpl?.seriesEpisode || DEFAULT_CLEANING_TEMPLATES.seriesEpisode));
+      setSeriesSubtitleTemplate(String(tpl?.seriesSubtitle || DEFAULT_CLEANING_TEMPLATES.seriesSubtitle));
       setReleaseDelayDays(Math.max(0, Number(s?.release?.delayDays ?? 3) || 3));
 
       setVideoExtsText((Array.isArray(s?.fileRules?.videoExtensions) ? s.fileRules.videoExtensions : []).join(', ') || videoExtsText);
@@ -280,6 +326,25 @@ export default function AdminAutoDownloadSettingsPanel() {
     if (!Number.isFinite(mm) || mm <= 0) errors.push('Max movie size must be > 0.');
     if (!Number.isFinite(Number(minMovieSeeders)) || Number(minMovieSeeders) < 0) errors.push('Min movie seeders must be >= 0.');
     if (!Number.isFinite(Number(minSeriesSeeders)) || Number(minSeriesSeeders) < 0) errors.push('Min series seeders must be >= 0.');
+    if (!String(movieFolderTemplate || '').trim()) errors.push('Movie folder template is required.');
+    if (!String(movieFileTemplate || '').trim()) errors.push('Movie file template is required.');
+    if (!String(movieSubtitleTemplate || '').trim()) errors.push('Movie subtitle template is required.');
+    if (!String(seriesFolderTemplate || '').trim()) errors.push('Series folder template is required.');
+    if (!String(seriesSeasonFolderTemplate || '').trim()) errors.push('Series season folder template is required.');
+    if (!String(seriesEpisodeTemplate || '').trim()) errors.push('Series episode template is required.');
+    if (!String(seriesSubtitleTemplate || '').trim()) errors.push('Series subtitle template is required.');
+    const hasInvalidPathSep = [
+      movieFolderTemplate,
+      movieFileTemplate,
+      movieSubtitleTemplate,
+      seriesFolderTemplate,
+      seriesSeasonFolderTemplate,
+      seriesEpisodeTemplate,
+      seriesSubtitleTemplate,
+    ].some((x) => /[\\/]/.test(String(x || '')));
+    if (hasInvalidPathSep) {
+      errors.push('Cleaning templates must not contain path separators.');
+    }
     if (!Number.isFinite(Number(releaseDelayDays)) || Number(releaseDelayDays) < 0 || Number(releaseDelayDays) > 30) {
       errors.push('Release delay days must be 0–30.');
     }
@@ -317,6 +382,13 @@ export default function AdminAutoDownloadSettingsPanel() {
     maxMovieGb,
     minMovieSeeders,
     minSeriesSeeders,
+    movieFolderTemplate,
+    movieFileTemplate,
+    movieSubtitleTemplate,
+    seriesFolderTemplate,
+    seriesSeasonFolderTemplate,
+    seriesEpisodeTemplate,
+    seriesSubtitleTemplate,
     releaseDelayDays,
     videoExtsText,
     subExtsText,
@@ -371,6 +443,21 @@ export default function AdminAutoDownloadSettingsPanel() {
           enabled: timeoutEnabled,
           maxWaitHours: Number(maxWaitHours),
           intervalMinutes: 15,
+          strictSeriesReplacement,
+          deletePartialSeriesOnReplacementFailure,
+        },
+        cleaning: {
+          enabled: cleaningEnabled,
+          createMovieFolderIfMissing,
+          templates: {
+            movieFolder: String(movieFolderTemplate || DEFAULT_CLEANING_TEMPLATES.movieFolder).trim(),
+            movieFile: String(movieFileTemplate || DEFAULT_CLEANING_TEMPLATES.movieFile).trim(),
+            movieSubtitle: String(movieSubtitleTemplate || DEFAULT_CLEANING_TEMPLATES.movieSubtitle).trim(),
+            seriesFolder: String(seriesFolderTemplate || DEFAULT_CLEANING_TEMPLATES.seriesFolder).trim(),
+            seriesSeasonFolder: String(seriesSeasonFolderTemplate || DEFAULT_CLEANING_TEMPLATES.seriesSeasonFolder).trim(),
+            seriesEpisode: String(seriesEpisodeTemplate || DEFAULT_CLEANING_TEMPLATES.seriesEpisode).trim(),
+            seriesSubtitle: String(seriesSubtitleTemplate || DEFAULT_CLEANING_TEMPLATES.seriesSubtitle).trim(),
+          },
         },
         release: {
           delayDays: Math.max(0, Math.min(30, Math.floor(Number(releaseDelayDays) || 3))),
@@ -426,6 +513,24 @@ export default function AdminAutoDownloadSettingsPanel() {
   const used = mountStatus?.space?.used || 0;
   const total = mountStatus?.space?.total || 0;
   const usedPct = total ? Math.round((used / total) * 100) : null;
+  const sampleMovieTokens = {
+    title: 'Run Ronnie Run',
+    year: '2002',
+    quality: '1080p',
+    resolution: '1080p',
+    lang: 'en',
+    type: 'movie',
+  };
+  const sampleSeriesTokens = {
+    title: 'Breaking Bad',
+    year: '2008',
+    quality: '1080p',
+    resolution: '1080p',
+    season: '01',
+    episode: '03',
+    lang: 'en',
+    type: 'series',
+  };
 
   const notes = [
     {
@@ -543,6 +648,14 @@ export default function AdminAutoDownloadSettingsPanel() {
             <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
               <div className="text-xs text-[var(--admin-muted)]">Download checker</div>
               <div className="mt-1 text-sm font-semibold">{timeoutEnabled ? `Enabled (${maxWaitHours}h max)` : 'Disabled'}</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                Strict series replacement: {strictSeriesReplacement ? 'On' : 'Off'} • Delete partials: {deletePartialSeriesOnReplacementFailure ? 'On' : 'Off'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
+              <div className="text-xs text-[var(--admin-muted)]">Cleaning</div>
+              <div className="mt-1 text-sm font-semibold">{cleaningEnabled ? 'Enabled' : 'Disabled'}</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">Completed items are cleaned sequentially on every scheduler tick.</div>
             </div>
             <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
               <div className="text-xs text-[var(--admin-muted)]">Release delay</div>
@@ -572,6 +685,10 @@ export default function AdminAutoDownloadSettingsPanel() {
             <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
               <div className="text-xs text-[var(--admin-muted)]">Skip sample content</div>
               <div className="mt-1 text-sm font-semibold">{skipSample ? 'Enabled' : 'Disabled'}</div>
+            </div>
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
+              <div className="text-xs text-[var(--admin-muted)]">Create movie folder if missing</div>
+              <div className="mt-1 text-sm font-semibold">{createMovieFolderIfMissing ? 'Enabled' : 'Disabled'}</div>
             </div>
           </div>
         </div>
@@ -841,6 +958,38 @@ export default function AdminAutoDownloadSettingsPanel() {
             </div>
             <div className="mt-2 text-xs text-[var(--admin-muted)]">On timeout: delete job and delete files (fixed behavior).</div>
             <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <Field label="Strict series replacement" hint="When replacement fails, series run is marked as failed">
+                <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={strictSeriesReplacement}
+                    onChange={(e) => setStrictSeriesReplacement(e.target.checked)}
+                  />
+                  <span>{strictSeriesReplacement ? 'Enabled' : 'Disabled'}</span>
+                </label>
+              </Field>
+              <Field label="Delete partial series on failed replacement" hint="After all sources fail for missing episode/season">
+                <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={deletePartialSeriesOnReplacementFailure}
+                    onChange={(e) => setDeletePartialSeriesOnReplacementFailure(e.target.checked)}
+                  />
+                  <span>{deletePartialSeriesOnReplacementFailure ? 'Enabled' : 'Disabled'}</span>
+                </label>
+              </Field>
+            </div>
+            <div className="mt-4 text-sm font-semibold">Cleaning</div>
+            <div className="mt-4 grid gap-4 md:grid-cols-1">
+              <Field label="Enable Cleaning" hint="If disabled, completed items wait until manual process">
+                <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+                  <input type="checkbox" checked={cleaningEnabled} onChange={(e) => setCleaningEnabled(e.target.checked)} />
+                  <span>{cleaningEnabled ? 'Enabled' : 'Disabled'}</span>
+                </label>
+              </Field>
+            </div>
+            <div className="mt-2 text-xs text-[var(--admin-muted)]">Cleaner runs on every scheduler tick and processes all completed items sequentially.</div>
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
               <Field label="Release delay (days)" hint="Default release date offset from selection run">
                 <Input
                   type="number"
@@ -898,6 +1047,81 @@ export default function AdminAutoDownloadSettingsPanel() {
                 <span>{skipSample ? 'Enabled' : 'Disabled'}</span>
               </label>
             </Field>
+            <Field label="Create movie folder if missing" hint="Wrap loose movie files into a folder during cleaning">
+              <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={createMovieFolderIfMissing}
+                  onChange={(e) => setCreateMovieFolderIfMissing(e.target.checked)}
+                />
+                <span>{createMovieFolderIfMissing ? 'Enabled' : 'Disabled'}</span>
+              </label>
+            </Field>
+          </div>
+          <div className="mt-6 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4">
+            <div className="text-sm font-semibold">Cleaning templates</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">
+              Tokens you can use: <code>{'{title}'}</code>, <code>{'{year}'}</code>, <code>{'{quality}'}</code>, <code>{'{resolution}'}</code>, <code>{'{type}'}</code>, <code>{'{lang}'}</code>, <code>{'{season}'}</code>, <code>{'{episode}'}</code>.
+            </div>
+            <div className="mt-3 text-xs text-[var(--admin-muted)]">
+              Tips: avoid <code>/</code> and <code>\</code> in templates; preview updates instantly.
+            </div>
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-2">
+              <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+                <div className="text-sm font-semibold">Movie templates</div>
+                <div className="mt-3 grid gap-4">
+                  <Field label="Movie folder template" hint="Used under Cleaned and Ready/Reldate...">
+                    <Input value={movieFolderTemplate} onChange={(e) => setMovieFolderTemplate(e.target.value)} />
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Sample: <code>{renderTemplatePreview(movieFolderTemplate, sampleMovieTokens, 'Run Ronnie Run (2002)-1080p')}</code>
+                    </div>
+                  </Field>
+                  <Field label="Movie file template" hint="Video filename (extension appended automatically)">
+                    <Input value={movieFileTemplate} onChange={(e) => setMovieFileTemplate(e.target.value)} />
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Sample: <code>{renderTemplatePreview(movieFileTemplate, sampleMovieTokens, 'Run Ronnie Run (2002)-1080p')}.mkv</code>
+                    </div>
+                  </Field>
+                  <Field label="Movie subtitle template" hint="Subtitle filename (extension appended automatically)">
+                    <Input value={movieSubtitleTemplate} onChange={(e) => setMovieSubtitleTemplate(e.target.value)} />
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Sample: <code>{renderTemplatePreview(movieSubtitleTemplate, sampleMovieTokens, 'Run Ronnie Run (2002)-1080p.en')}.srt</code>
+                    </div>
+                  </Field>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+                <div className="text-sm font-semibold">Series templates</div>
+                <div className="mt-3 grid gap-4">
+                  <Field label="Series folder template" hint="Used under Cleaned and Ready/Reldate...">
+                    <Input value={seriesFolderTemplate} onChange={(e) => setSeriesFolderTemplate(e.target.value)} />
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Sample: <code>{renderTemplatePreview(seriesFolderTemplate, sampleSeriesTokens, 'Breaking Bad (2008)')}</code>
+                    </div>
+                  </Field>
+                  <Field label="Series season folder template" hint="Season folder inside series folder">
+                    <Input value={seriesSeasonFolderTemplate} onChange={(e) => setSeriesSeasonFolderTemplate(e.target.value)} />
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Sample: <code>{renderTemplatePreview(seriesSeasonFolderTemplate, sampleSeriesTokens, 'Season 01')}</code>
+                    </div>
+                  </Field>
+                  <Field label="Series episode template" hint="Video filename for episodes">
+                    <Input value={seriesEpisodeTemplate} onChange={(e) => setSeriesEpisodeTemplate(e.target.value)} />
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Sample: <code>{renderTemplatePreview(seriesEpisodeTemplate, sampleSeriesTokens, 'Breaking Bad - S01E03')}.mkv</code>
+                    </div>
+                  </Field>
+                  <Field label="Series subtitle template" hint="Subtitle filename for episodes">
+                    <Input value={seriesSubtitleTemplate} onChange={(e) => setSeriesSubtitleTemplate(e.target.value)} />
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Sample: <code>{renderTemplatePreview(seriesSubtitleTemplate, sampleSeriesTokens, 'Breaking Bad - S01E03.en')}.srt</code>
+                    </div>
+                  </Field>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </EditModal>

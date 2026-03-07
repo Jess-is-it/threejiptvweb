@@ -1,16 +1,15 @@
-import Link from 'next/link';
+// components/Footer.jsx
+'use client';
 
-export function Footer() {
-    return (
-        <footer className="pt-16 pb-12 sm:pt-24 sm:pb-16">
-            <p className="text-sm">
-                <Link
-                    href="https://docs.netlify.com/frameworks/next-js/overview/"
-                    className="decoration-dashed text-primary underline-offset-8"
-                >
-                    Next.js on Netlify
-                </Link>
-            </p>
-        </footer>
-    );
+import { usePathname } from 'next/navigation';
+
+export default function Footer() {
+  const pathname = usePathname() || '/';
+  if (pathname === '/login') return null; // hide on login page
+
+  return (
+    <footer className="border-t border-neutral-900 py-6 text-center text-sm text-neutral-400">
+      © 2025 3J TV. All rights reserved.
+    </footer>
+  );
 }

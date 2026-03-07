@@ -80,6 +80,7 @@ function pageTitle(pathname) {
   if (!pathname) return 'Admin';
   if (pathname === '/admin') return 'Dashboard';
   if (pathname.startsWith('/admin/autodownload')) return 'AutoDownload';
+  if (pathname.startsWith('/admin/category-settings')) return 'Category Settings';
   if (pathname.startsWith('/admin/settings')) return 'Settings';
   if (pathname.startsWith('/admin/secrets')) return 'Secrets';
   if (pathname.startsWith('/admin/admins')) return 'Admins';
@@ -150,7 +151,7 @@ export default function AdminShell({ admin, children }) {
   };
 
   return (
-    <div className="min-h-dvh bg-[var(--admin-bg)] text-[var(--admin-text)]">
+    <div data-admin-ui="1" className="min-h-dvh bg-[var(--admin-bg)] text-[var(--admin-text)]">
       <ChunkAutoReload />
       {/* Mobile backdrop */}
       {sidebarOpen ? (
@@ -240,12 +241,24 @@ export default function AdminShell({ admin, children }) {
                       const isSanity = it.href === '/admin/autodownload/readiness';
                       const hasRatio = Number.isFinite(Number(sanitySummary?.passed)) && Number.isFinite(Number(sanitySummary?.total));
                       const ratioText = hasRatio ? `${Number(sanitySummary.passed)}/${Number(sanitySummary.total)}` : '--/--';
-                      const ratioClass =
+                      const ratioStyle =
                         sanitySummary?.status === 'good'
-                          ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-200'
+                          ? {
+                              borderColor: 'var(--admin-pill-success-border)',
+                              backgroundColor: 'var(--admin-pill-success-bg)',
+                              color: 'var(--admin-pill-success-text)',
+                            }
                           : sanitySummary?.status === 'bad'
-                            ? 'border-red-500/30 bg-red-500/15 text-red-200'
-                            : 'border-amber-500/30 bg-amber-500/15 text-amber-200';
+                            ? {
+                                borderColor: 'var(--admin-pill-danger-border)',
+                                backgroundColor: 'var(--admin-pill-danger-bg)',
+                                color: 'var(--admin-pill-danger-text)',
+                              }
+                            : {
+                                borderColor: 'var(--admin-pill-warning-border)',
+                                backgroundColor: 'var(--admin-pill-warning-bg)',
+                                color: 'var(--admin-pill-warning-text)',
+                              };
                       return (
                         <Link
                           key={it.href}
@@ -269,9 +282,9 @@ export default function AdminShell({ admin, children }) {
                           {isSanity ? (
                             <span
                               className={cx(
-                                'ml-auto inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold',
-                                ratioClass
+                                'ml-auto inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold'
                               )}
+                              style={ratioStyle}
                               title="Sanity score (passed checks / total checks)"
                             >
                               {ratioText}
@@ -365,6 +378,9 @@ export default function AdminShell({ admin, children }) {
               </Nav>
               <Nav href="/admin/request-settings" icon={Settings2} onClick={() => setSidebarOpen(false)}>
                 Request Settings
+              </Nav>
+              <Nav href="/admin/category-settings" icon={Settings2} onClick={() => setSidebarOpen(false)}>
+                Category Settings
               </Nav>
             </div>
           </nav>

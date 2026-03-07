@@ -3,19 +3,27 @@
     "version": "0.1.0",
     "private": true,
     "scripts": {
-        "dev": "next dev",
+        "dev": "NEXT_DIST_DIR=.next-dev next dev",
         "build": "next build",
+        "build:runtime": "bash ./scripts/build-runtime.sh",
         "start": "next start",
+        "start:runtime": "NEXT_DIST_DIR=.next-runtime next start",
         "lint": "next lint"
     },
     "dependencies": {
         "@netlify/blobs": "^8.2.0",
+        "bcryptjs": "^3.0.2",
         "blobshape": "^1.0.0",
         "bright": "^0.8.5",
+        "clsx": "^2.1.1",
+        "hls.js": "^1.6.9",
+        "lucide-react": "^0.539.0",
         "markdown-to-jsx": "^7.4.5",
         "next": "15.4.6",
         "react": "18.3.1",
         "react-dom": "18.3.1",
+        "ssh2": "^1.17.0",
+        "undici": "^6.23.0",
         "unique-names-generator": "^4.7.1"
     },
     "devDependencies": {

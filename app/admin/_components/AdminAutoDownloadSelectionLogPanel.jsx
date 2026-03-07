@@ -33,6 +33,15 @@ function cx(...cls) {
   return cls.filter(Boolean).join(' ');
 }
 
+function toneStyle(tone = 'neutral') {
+  const t = String(tone || 'neutral').trim().toLowerCase();
+  return {
+    borderColor: `var(--admin-pill-${t}-border)`,
+    backgroundColor: `var(--admin-pill-${t}-bg)`,
+    color: `var(--admin-pill-${t}-text)`,
+  };
+}
+
 function isSizeLimitRejected(item) {
   return /filtered by size limit/i.test(String(item?.error || ''));
 }
@@ -64,25 +73,44 @@ function prefersQueueRow(next, current, { runId = '' } = {}) {
   return nextUpdatedAt > curUpdatedAt;
 }
 
-function StatusPill({ status }) {
-  const s = String(status || '').toLowerCase();
-  const cls =
+function getDisplayStatus(item = {}) {
+  const status = String(item?.status || '').trim();
+  const s = status.toLowerCase();
+  const releaseState = String(item?.releaseState || '').trim().toLowerCase();
+
+  if (releaseState === 'released') {
+    return { value: 'deployed_in_xui', label: 'Deployed in XUI' };
+  }
+  if (s === 'cleaned' && (releaseState === '' || releaseState === 'waiting')) {
+    return { value: 'waiting_to_release', label: 'Waiting to be released' };
+  }
+  return { value: s || 'queued', label: status || 'Queued' };
+}
+
+function StatusPill({ item }) {
+  const statusInfo = getDisplayStatus(item);
+  const s = String(statusInfo?.value || '').toLowerCase();
+  const tone =
     s === 'downloading'
-      ? 'border-sky-500/30 bg-sky-500/10 text-sky-200'
+      ? 'info'
       : s === 'completed'
-        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+        ? 'success'
         : s === 'processing'
-          ? 'border-violet-500/30 bg-violet-500/10 text-violet-200'
+          ? 'processing'
           : s === 'cleaned'
-            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
-            : s === 'failed'
-              ? 'border-red-500/30 bg-red-500/10 text-red-200'
-              : s === 'deleted'
-                ? 'border-neutral-600 bg-neutral-800/40 text-neutral-200'
-                : 'border-neutral-600 bg-neutral-800/40 text-neutral-200';
+            ? 'success'
+            : s === 'waiting_to_release'
+              ? 'warning'
+              : s === 'deployed_in_xui'
+                ? 'accent'
+                : s === 'failed'
+                  ? 'danger'
+                  : s === 'deleted'
+                    ? 'neutral'
+                    : 'neutral';
   return (
-    <span className={cx('inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium', cls)}>
-      {status || 'Queued'}
+    <span className="inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium" style={toneStyle(tone)}>
+      {statusInfo?.label || 'Queued'}
     </span>
   );
 }
@@ -102,6 +130,10 @@ export default function AdminAutoDownloadSelectionLogPanel() {
   const [jobsQ, setJobsQ] = useState('');
   const [jobsStatus, setJobsStatus] = useState('all');
   const [selectedJob, setSelectedJob] = useState(null);
+  const [releaseEditOpen, setReleaseEditOpen] = useState(false);
+  const [releaseDateDraft, setReleaseDateDraft] = useState('');
+  const [releaseBusy, setReleaseBusy] = useState(false);
+  const [releaseErr, setReleaseErr] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -140,6 +172,9 @@ export default function AdminAutoDownloadSelectionLogPanel() {
     setJobsErr('');
     setJobsLoading(true);
     setJobs([]);
+    setReleaseEditOpen(false);
+    setReleaseDateDraft(String(run?.releaseDate || '').trim());
+    setReleaseErr('');
     try {
       const r = await fetch('/api/admin/autodownload/downloads?type=movie&seed=0&dispatch=0', { cache: 'no-store' });
       const j = await r.json().catch(() => ({}));
@@ -199,9 +234,10 @@ export default function AdminAutoDownloadSelectionLogPanel() {
     const needle = String(jobsQ || '').trim().toLowerCase();
     const st = String(jobsStatus || 'all').trim().toLowerCase();
     return (Array.isArray(jobs) ? jobs : []).filter((x) => {
+      const displayStatus = getDisplayStatus(x);
       if (st === 'size_rejected') {
         if (!isSizeLimitRejected(x)) return false;
-      } else if (st !== 'all' && String(x?.status || '').toLowerCase() !== st) {
+      } else if (st !== 'all' && String(displayStatus?.value || '').toLowerCase() !== st) {
         return false;
       }
       if (!needle) return true;
@@ -210,6 +246,69 @@ export default function AdminAutoDownloadSelectionLogPanel() {
       return hay.includes(needle);
     });
   }, [jobs, jobsQ, jobsStatus]);
+
+  const canEditSelectedRunReleaseDate = useMemo(() => {
+    if (!selectedRun) return false;
+    if (Number(selectedRun?.releasedAt || 0) > 0) return false;
+    const hasReleasedRows = (Array.isArray(jobs) ? jobs : []).some(
+      (x) => String(x?.releaseState || '').toLowerCase() === 'released'
+    );
+    return !hasReleasedRows;
+  }, [selectedRun, jobs]);
+
+  const saveSelectedRunReleaseDate = async () => {
+    if (!selectedRun?.id) return;
+    const nextDate = String(releaseDateDraft || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) {
+      setReleaseErr('Invalid date format. Use YYYY-MM-DD.');
+      return;
+    }
+
+    setReleaseBusy(true);
+    setReleaseErr('');
+    setErr('');
+    try {
+      const r = await fetch('/api/admin/autodownload/selection-log', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'set_release_date',
+          logId: selectedRun.id,
+          releaseDate: nextDate,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to update release date.');
+
+      const nextLog = j?.log || null;
+      if (nextLog) {
+        setSelectedRun((prev) => (prev ? { ...prev, ...nextLog } : prev));
+        setLogs((prev) =>
+          (Array.isArray(prev) ? prev : []).map((x) =>
+            String(x?.id || '') === String(nextLog?.id || '') ? { ...x, ...nextLog } : x
+          )
+        );
+      }
+      setJobs((prev) =>
+        (Array.isArray(prev) ? prev : []).map((x) =>
+          String(x?.selectionLogId || '').trim() === String(selectedRun?.id || '').trim() &&
+          String(x?.releaseState || '').toLowerCase() !== 'released'
+            ? {
+                ...x,
+                releaseDate: nextDate,
+                releaseTag: String(nextLog?.releaseTag || x?.releaseTag || '').trim(),
+              }
+            : x
+        )
+      );
+      setOk(`Release date updated to ${nextDate}.`);
+      setReleaseEditOpen(false);
+    } catch (e) {
+      setReleaseErr(e?.message || 'Failed to update release date.');
+    } finally {
+      setReleaseBusy(false);
+    }
+  };
 
   const runNow = async () => {
     if (!confirm('Run the Movie Selection Strategy now?')) return;
@@ -272,7 +371,7 @@ export default function AdminAutoDownloadSelectionLogPanel() {
   const deleteAllMovies = async () => {
     if (
       !confirm(
-        'Delete ALL movie jobs + torrents and purge all movie folders in NAS (final library + qBittorrent movie staging)?'
+        'Delete ALL movie jobs + torrents from qBittorrent? (This does NOT purge NAS Movies library folders.)'
       )
     ) {
       return;
@@ -285,16 +384,14 @@ export default function AdminAutoDownloadSelectionLogPanel() {
       const r = await fetch('/api/admin/autodownload/downloads/bulk', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'movie', action: 'delete_all', purgeNas: true }),
+        body: JSON.stringify({ type: 'movie', action: 'delete_all' }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Delete all failed.');
       setOk(
         `Deleted ${Number(j?.result?.deletedRows || 0)} rows, ${Number(j?.result?.deletedTorrents || 0)} qB torrents, and ${Number(
           j?.result?.deletedSelectionLogs || 0
-        )} Movie Selection Log entr${Number(j?.result?.deletedSelectionLogs || 0) === 1 ? 'y' : 'ies'}.${
-          j?.result?.nasPurged ? ' NAS movie folders purged.' : ''
-        }`
+        )} Movie Selection Log entr${Number(j?.result?.deletedSelectionLogs || 0) === 1 ? 'y' : 'ies'}.`
       );
       await load();
     } catch (e) {
@@ -359,7 +456,10 @@ export default function AdminAutoDownloadSelectionLogPanel() {
           <button
             onClick={deleteAllMovies}
             disabled={loading || busy}
-            className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200 hover:bg-red-500/15 disabled:opacity-60"
+            className="rounded-lg border px-3 py-2 text-sm disabled:opacity-60"
+            style={{
+              ...toneStyle('danger'),
+            }}
           >
             Delete All
           </button>
@@ -387,8 +487,16 @@ export default function AdminAutoDownloadSelectionLogPanel() {
         </div>
       </div>
 
-      {err ? <div className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div> : null}
-      {ok ? <div className="mt-4 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{ok}</div> : null}
+      {err ? (
+        <div className="mt-4 rounded-lg border px-3 py-2 text-sm" style={toneStyle('danger')}>
+          {err}
+        </div>
+      ) : null}
+      {ok ? (
+        <div className="mt-4 rounded-lg border px-3 py-2 text-sm" style={toneStyle('success')}>
+          {ok}
+        </div>
+      ) : null}
       {isTriggering ? (
         <div className="mt-4">
           <div className="mb-1 flex items-center justify-between text-xs text-[var(--admin-muted)]">
@@ -433,7 +541,6 @@ export default function AdminAutoDownloadSelectionLogPanel() {
                 </td>
                 <td className="px-3 py-2 text-xs text-[var(--admin-muted)]">
                   {x.releaseDate || '—'}
-                  {x.releaseTag ? ` · ${x.releaseTag}` : ''}
                 </td>
                 <td className="px-3 py-2">
                   <Num v={x.totalSelected} />
@@ -459,7 +566,9 @@ export default function AdminAutoDownloadSelectionLogPanel() {
                 <td className="px-3 py-2">
                   <Num v={x.skippedStorageLimitCount} />
                 </td>
-                <td className="px-3 py-2 text-xs text-red-200">{x.errorMessage || ''}</td>
+                <td className="px-3 py-2 text-xs" style={{ color: 'var(--admin-pill-danger-text)' }}>
+                  {x.errorMessage || ''}
+                </td>
               </tr>
             ))}
             {!loading && logs.length === 0 ? (
@@ -487,14 +596,59 @@ export default function AdminAutoDownloadSelectionLogPanel() {
                   <Num v={selectedRun?.totalSelected} /> · Release: {selectedRun?.releaseDate || '—'}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedRun(null)}
-                className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10"
-              >
-                Close
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {canEditSelectedRunReleaseDate ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReleaseDateDraft(String(selectedRun?.releaseDate || '').trim());
+                      setReleaseEditOpen((v) => !v);
+                      setReleaseErr('');
+                    }}
+                    className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10"
+                  >
+                    {releaseEditOpen ? 'Cancel edit' : 'Edit release date'}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setSelectedRun(null)}
+                  className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10"
+                >
+                  Close
+                </button>
+              </div>
             </div>
+
+            {releaseEditOpen && canEditSelectedRunReleaseDate ? (
+              <div className="mt-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-3">
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="text-xs text-[var(--admin-muted)]">
+                    Release date
+                    <input
+                      type="date"
+                      value={releaseDateDraft}
+                      onChange={(e) => setReleaseDateDraft(e.target.value)}
+                      className="mt-1 block rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={saveSelectedRunReleaseDate}
+                    disabled={releaseBusy || !releaseDateDraft}
+                    className="rounded-lg px-3 py-2 text-sm text-white disabled:opacity-60"
+                    style={{ backgroundColor: 'var(--brand)' }}
+                  >
+                    {releaseBusy ? 'Saving…' : 'Save release date'}
+                  </button>
+                </div>
+                {releaseErr ? (
+                  <div className="mt-2 rounded-lg border px-2 py-1 text-xs" style={toneStyle('danger')}>
+                    {releaseErr}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -515,6 +669,8 @@ export default function AdminAutoDownloadSelectionLogPanel() {
                   <option value="completed">Completed</option>
                   <option value="processing">Processing</option>
                   <option value="cleaned">Cleaned</option>
+                  <option value="waiting_to_release">Waiting to be released</option>
+                  <option value="deployed_in_xui">Deployed in XUI</option>
                   <option value="failed">Failed</option>
                   <option value="deleted">Deleted</option>
                   <option value="size_rejected">Rejected by size limit</option>
@@ -525,7 +681,11 @@ export default function AdminAutoDownloadSelectionLogPanel() {
               </div>
             </div>
 
-            {jobsErr ? <div className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{jobsErr}</div> : null}
+            {jobsErr ? (
+              <div className="mt-3 rounded-lg border px-3 py-2 text-sm" style={toneStyle('danger')}>
+                {jobsErr}
+              </div>
+            ) : null}
 
             <div className="mt-4 overflow-hidden rounded-xl border border-[var(--admin-border)]">
               <table className="w-full text-left text-sm">
@@ -558,9 +718,9 @@ export default function AdminAutoDownloadSelectionLogPanel() {
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          <StatusPill status={x.status} />
+                          <StatusPill item={x} />
                           {isSizeLimitRejected(x) ? (
-                            <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-200">
+                            <span className="inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium" style={toneStyle('warning')}>
                               Size Rejected
                             </span>
                           ) : null}
@@ -571,7 +731,9 @@ export default function AdminAutoDownloadSelectionLogPanel() {
                       <td className="px-3 py-2 text-xs text-[var(--admin-muted)]">
                         {x.addedAt ? new Date(x.addedAt).toLocaleString() : '—'}
                       </td>
-                      <td className="px-3 py-2 text-xs text-red-200">{x.error || ''}</td>
+                      <td className="px-3 py-2 text-xs" style={{ color: 'var(--admin-pill-danger-text)' }}>
+                        {x.error || ''}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <button
                           type="button"

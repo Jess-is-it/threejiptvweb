@@ -69,6 +69,42 @@ function normalizeDays(days) {
 }
 
 const FIXED_CATEGORIES = ['English', 'Asian'];
+const DEFAULT_CLEANING_TEMPLATES = {
+  movieFolder: '{title} ({year})-{quality}',
+  movieFile: '{title} ({year})-{quality}',
+  movieSubtitle: '{title} ({year})-{quality}.{lang}',
+  seriesFolder: '{title} ({year})',
+  seriesSeasonFolder: 'Season {season}',
+  seriesEpisode: '{title} - S{season}E{episode}',
+  seriesSubtitle: '{title} - S{season}E{episode}.{lang}',
+};
+const ALLOWED_MOVIE_TOKENS = new Set(['title', 'year', 'quality', 'resolution', 'type', 'lang']);
+const ALLOWED_SERIES_TOKENS = new Set(['title', 'year', 'quality', 'resolution', 'type', 'season', 'episode', 'lang']);
+const ALLOWED_SERIES_SEASON_FOLDER_TOKENS = new Set(['title', 'year', 'quality', 'resolution', 'type', 'season']);
+
+function normalizeTemplate(v, fallback) {
+  const s = String(v ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim();
+  return (s || fallback).slice(0, 180);
+}
+
+function validateTemplateTokens({ template, allowedTokens, label, errors }) {
+  const t = String(template || '').trim();
+  if (!t) {
+    errors.push(`${label} must not be empty.`);
+    return;
+  }
+  if (/[\\/]/.test(t)) {
+    errors.push(`${label} must not contain path separators.`);
+  }
+  const found = [...t.matchAll(/\{([a-z_]+)\}/gi)].map((m) => String(m[1] || '').toLowerCase());
+  for (const token of found) {
+    if (!allowedTokens.has(token)) {
+      errors.push(`${label} has unsupported token {${token}}.`);
+    }
+  }
+}
 
 function validateSelectionStrategy(
   s,
@@ -169,6 +205,82 @@ export async function PUT(req) {
   const timeoutEnabled = Boolean(body?.timeoutChecker?.enabled);
   const maxWaitHours = clampNum(body?.timeoutChecker?.maxWaitHours, { min: 1, max: 168, fallback: 6 });
   const intervalMinutes = clampNum(body?.timeoutChecker?.intervalMinutes, { min: 1, max: 1440, fallback: 15 });
+  const strictSeriesReplacementInput = body?.timeoutChecker?.strictSeriesReplacement;
+  const strictSeriesReplacement =
+    strictSeriesReplacementInput === undefined
+      ? existingSettings?.timeoutChecker?.strictSeriesReplacement !== false
+      : Boolean(strictSeriesReplacementInput);
+  const deletePartialSeriesOnReplacementFailureInput = body?.timeoutChecker?.deletePartialSeriesOnReplacementFailure;
+  const deletePartialSeriesOnReplacementFailure =
+    deletePartialSeriesOnReplacementFailureInput === undefined
+      ? existingSettings?.timeoutChecker?.deletePartialSeriesOnReplacementFailure !== false
+      : Boolean(deletePartialSeriesOnReplacementFailureInput);
+
+  const cleaningEnabledInput = body?.cleaning?.enabled;
+  const cleaningEnabled =
+    cleaningEnabledInput === undefined ? existingSettings?.cleaning?.enabled !== false : Boolean(cleaningEnabledInput);
+  const createMovieFolderIfMissingInput = body?.cleaning?.createMovieFolderIfMissing;
+  const createMovieFolderIfMissing =
+    createMovieFolderIfMissingInput === undefined
+      ? existingSettings?.cleaning?.createMovieFolderIfMissing !== false
+      : Boolean(createMovieFolderIfMissingInput);
+  const existingTemplates = existingSettings?.cleaning?.templates || {};
+  const incomingTemplates = body?.cleaning?.templates || {};
+  const cleaningTemplates = {
+    movieFolder: normalizeTemplate(incomingTemplates?.movieFolder ?? existingTemplates?.movieFolder, DEFAULT_CLEANING_TEMPLATES.movieFolder),
+    movieFile: normalizeTemplate(incomingTemplates?.movieFile ?? existingTemplates?.movieFile, DEFAULT_CLEANING_TEMPLATES.movieFile),
+    movieSubtitle: normalizeTemplate(incomingTemplates?.movieSubtitle ?? existingTemplates?.movieSubtitle, DEFAULT_CLEANING_TEMPLATES.movieSubtitle),
+    seriesFolder: normalizeTemplate(incomingTemplates?.seriesFolder ?? existingTemplates?.seriesFolder, DEFAULT_CLEANING_TEMPLATES.seriesFolder),
+    seriesSeasonFolder: normalizeTemplate(
+      incomingTemplates?.seriesSeasonFolder ?? existingTemplates?.seriesSeasonFolder,
+      DEFAULT_CLEANING_TEMPLATES.seriesSeasonFolder
+    ),
+    seriesEpisode: normalizeTemplate(incomingTemplates?.seriesEpisode ?? existingTemplates?.seriesEpisode, DEFAULT_CLEANING_TEMPLATES.seriesEpisode),
+    seriesSubtitle: normalizeTemplate(incomingTemplates?.seriesSubtitle ?? existingTemplates?.seriesSubtitle, DEFAULT_CLEANING_TEMPLATES.seriesSubtitle),
+  };
+
+  validateTemplateTokens({
+    template: cleaningTemplates.movieFolder,
+    allowedTokens: ALLOWED_MOVIE_TOKENS,
+    label: 'Movie folder template',
+    errors,
+  });
+  validateTemplateTokens({
+    template: cleaningTemplates.movieFile,
+    allowedTokens: ALLOWED_MOVIE_TOKENS,
+    label: 'Movie file template',
+    errors,
+  });
+  validateTemplateTokens({
+    template: cleaningTemplates.movieSubtitle,
+    allowedTokens: ALLOWED_MOVIE_TOKENS,
+    label: 'Movie subtitle template',
+    errors,
+  });
+  validateTemplateTokens({
+    template: cleaningTemplates.seriesFolder,
+    allowedTokens: ALLOWED_SERIES_TOKENS,
+    label: 'Series folder template',
+    errors,
+  });
+  validateTemplateTokens({
+    template: cleaningTemplates.seriesSeasonFolder,
+    allowedTokens: ALLOWED_SERIES_SEASON_FOLDER_TOKENS,
+    label: 'Series season folder template',
+    errors,
+  });
+  validateTemplateTokens({
+    template: cleaningTemplates.seriesEpisode,
+    allowedTokens: ALLOWED_SERIES_TOKENS,
+    label: 'Series episode template',
+    errors,
+  });
+  validateTemplateTokens({
+    template: cleaningTemplates.seriesSubtitle,
+    allowedTokens: ALLOWED_SERIES_TOKENS,
+    label: 'Series subtitle template',
+    errors,
+  });
   const releaseDelayDays = normalizeReleaseDelayDays(body?.release?.delayDays ?? body?.releaseDelayDays ?? 3);
   const releaseTimezone = normalizeReleaseTimezone(
     body?.release?.timezone || body?.releaseTimezone || body?.schedule?.timezone || DEFAULT_TIMEZONE
@@ -226,7 +338,18 @@ export async function PUT(req) {
     storage: { limitPercent: storageLimitPercent },
     sizeLimits: { maxMovieGb, maxEpisodeGb },
     sourceFilters: { minMovieSeeders, minSeriesSeeders },
-    timeoutChecker: { enabled: timeoutEnabled, maxWaitHours, intervalMinutes },
+    timeoutChecker: {
+      enabled: timeoutEnabled,
+      maxWaitHours,
+      intervalMinutes,
+      strictSeriesReplacement,
+      deletePartialSeriesOnReplacementFailure,
+    },
+    cleaning: {
+      enabled: cleaningEnabled,
+      createMovieFolderIfMissing,
+      templates: cleaningTemplates,
+    },
     release: {
       delayDays: releaseDelayDays,
       timezone: releaseTimezone,

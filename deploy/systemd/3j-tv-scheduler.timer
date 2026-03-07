@@ -1,0 +1,11 @@
+[Unit]
+Description=3J TV Scheduler Tick (every 2 minutes)
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=120
+Unit=3j-tv-scheduler.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,29 +1,33 @@
-import '../styles/globals.css';
-import { Footer } from '../components/footer';
-import { Header } from '../components/header';
+// app/layout.jsx
+import '../styles/globals.css';              // tailwind + resets
+import PublicSettingsProvider from '../components/PublicSettingsProvider';
+import UserPreferencesProvider from '../components/UserPreferencesProvider';
+import SessionProvider from '../components/SessionProvider';
+import ClientShell from './shell';          // client wrapper that shows/hides header/footer
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export const metadata = {
-    title: {
-        template: '%s | Netlify',
-        default: 'Netlify Starter'
-    }
+  title: 'THRE3J TV',
+  description: '3J TV streaming UI',
+  icons: {
+    icon: '/favicon.svg',
+  },
 };
 
 export default function RootLayout({ children }) {
-    return (
-        <html lang="en">
-            <head>
-                <link rel="icon" href="/favicon.svg" sizes="any" />
-            </head>
-            <body className="antialiased text-white bg-blue-900">
-                <div className="flex flex-col min-h-screen px-6 bg-noise sm:px-12">
-                    <div className="flex flex-col w-full max-w-5xl mx-auto grow">
-                        <Header />
-                        <main className="grow">{children}</main>
-                        <Footer />
-                    </div>
-                </div>
-            </body>
-        </html>
-    );
+  return (
+    <html lang="en" className="h-full">
+      <body className="min-h-screen bg-neutral-950 text-neutral-100 antialiased">
+        <PublicSettingsProvider>
+          <UserPreferencesProvider>
+            <SessionProvider>
+              <ClientShell>{children}</ClientShell>
+            </SessionProvider>
+          </UserPreferencesProvider>
+        </PublicSettingsProvider>
+      </body>
+    </html>
+  );
 }

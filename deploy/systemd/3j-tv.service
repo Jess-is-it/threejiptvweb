@@ -1,0 +1,39 @@
+[Unit]
+Description=3J TV (Next.js) Web App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=threejiptvweb
+Group=threejiptvweb
+WorkingDirectory=/home/threejiptvweb/3j-tv
+
+Environment=NODE_ENV=production
+Environment=NEXT_DIST_DIR=.next-runtime
+Environment=PORT=3000
+Environment=HOME=/home/threejiptvweb
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+# Secrets/config (recommended):
+#   ADMIN_DATA_KEY=...
+#   TMDB_API_KEY=...
+#   (and any other needed env vars)
+EnvironmentFile=-/etc/3j-tv/3j-tv.env
+# Optional: if you use the scheduler timer, the web app must also know SCHEDULER_TOKEN.
+EnvironmentFile=-/etc/3j-tv/scheduler.env
+
+# Assumes a production build already exists in `.next-runtime/`.
+# Run `npm run build:runtime` after pulling changes.
+ExecStart=/usr/local/bin/npm run start -- -p 3000 -H 0.0.0.0
+
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=20
+KillSignal=SIGINT
+SendSIGKILL=yes
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

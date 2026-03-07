@@ -114,7 +114,7 @@ There is currently **no automated test suite**. Use:
 - Public: `/login`, `/home`, `/movies`, `/movies/[id]`, `/series`, `/series/[id]`, `/live`, `/bookmarks`, `/request`
 - Watch: `/watch/movie/[id]`, `/watch/series/[seriesId]/[episodeId]`, `/watch/live/[id]`
 - Admin auth: `/admin/login`, `/admin/setup`
-- Admin protected: `/admin`, `/admin/settings`, `/admin/secrets`, `/admin/admins`, `/admin/reports`
+- Admin protected: `/admin`, `/admin/settings`, `/admin/category-settings`, `/admin/secrets`, `/admin/admins`, `/admin/reports`
 - Admin request management:
   - `/admin/requests` (request queue + status workflow + archive controls)
   - `/admin/request-settings` (daily limits, default landing category, status labels)
@@ -149,6 +149,8 @@ There is currently **no automated test suite**. Use:
    - `/api/admin/request-settings` (`GET`/`PUT`)
    - `/api/admin/requests` (`GET` queue + counts, `PATCH` actions: `status|archive`)
   - includes library inventory endpoint `GET/POST /api/admin/autodownload/library-inventory` (NAS scan cache of Movies/Series for duplicate checks + admin visibility)
+    - `POST` supports `action=clean_preview` (dry-run scan with affected/change/delete counts)
+    - `POST` supports `action=clean_run` (confirmed in-place clean on final library paths)
   - includes source-provider health APIs under `/api/admin/autodownload/sources*`
   - source-provider endpoints include:
     - `POST /api/admin/autodownload/sources/:id/test`
@@ -158,7 +160,7 @@ There is currently **no automated test suite**. Use:
     - `DELETE /api/admin/autodownload/sources/logs` (clear provider/all logs + reset domain health cache)
   - processing log endpoint `DELETE /api/admin/autodownload/processing-log` clears all Processing Log entries from admin DB
   - queue creation endpoint `POST /api/admin/autodownload/downloads` is TMDB-only (manual URL add is disabled in admin UI/API)
-  - bulk queue endpoint `POST /api/admin/autodownload/downloads/bulk` supports temporary admin bulk actions (currently `delete_all`)
+  - bulk queue endpoint `POST /api/admin/autodownload/downloads/bulk` supports temporary admin bulk actions (currently `delete_all` for queue + qB cleanup); NAS library purge is safety-locked and requires explicit backend unlock + confirmation payload
   - scheduler tick endpoint `POST /api/admin/autodownload/scheduler/tick` supports optional scoped runs via body/query `type=movie|series|all`
 
 ### System Architecture (Operational)
@@ -181,6 +183,7 @@ There is currently **no automated test suite**. Use:
 ### Data Storage Model
 Main object is in admin DB (`lib/server/adminDb.js`), including:
 - `admins`, `sessions`, `secrets`, `settings`
+  - Public `settings.catalog` now stores category labels (Home/Movies/Series row names) and row behavior controls (top-row rotation cadence, display counts, pool sizes).
 - `reports`, `notifications`
 - `requestSettings` (daily limit default, per-username daily overrides, default landing category, customizable display labels for fixed request statuses)
 - `requests` (one row per TMDB media id + media type, deduped globally, with requesters/reminder subscribers, status workflow, archive support)
@@ -192,7 +195,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - `sourceProviders`, `sourceProviderLogs`, `sourceProviderDomains`
   - `sourceProviderDomains` is the canonical per-domain/base health store (status, failure streak, backoff, last error, duration, ordering).
   - `sourceProviderDomainHealth` remains as a legacy compatibility array and is no longer authoritative.
-- `libraryInventory` (persisted Movies/Series NAS snapshot for admin KPIs + duplicate checks)
+- `libraryInventory` (persisted Movies/Series NAS snapshot for admin KPIs + duplicate checks, including folder-count rollups by movie category/genre and series genre, plus count-report write status/paths)
 - `xuiIntegration`, `xuiScanState`, `xuiScanLogs`
 
 ### Important Current Behaviors
@@ -202,20 +205,55 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - qB provisioning/auth logic: `lib/server/autodownload/qbittorrentService.js`
 - AutoDownload download/sync/control now opens an authenticated qB WebUI session using stored encrypted credentials (cookie-based login per SSH job) and treats HTTP/transport failures as hard errors instead of silent success.
 - Download sync now enforces expected qB placement/category for managed items (`MOVIE_AUTO`/`SERIES_AUTO`, configured Downloading/Downloaded folders) using qB `setLocation` + `setCategory`.
+- qBittorrent settings now include a dedicated admin `qBittorrent Options` section on `/admin/autodownload/qbittorrent` (`downloadClient.autoDeleteCompletedTorrents`, `autoDeleteCompletedDelayMinutes`, `maxActiveDownloads`, `maxActiveUploads`, `maxActiveTorrents`); sync auto-removes completed torrents from qB (`deleteFiles=false`) only after the configured delay, runtime queue limits are applied via qB preferences, and `GET /api/admin/autodownload/download-settings` now best-effort syncs queue-limit values from qB runtime by trying SSH/LAN API endpoints first then falling back to qB config parsing so admin UI reflects actual qB values.
+- Download sync auto-delete now also covers finalized managed torrents in qB (Completed/Processing/Cleaned/Released/Deleted), including managed orphan torrents not actively tracked in queue rows, still honoring `autoDeleteCompletedTorrents` + `autoDeleteCompletedDelayMinutes`; finalized rows whose torrent is already missing in qB are marked as `qbDeleteStatus=missing_in_client`.
 - Queue-to-torrent binding now prefers strict source-hash matching and avoids fallback mis-linking when a source hash is known.
 - Download source provider health/backoff/log orchestration: `lib/server/autodownload/sourceProvidersService.js`
 - Provider adapter engine modules: `lib/server/autodownload/providers/*`, `sourceEngine.js`, `ranking.js`, `filters.js`
 - AutoDownload staging folders are under `<mountDir>/qBittorrent/Movies` and `<mountDir>/qBittorrent/Series`; final library categories/genres stay under `<mountDir>/Movies` and `<mountDir>/Series`.
 - AutoDownload library folder defaults now use `Downloaded and Processing` (downloaded stage) and `Cleaned and Ready` (processing hold stage) for both Movies and Series.
+- AutoDownload processing + folder-validation no longer renames Movie/Series category or genre folders with count suffixes (e.g., `English(174)`); canonical folders remain unsuffixed (`English`, `Asian`, genre names).
+- Admin Library Inventory now exposes live folder-count chips (`Category (count)`, `Category/Genre (count)`, `Series Genre (count)`) so counts stay visible without mutating NAS folder names.
+- Each inventory sync now writes Explorer-visible NAS reports: `<mountDir>/Movies/_folder_counts.txt` and `<mountDir>/Series/_folder_counts.txt`.
+- Folder validation (`/api/admin/autodownload/mount/validate-folders`) now auto-normalizes legacy count-suffixed category/genre directories by renaming/merging them into canonical unsuffixed folders.
+- Admin shells (`/admin`, `/admin/login`, `/admin/setup`) now expose `data-admin-ui="1"` and light-mode CSS overrides that darken neon Tailwind status colors (`text-*-200/300`, `bg-*/10..20`, `border-*/30..40`) for better readability.
+- Admin Readiness and Library Inventory warning/success/status pills now use admin theme tokens (`--admin-pill-*`) instead of fixed neon classes, and light-theme token contrast has been strengthened so the `8/8` sanity badge and Clean Library preview notes/buttons remain readable in light mode.
+- Critical readiness/library warning surfaces (`8/8` badge, sanity status pills, Clean Library note cards/buttons) now set tone colors via inline `style` from token vars (`toneVars(...)`) to avoid Tailwind variant/cache mismatches in light mode.
+- Admin UI color system now standardizes around theme tokens (`--admin-primary`, `--admin-secondary`, `--admin-tertiary`) with semantic `admin-btn-*` classes and broader compatibility remapping for legacy Tailwind neon utility classes (status text/background/border + hover) so light mode keeps consistent contrast across admin pages/modals.
 - AutoDownload selection runs stamp release metadata (`releaseDate`, `releaseTag`, timezone, delay-days) into queue records + selection logs; release delay is configurable in AutoDownload Settings (`release.delayDays`, default 3, timezone default `Asia/Manila`).
 - Processing now cleans completed items into per-release hold folders under `Cleaned and Ready/ReldateM-D-YY/*`; final category/genre placement is deferred until release date.
 - Scheduler timeout flow now emits timed-out metadata and performs same-log replacements (same `selectionLogId` + release date/tag) before release date.
 - Release workflow is date-driven: when due, cleaned held items move to final library paths, not-ready items are dropped/deleted, watchfolder pending flags are set, and reminder subscribers receive availability notifications.
+- Movie release deploy now preserves the cleaned movie folder name into final genre paths (instead of flattening files directly into genre root).
+- Release workflow now also prunes empty release-tag hold folders (`Cleaned and Ready/Reldate...`) after successful deploy moves (including recursive empty-subfolder pruning before removal), so stale empty Reldate directories do not accumulate.
 - Public Home now includes queue-backed `Worth to wait` (upcoming held items) and `Recently Added` (released queue items) rows from the new public AutoDownload upcoming APIs.
+- Public Movies and Series pages now also render queue-backed `Worth to wait` rows (`/api/public/autodownload/upcoming`) scoped to media type (movie/tv).
+- Public catalog rows (Home/Movies/Series) now read admin-configurable `settings.catalog.labels.*`, so row names can be renamed without code changes.
+- Movies/Series top rows now support deterministic rotating pools (`settings.catalog.categories.topMovies/topSeries`) with default 3-day replacement cadence and configurable display/pool sizes; Movies defaults to a larger rotating set (60 cards from top 240) for higher variety.
+- Admin now includes `/admin/category-settings` to manage public category names and category behavior (rotation cadence, visible-card counts, genre-row limits).
+- On Movies/Series pages, `Worth to wait` is shown near the bottom of each page’s content stack (Movies: before the `All Movies` grid), and upcoming/released queue rows now hydrate missing poster/backdrop art from TMDB details by ID (cached) with `/placeholders/poster-fallback.jpg` as final fallback.
+- Queue-backed upcoming movie cards now show a compact month/day release badge (`MMM D`); clicking those cards opens the preview modal directly (play-first bypass), and the modal’s top metadata line shows ratings first, then `Release date: <MMM D, YYYY>`, followed by genre/duration/year, plus description/cast and bottom-left `Remind me` + `More info` actions (red icon button via POST `/api/public/autodownload/upcoming`, action `remind`).
 - Movie/Series detail pages support `?upcoming=1` mode for Worth-to-wait titles with TMDB metadata + trailer/cast + reminder action; released rows route back to normal detail pages.
+- XUI catalog APIs now normalize `added` timestamps (`added/date_added/last_modified`) for VOD/Series rows and return no-store responses; Movies page `Recently Added` now sorts by that XUI-added time and polls every 60s so newly released XUI titles surface quickly.
 - CIFS mount orchestration now applies `uid/gid` ownership mapping (resolved to numeric IDs when needed) in test/mount/status auto-remount flows, preventing qB `Permission denied` writes on NAS-mounted `qBittorrent/*/1-Downloading`.
 - AutoDownload Settings modal validates HH:MM schedule inputs client-side; valid times now correctly enable Save in `Edit Enable & Schedule`.
 - AutoDownload Settings now include source-quality gates (`sourceFilters.minMovieSeeders`, `sourceFilters.minSeriesSeeders`) in addition to size limits.
+- AutoDownload Settings now include cleaning controls (`cleaning.enabled`, `cleaning.createMovieFolderIfMissing`, `cleaning.templates.*`) and strict series-timeout policy flags (`timeoutChecker.strictSeriesReplacement`, `timeoutChecker.deletePartialSeriesOnReplacementFailure`).
+- Scheduler cleaning now runs sequentially through all `Completed` items each tick (no per-tick max cap) when cleaning is enabled; manual processing endpoints still support targeted single-item runs.
+- Cleaning pipeline now applies configurable naming templates (movie folder/file/subtitle + series folder/season-folder/episode/subtitle), flattens nested files, keeps only allowed video/subtitle file types, deletes the rest, and writes cleaned output into `Cleaned and Ready/Reldate.../<templated-folder>`.
+- After a successful clean, processing now performs a guarded source-path cleanup: if the original torrent path still exists under configured qB stage roots (`Downloading` / `Downloaded and Processing`), it is removed to prevent completed assets from lingering in `1-Downloading` after copy-fallback moves.
+- Scheduler processing ticks now also run a one-time stale-source cleanup pass for existing `Cleaned`/`Released`/`Deleted` rows, removing leftover source paths from qB stage roots and recording `sourceCleanup*` metadata on queue rows.
+- Cleaning title parsing now strips common release/quality tags (`1080p`, `4k`, codec/source tokens, YTS tags) from `title` tokens before template rendering, preventing duplicate quality fragments like `-1080p -1080p` in folder/file rename targets.
+- Cleaning subtitle handling now preserves all recognized subtitle file extensions (`srt/ass/ssa/sub/vtt`), including files without explicit language tags, while still applying language token naming when available.
+- Admin `Clean Library` preview modal now shows summary KPIs only (affected/changed/deleted/warnings + folder totals including created/renamed/deleted), hides per-file planned lists, no longer shows scanned-title counters, and includes a top preview note with deleted-file extension breakdown (e.g., `png:10, unknown:45`).
+- Clicking `Files Deleted` in the preview opens a detailed modal listing files queued for deletion plus grouped summaries by file format and delete category/reason; cleaner summary now emits `deletedByExtension` and `deletedByReason`.
+- In the `Files To Be Deleted` modal, both `By File Format` and `By Delete Category` chips are clickable filters with `Clear filters`, and the file table updates to matching rows.
+- Clicking `Folders Deleted` in the preview now opens a dedicated `Folders To Be Deleted` modal with a guide note, reason-group summary, and per-folder rows (`path` + delete reason) so admins can understand why folders are being removed before confirming cleanup.
+- Clicking `Folders Renamed` in the preview now opens a dedicated `Folders To Be Renamed` modal with guide text plus `from -> to` rows and action labels, so admins can review template-driven folder renames before confirming cleanup.
+- Cleaning recovery now retries rows that failed with `Unable to determine download path` by re-scanning configured Downloaded-and-Processing folders (including sudo path probes/listing fallback) so previously completed items can still be cleaned.
+- If a stale duplicate row cannot be recovered but another matching row is already `Cleaned`/`Released`, the stale row is auto-marked `Deleted` as superseded to stop endless retry churn.
+- Processing pass now also removes orphaned UUID stage folders under `Cleaned and Ready` (except actively `Processing` rows) before queue cleaning, preventing stale temp folders from lingering.
+- When timed-out series replacements cannot be fulfilled from configured sources, strict mode can auto-delete partial series rows/assets for that selection log, annotate selection-log failure metadata, and trigger fallback series selection/dispatch.
 - Admin AutoDownload navigation is in the left sidebar as an expandable (chevron) sub-navigation under `AutoDownload`; top-level items are `Sanity Check`, `Movies`, `Series`, and `Library Inventory`, while the remaining AutoDownload pages are grouped under a nested `Settings` section; active sub-links use primary-color highlighting, and qBittorrent lives at `/admin/autodownload/qbittorrent` (legacy `/admin/autodownload/download-settings` redirects).
 - Admin AutoDownload includes `/admin/autodownload/sources` for Download Sources (YTS/TPB), with provider cards, status badges, active base display, test/test-active actions, configuration modal, and provider logs.
 - Admin AutoDownload includes `/admin/autodownload/readiness` (AutoDownload Sanity Check) to run sanity checks across Engine Host, Mount, qBittorrent, Download Sources, Settings, and XUI before end-to-end testing.
@@ -231,19 +269,27 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Source filtering for queue dispatch now enforces settings-driven seeders + size policy at search time; movie max size (e.g., 2.5 GB) and min seeders are applied before torrent add.
 - Dispatch now performs a final policy gate before qB add (min seeders + size), even after provider selection, to prevent policy drift from queued stale sources.
 - qB runtime now has a hard size-limit guard: if actual torrent size exceeds configured max (Movie/Series), the torrent is auto-deleted from qB, job is returned to `Queued`, and a size-limit error is recorded for retry with another source.
+- Download sync now self-heals missing qB torrents for non-final rows: when a row points to a `qbHash` no longer present in qB, it is converted from `Downloading`/active states back to `Queued` with `qbHash=null` for automatic retry, avoiding stale “Downloading” rows with no real torrent.
+- Download sync preserves terminal row states (`Processing`, `Cleaned`, `Deleted`, `Released`) when matching live qB torrents, so superseded/deleted rows are not resurrected back to `Completed`.
+- Timeout checker now deduplicates active rows by torrent hash and only applies timeout deletion to the newest active row per hash; older duplicate rows are marked `Deleted` as superseded, preventing stale historical rows from deleting newly re-added torrents that reuse the same hash.
 - Scheduler now detects movie dispatch failures caused by size-limit rejections and runs an immediate supplemental movie selection (without updating daily `lastMoviesRunAt`) to replace rejected slots, then performs a follow-up movie dispatch pass for those replacements.
 - YTS source links now prefer tracker-backed `.torrent` download URLs (with enriched magnet fallback), improving peer discovery vs legacy trackerless BTIH-only magnets.
 - Movies/Series admin pages no longer expose any manual add action; queue seeding is automatic from selection strategy.
 - Movies page now focuses on `Selection Log` only; clicking a run row opens a modal scoped to that run’s selected TMDB items, merged with current queue state (the previous Jobs-tab table is moved into this modal flow).
 - Movies Selection Log modal now resolves each TMDB row to the best queue record by priority (`same selectionLogId` first, then non-deleted/latest), preventing stale historical `Deleted` rows from overriding current-run items.
+- Movies Selection Log status display now derives release lifecycle states: `Cleaned` rows with `releaseState=waiting` show `Waiting to be released`, and released rows show `Deployed in XUI`; release-date table cells now show date only (no redundant `Reldate...` tag).
+- Admin Movies Selection Log status tags/alerts/error text now use theme-aware admin color tokens, improving readability in Light mode (status pills, warning/error badges, and success/error notices).
+- Movies Selection Log modal now allows editing `Release date` for not-yet-released runs; `PATCH /api/admin/autodownload/selection-log` with `action=set_release_date` updates the selection-log release date/tag and all linked unreleased queue rows for that run.
 - Movies page no longer renders a single-item top subnav tab (`Selection Log`) to reduce redundant UI.
 - Movies Selection Log modal is rendered above admin shell layers (sidebar/topbar) for full-focus inspection.
-- Movies Selection Log includes temporary QA controls: `Trigger AutoDownload Once`, `Delete All` (queue + qB + optional NAS purge), and `Clear Log`.
+- Movies Selection Log includes temporary QA controls: `Trigger AutoDownload Once`, `Delete All` (queue + qB only), and `Clear Log`.
 - Movies jobs modal includes explicit size-rejection visibility via `Rejected by size limit` filter and `Size Rejected` row badge.
-- Movie bulk delete flow is resilient to malformed qB `torrents/info` responses (JSON recovery + category-first query + fallback path) and, when NAS purge hits permission errors, retries cleanup with sudo on the Engine Host.
+- Movie bulk delete flow is resilient to malformed qB `torrents/info` responses (JSON recovery + category-first query + fallback path).
+- Movie `Delete All` file removal scope is strict: only torrent data currently saved under `<mountDir>/qBittorrent/Movies/*` is deleted; final library paths under `<mountDir>/Movies/*` are never part of this cleanup.
 - Movie `Delete All` now also clears Movie Selection Log entries by default (same action call), and reports deleted log count in the success message.
-- Movie NAS purge now retries non-empty directory cleanup loops before failing, reducing transient `Directory not empty` race errors on qB staging paths.
+- Movie NAS purge is no longer available from admin UI. Backend only allows it when `ALLOW_MOVIE_LIBRARY_PURGE=true` and request payload includes both `explicitUserInstruction=true` and `confirmPhrase=PURGE_MOVIES_LIBRARY`; otherwise purge is blocked.
 - AutoDownload includes `/admin/autodownload/library` (Library Inventory) with Movies/Series separation and KPI cards; inventory snapshots are persisted in DB (`libraryInventory`) for duplicate checking.
+- Library Inventory now has a `Clean Library` flow (preview + confirmation modal) that can clean existing final library Movies/Series in place (not `qBittorrent/*`), honoring file rules + cleaning templates and showing impact counts before execution.
 - Selection now pre-validates source availability during TMDB picks; candidates with no valid source are skipped and the engine keeps searching for alternatives.
 - Dispatch now iterates past failed queued candidates (e.g., `No valid source found`) until it starts the per-type target count, instead of stopping at the first failed subset.
 - Scheduler tick API no longer forces runs just because caller is an admin; force mode requires explicit `force=true`.
@@ -305,6 +351,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 3. Keep admin-config-driven behavior intact.
 4. Prefer service-layer fixes over UI-only patches.
 5. Validate with `npm run build` and route/API checks after edits.
+6. Never trigger destructive NAS purge actions (`purgeNas=true`) unless the user explicitly asks in the current chat and confirms; default/safe behavior is queue + qB cleanup only.
 
 ---
 

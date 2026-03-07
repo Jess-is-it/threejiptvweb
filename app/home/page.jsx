@@ -1,13 +1,16 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Protected from '../../components/Protected';
 import Hero from '../../components/Hero';
 import Row from '../../components/Row';
 import { getContinueList } from '../../components/continueStore';
 import { useSession } from '../../components/SessionProvider';
+import { usePublicSettings } from '../../components/PublicSettingsProvider';
+import { getCatalogSettings, selectRotatingCategory } from '../../lib/catalogSettings';
 
 export default function Home() {
   const { session } = useSession();
+  const { settings } = usePublicSettings();
   const username = String(session?.user?.username || '').trim();
   const [heroItems, setHero] = useState([]);
   const [topMovies, setTopMovies] = useState([]);
@@ -39,8 +42,31 @@ export default function Home() {
         ]);
         if (!ok) return;
         setHero([...(nowM.results || []).slice(0, 5), ...(onAirT.results || []).slice(0, 5)]);
-        setTopMovies(topM.results || []);
-        setTopSeries(topT.results || []);
+
+        const moviePoolMap = new Map();
+        [...(topM.results || []), ...(popM.results || []), ...(trendM.results || []), ...(nowM.results || [])].forEach(
+          (item) => {
+            const key = String(item?.id || '');
+            if (!key || moviePoolMap.has(key)) return;
+            moviePoolMap.set(key, item);
+          }
+        );
+        const moviePool = [...moviePoolMap.values()].sort(
+          (a, b) => (b.vote_average || 0) - (a.vote_average || 0) || (b.popularity || 0) - (a.popularity || 0)
+        );
+        setTopMovies(moviePool);
+
+        const seriesPoolMap = new Map();
+        [...(topT.results || []), ...(trendT.results || []), ...(onAirT.results || [])].forEach((item) => {
+          const key = String(item?.id || '');
+          if (!key || seriesPoolMap.has(key)) return;
+          seriesPoolMap.set(key, item);
+        });
+        const seriesPool = [...seriesPoolMap.values()].sort(
+          (a, b) => (b.vote_average || 0) - (a.vote_average || 0) || (b.popularity || 0) - (a.popularity || 0)
+        );
+        setTopSeries(seriesPool);
+
         setRecMovies(popM.results || []);
         setRecentMovies(nowM.results || []);
         setRecentMixed([
@@ -108,6 +134,18 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
+  const catalog = useMemo(() => getCatalogSettings(settings || {}), [settings]);
+  const topMoviesRow = useMemo(() => selectRotatingCategory(topMovies, catalog.categories.topMovies), [topMovies, catalog]);
+  const topSeriesRow = useMemo(() => selectRotatingCategory(topSeries, catalog.categories.topSeries), [topSeries, catalog]);
+  const recommendedRow = useMemo(
+    () => (recMovies || []).slice(0, catalog.categories.recommendedMovies.displayCount),
+    [recMovies, catalog]
+  );
+  const recentMoviesRow = useMemo(
+    () => (recentMovies || []).slice(0, catalog.categories.recentlyAddedMovies.displayCount),
+    [recentMovies, catalog]
+  );
+
   return (
     <Protected>
       <section className="py-6 px-4 sm:px-6 lg:px-10">
@@ -120,15 +158,15 @@ export default function Home() {
           </div>
         ) : null}
 
-        <Row title="Top Movies" items={topMovies} loading={loading} kind="movie" />
-        <Row title="Worth to wait" items={worthToWait} loading={loading} kind="tv" />
-        <Row title="Recently Added" items={releasedFromQueue} loading={loading} kind="tv" />
-        <Row title="Recently added (Movies & Series)" items={recentMixed} loading={loading} kind="movie" />
+        <Row title={catalog.labels.homePage.topMovies} items={topMoviesRow} loading={loading} kind="movie" />
+        <Row title={catalog.labels.homePage.worthToWait} items={worthToWait} loading={loading} kind="tv" />
+        <Row title={catalog.labels.homePage.recentlyAdded} items={releasedFromQueue} loading={loading} kind="tv" />
+        <Row title={catalog.labels.homePage.recentMixed} items={recentMixed} loading={loading} kind="movie" />
         {cont.length ? <Row title="Continue Watching" items={cont} kind="movie" /> : null}
-        <Row title="Top 10 in 3J TV" items={top10} loading={loading} kind="movie" />
-        <Row title="Recommended Movies" items={recMovies} loading={loading} kind="movie" />
-        <Row title="Top Series" items={topSeries} loading={loading} kind="tv" />
-        <Row title="Recently added movies" items={recentMovies} loading={loading} kind="movie" />
+        <Row title={catalog.labels.homePage.top10} items={top10} loading={loading} kind="movie" />
+        <Row title={catalog.labels.homePage.recommendedMovies} items={recommendedRow} loading={loading} kind="movie" />
+        <Row title={catalog.labels.homePage.topSeries} items={topSeriesRow} loading={loading} kind="tv" />
+        <Row title={catalog.labels.homePage.recentMovies} items={recentMoviesRow} loading={loading} kind="movie" />
       </section>
     </Protected>
   );

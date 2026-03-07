@@ -1,0 +1,14 @@
+[Unit]
+Description=3J TV Scheduler Tick
+After=network-online.target 3j-tv.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Provide SCHEDULER_TOKEN in /etc/3j-tv/scheduler.env:
+#   SCHEDULER_TOKEN=...
+EnvironmentFile=-/etc/3j-tv/scheduler.env
+
+ExecStart=/usr/bin/curl -fsS "http://127.0.0.1:3000/api/admin/autodownload/scheduler/tick?token=${SCHEDULER_TOKEN}"
+
