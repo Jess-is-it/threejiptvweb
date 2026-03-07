@@ -162,6 +162,11 @@ There is currently **no automated test suite**. Use:
   - queue creation endpoint `POST /api/admin/autodownload/downloads` is TMDB-only (manual URL add is disabled in admin UI/API)
   - bulk queue endpoint `POST /api/admin/autodownload/downloads/bulk` supports temporary admin bulk actions (currently `delete_all` for queue + qB cleanup); NAS library purge is safety-locked and requires explicit backend unlock + confirmation payload
   - scheduler tick endpoint `POST /api/admin/autodownload/scheduler/tick` supports optional scoped runs via body/query `type=movie|series|all`
+  - qB VPN endpoints:
+    - `GET/PUT /api/admin/autodownload/download-settings/vpn`
+    - `GET /api/admin/autodownload/download-settings/vpn/regions`
+    - `POST /api/admin/autodownload/download-settings/vpn/apply`
+    - `POST /api/admin/autodownload/download-settings/vpn/test`
 
 ### System Architecture (Operational)
 1. **Public playback flow**
@@ -190,6 +195,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - `upcomingReminders` (per TMDB media row reminder subscribers used by Worth-to-wait notifications)
 - `engineHosts`, `mountSettings`, `mountStatus`
 - `autodownloadSettings`
+  - `autodownloadSettings.downloadClient.vpn` now stores qB-only VPN config/state (`enabled`, PIA credentials encrypted, region, kill-switch, dispatch guard, last apply/test summaries).
 - `downloadsMovies`, `downloadsSeries`
 - `processingLogs`, `selectionLogs`
 - `sourceProviders`, `sourceProviderLogs`, `sourceProviderDomains`
@@ -206,6 +212,9 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - AutoDownload download/sync/control now opens an authenticated qB WebUI session using stored encrypted credentials (cookie-based login per SSH job) and treats HTTP/transport failures as hard errors instead of silent success.
 - Download sync now enforces expected qB placement/category for managed items (`MOVIE_AUTO`/`SERIES_AUTO`, configured Downloading/Downloaded folders) using qB `setLocation` + `setCategory`.
 - qBittorrent settings now include a dedicated admin `qBittorrent Options` section on `/admin/autodownload/qbittorrent` (`downloadClient.autoDeleteCompletedTorrents`, `autoDeleteCompletedDelayMinutes`, `maxActiveDownloads`, `maxActiveUploads`, `maxActiveTorrents`); sync auto-removes completed torrents from qB (`deleteFiles=false`) only after the configured delay, runtime queue limits are applied via qB preferences, and `GET /api/admin/autodownload/download-settings` now best-effort syncs queue-limit values from qB runtime by trying SSH/LAN API endpoints first then falling back to qB config parsing so admin UI reflects actual qB values.
+- qBittorrent settings page now includes a separate `VPN Options (qB-only)` section for PIA WireGuard with opt-in/opt-out toggle, region selection, kill switch, and dispatch guard; apply/test actions are exposed via `/api/admin/autodownload/download-settings/vpn/*`.
+- VPN routing is scoped to qBittorrent traffic only (Linux user `xui`) using policy routing + iptables mark chains; app/IPTV traffic remains on normal network.
+- Scheduler and queue dispatch now run a VPN health guard (`downloadClient.vpn.requiredForDispatch`) and skip/start failures when VPN is required but not ready.
 - Download sync auto-delete now also covers finalized managed torrents in qB (Completed/Processing/Cleaned/Released/Deleted), including managed orphan torrents not actively tracked in queue rows, still honoring `autoDeleteCompletedTorrents` + `autoDeleteCompletedDelayMinutes`; finalized rows whose torrent is already missing in qB are marked as `qbDeleteStatus=missing_in_client`.
 - Queue-to-torrent binding now prefers strict source-hash matching and avoids fallback mis-linking when a source hash is known.
 - Download source provider health/backoff/log orchestration: `lib/server/autodownload/sourceProvidersService.js`

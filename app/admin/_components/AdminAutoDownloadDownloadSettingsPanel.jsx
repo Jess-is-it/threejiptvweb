@@ -48,10 +48,15 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
   const [testing, setTesting] = useState(false);
   const [serviceBusy, setServiceBusy] = useState(false);
   const [optionsBusy, setOptionsBusy] = useState(false);
+  const [vpnBusy, setVpnBusy] = useState(false);
+  const [vpnApplying, setVpnApplying] = useState(false);
+  const [vpnTesting, setVpnTesting] = useState(false);
+  const [vpnRegionsBusy, setVpnRegionsBusy] = useState(false);
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
   const [editOpen, setEditOpen] = useState(false);
   const [optionsEditOpen, setOptionsEditOpen] = useState(false);
+  const [vpnEditOpen, setVpnEditOpen] = useState(false);
   const [provisionProgress, setProvisionProgress] = useState(0);
   const [provisionPhase, setProvisionPhase] = useState('');
   const [provisionOutput, setProvisionOutput] = useState('');
@@ -68,8 +73,17 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
   const [maxActiveTorrents, setMaxActiveTorrents] = useState(5);
   const [lanAddress, setLanAddress] = useState('0.0.0.0');
   const [authSubnetAllowlist, setAuthSubnetAllowlist] = useState('127.0.0.1/32');
+  const [vpnEnabled, setVpnEnabled] = useState(false);
+  const [vpnRegionId, setVpnRegionId] = useState('ph');
+  const [vpnRegionName, setVpnRegionName] = useState('Philippines');
+  const [vpnKillSwitchEnabled, setVpnKillSwitchEnabled] = useState(true);
+  const [vpnRequiredForDispatch, setVpnRequiredForDispatch] = useState(true);
+  const [vpnUsername, setVpnUsername] = useState('');
+  const [vpnPassword, setVpnPassword] = useState('');
+  const [vpnRegions, setVpnRegions] = useState([]);
 
   const [info, setInfo] = useState(null);
+  const [vpnInfo, setVpnInfo] = useState(null);
 
   const notes = [
     {
@@ -104,14 +118,39 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
     return Boolean(delayOk && maxDlOk && maxUlOk && maxTorOk);
   }, [autoDeleteCompletedDelayMinutes, maxActiveDownloads, maxActiveUploads, maxActiveTorrents]);
 
+  const vpnCanSave = useMemo(() => {
+    if (!vpnEnabled) return true;
+    const regionOk = Boolean(String(vpnRegionId || '').trim());
+    const usernameOk = Boolean(String(vpnUsername || '').trim()) || Boolean(vpnInfo?.hasCredentials);
+    const passwordOk = Boolean(vpnPassword) || Boolean(vpnInfo?.hasCredentials);
+    return Boolean(regionOk && usernameOk && passwordOk);
+  }, [vpnEnabled, vpnRegionId, vpnUsername, vpnPassword, vpnInfo?.hasCredentials]);
+
+  const loadVpnRegions = async ({ silent = false } = {}) => {
+    setVpnRegionsBusy(true);
+    try {
+      const r = await fetch('/api/admin/autodownload/download-settings/vpn/regions', { cache: 'no-store' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to load PIA regions.');
+      setVpnRegions(Array.isArray(j?.regions) ? j.regions : []);
+    } catch (e) {
+      if (!silent) setErr(e?.message || 'Failed to load PIA regions.');
+    } finally {
+      setVpnRegionsBusy(false);
+    }
+  };
+
   const load = async () => {
     setLoading(true);
     setErr('');
     try {
-      const r = await fetch('/api/admin/autodownload/download-settings', { cache: 'no-store' });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to load qBittorrent settings.');
-      const qb = j.qb || {};
+      const [qbResp, vpnResp] = await Promise.all([
+        fetch('/api/admin/autodownload/download-settings', { cache: 'no-store' }),
+        fetch('/api/admin/autodownload/download-settings/vpn', { cache: 'no-store' }).catch(() => null),
+      ]);
+      const qbJson = await qbResp.json().catch(() => ({}));
+      if (!qbResp.ok || !qbJson?.ok) throw new Error(qbJson?.error || 'Failed to load qBittorrent settings.');
+      const qb = qbJson.qb || {};
       setEnabled(Boolean(qb.enabled));
       setPort(Number(qb.port || 8080));
       setConnectionMode(qb.connectionMode === 'lan' ? 'lan' : 'ssh');
@@ -123,6 +162,23 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
       setLanAddress(String(qb?.lanBind?.address || '0.0.0.0'));
       setAuthSubnetAllowlist(String(qb?.lanBind?.authSubnetAllowlist || '127.0.0.1/32'));
       setInfo(qb);
+
+      if (vpnResp) {
+        const vpnJson = await vpnResp.json().catch(() => ({}));
+        if (vpnResp.ok && vpnJson?.ok) {
+          const vpn = vpnJson?.vpn || {};
+          setVpnEnabled(Boolean(vpn?.enabled));
+          setVpnRegionId(String(vpn?.regionId || 'ph'));
+          setVpnRegionName(String(vpn?.regionName || ''));
+          setVpnKillSwitchEnabled(vpn?.killSwitchEnabled !== false);
+          setVpnRequiredForDispatch(vpn?.requiredForDispatch !== false);
+          setVpnUsername('');
+          setVpnPassword('');
+          setVpnInfo(vpn);
+        }
+      }
+
+      await loadVpnRegions({ silent: true });
     } catch (e) {
       setErr(e?.message || 'Failed to load qBittorrent settings.');
     } finally {
@@ -194,6 +250,96 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
       return false;
     } finally {
       setOptionsBusy(false);
+    }
+  };
+
+  const saveVpnSettings = async () => {
+    setVpnBusy(true);
+    setErr('');
+    setOk('');
+    try {
+      const payload = {
+        enabled: vpnEnabled,
+        regionId: String(vpnRegionId || '').trim(),
+        regionName: String(vpnRegionName || '').trim(),
+        killSwitchEnabled: vpnKillSwitchEnabled,
+        requiredForDispatch: vpnRequiredForDispatch,
+      };
+      if (String(vpnUsername || '').trim()) payload.piaUsername = String(vpnUsername || '').trim();
+      if (vpnPassword) payload.piaPassword = vpnPassword;
+
+      const r = await fetch('/api/admin/autodownload/download-settings/vpn', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to save VPN settings.');
+      setVpnPassword('');
+      setVpnUsername('');
+      setVpnInfo(j?.vpn || null);
+      setOk('VPN settings saved.');
+      return true;
+    } catch (e) {
+      setErr(e?.message || 'Failed to save VPN settings.');
+      return false;
+    } finally {
+      setVpnBusy(false);
+    }
+  };
+
+  const applyVpn = async ({ disable = false } = {}) => {
+    if (disable) {
+      if (!confirm('Disable qBittorrent VPN routing now?')) return;
+    } else if (!confirm('Apply qBittorrent VPN routing now?')) {
+      return;
+    }
+    setVpnApplying(true);
+    setErr('');
+    setOk('');
+    try {
+      const r = await fetch('/api/admin/autodownload/download-settings/vpn/apply', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(disable ? { action: 'disable' } : {}),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.result?.error || 'Failed to apply VPN settings.');
+      const result = j?.result || {};
+      setVpnInfo(result?.vpn || vpnInfo || null);
+      setVpnEnabled(result?.vpn?.enabled === true);
+      setOk(
+        disable
+          ? result?.vpn?.lastAppliedSummary || 'VPN disabled.'
+          : result?.runtime?.summary || result?.vpn?.lastAppliedSummary || 'VPN applied.'
+      );
+      await load();
+    } catch (e) {
+      setErr(e?.message || 'Failed to apply VPN settings.');
+    } finally {
+      setVpnApplying(false);
+    }
+  };
+
+  const testVpn = async () => {
+    setVpnTesting(true);
+    setErr('');
+    setOk('');
+    try {
+      const r = await fetch('/api/admin/autodownload/download-settings/vpn/test', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ includePublicIp: true }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.result?.summary || 'VPN test failed.');
+      setVpnInfo(j?.result?.vpn || null);
+      setOk(j?.result?.summary || 'VPN check passed.');
+      await load();
+    } catch (e) {
+      setErr(e?.message || 'VPN test failed.');
+    } finally {
+      setVpnTesting(false);
     }
   };
 
@@ -294,6 +440,7 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
 
   const saveDisabled = loading || busy || !canSave;
   const optionsSaveDisabled = loading || optionsBusy || !optionsCanSave;
+  const vpnSaveDisabled = loading || vpnBusy || !vpnCanSave;
 
   return (
     <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5 shadow-sm">
@@ -325,8 +472,12 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
         </div>
       </div>
 
-      {!editOpen && !optionsEditOpen && err ? <div className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div> : null}
-      {!editOpen && !optionsEditOpen && ok ? <div className="mt-4 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{ok}</div> : null}
+      {!editOpen && !optionsEditOpen && !vpnEditOpen && err ? (
+        <div className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div>
+      ) : null}
+      {!editOpen && !optionsEditOpen && !vpnEditOpen && ok ? (
+        <div className="mt-4 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{ok}</div>
+      ) : null}
       {info?.lastTestOk !== true ? (
         <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-black data-[theme=dark]:text-amber-100">
           Save credentials first, then run <span className="font-semibold">Provision qBittorrent</span> and{' '}
@@ -433,6 +584,58 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
             </div>
             <div className="mt-1 text-xs text-[var(--admin-muted)]">
               {info?.lastOptionsAppliedAt ? new Date(info.lastOptionsAppliedAt).toLocaleString() : '—'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">VPN Options (qB-only)</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">
+              Routes only qBittorrent service traffic (Linux user <code>xui</code>) through VPN. Web/app traffic stays on normal network.
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => testVpn()}
+              disabled={loading || vpnTesting}
+              className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
+            >
+              {vpnTesting ? 'Testing VPN…' : 'Test VPN'}
+            </button>
+            <button
+              onClick={() => applyVpn({ disable: vpnEnabled !== true })}
+              disabled={loading || vpnApplying}
+              className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
+            >
+              {vpnApplying ? 'Applying…' : 'Apply Change'}
+            </button>
+            <EditIconButton onClick={() => setVpnEditOpen(true)} />
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+            <div className="text-xs text-[var(--admin-muted)]">Status</div>
+            <div className="mt-1 text-sm font-semibold">{vpnEnabled ? 'Enabled' : 'Disabled'}</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">
+              Region: {vpnInfo?.regionName || vpnRegionName || vpnRegionId || '—'}
+            </div>
+          </div>
+          <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+            <div className="text-xs text-[var(--admin-muted)]">Safety</div>
+            <div className="mt-1 text-sm font-semibold">Kill switch: {vpnInfo?.killSwitchEnabled !== false ? 'On' : 'Off'}</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">
+              Dispatch guard: {vpnInfo?.requiredForDispatch !== false ? 'Require healthy VPN' : 'Disabled'}
+            </div>
+          </div>
+          <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+            <div className="text-xs text-[var(--admin-muted)]">Last VPN Test</div>
+            <div className="mt-1 text-sm font-semibold">{vpnInfo?.lastTestSummary || 'Not tested yet'}</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">
+              {vpnInfo?.lastTestAt ? new Date(vpnInfo.lastTestAt).toLocaleString() : '—'}
             </div>
           </div>
         </div>
@@ -657,6 +860,136 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
               onChange={(e) => setMaxActiveTorrents(Number(e.target.value || 1))}
             />
           </Field>
+        </div>
+      </EditModal>
+
+      <EditModal
+        open={vpnEditOpen}
+        title="Edit qBittorrent VPN Options"
+        description="Configure optional qB-only VPN routing using Private Internet Access (PIA)."
+        error={err}
+        success={ok}
+        onCancel={async () => {
+          setVpnEditOpen(false);
+          setVpnPassword('');
+          setVpnUsername('');
+          await load();
+        }}
+        onSave={async () => {
+          const saved = await saveVpnSettings();
+          if (saved) setVpnEditOpen(false);
+        }}
+        saveDisabled={vpnSaveDisabled}
+        saving={vpnBusy}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field
+            label="Enable qB VPN Routing"
+            note="When enabled and applied, only qBittorrent service traffic is routed through VPN. App and IPTV traffic stay on normal network."
+          >
+            <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+              <input type="checkbox" checked={vpnEnabled} onChange={(e) => setVpnEnabled(e.target.checked)} />
+              <span>{vpnEnabled ? 'Enabled' : 'Disabled'}</span>
+            </label>
+          </Field>
+
+          <Field label="Provider" note="Current supported provider is PIA WireGuard.">
+            <Input value="PIA (WireGuard)" disabled className="opacity-80" />
+          </Field>
+
+          <Field
+            label="PIA Region"
+            hint="Select nearest/fast region"
+            note="Choose the VPN exit region used by qBittorrent traffic."
+          >
+            <div className="flex gap-2">
+              <select
+                value={vpnRegionId}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setVpnRegionId(next);
+                  const matched = vpnRegions.find((row) => String(row?.id || '') === String(next || ''));
+                  setVpnRegionName(matched?.name || '');
+                }}
+                className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
+              >
+                {vpnRegions.length ? null : <option value={vpnRegionId || 'ph'}>{vpnRegionId || 'ph'}</option>}
+                {vpnRegions.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.name}
+                    {row.country ? ` • ${row.country}` : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => loadVpnRegions({ silent: false })}
+                disabled={vpnRegionsBusy}
+                className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
+              >
+                {vpnRegionsBusy ? '…' : 'Refresh'}
+              </button>
+            </div>
+          </Field>
+
+          <Field
+            label="Kill Switch"
+            note="Blocks qBittorrent traffic if VPN is down, preventing non-VPN fallback for qB downloads."
+          >
+            <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={vpnKillSwitchEnabled}
+                onChange={(e) => setVpnKillSwitchEnabled(e.target.checked)}
+              />
+              <span>{vpnKillSwitchEnabled ? 'Enabled' : 'Disabled'}</span>
+            </label>
+          </Field>
+
+          <Field
+            label="PIA Username"
+            hint={vpnInfo?.hasCredentials ? `Saved (${vpnInfo?.usernamePreview || 'hidden'})` : 'Required'}
+            note="PIA account username. Stored encrypted at rest."
+          >
+            <Input
+              value={vpnUsername}
+              onChange={(e) => setVpnUsername(e.target.value)}
+              placeholder={vpnInfo?.hasCredentials ? '(leave blank to keep current)' : 'PIA username'}
+            />
+          </Field>
+
+          <Field
+            label="PIA Password"
+            hint={vpnInfo?.hasCredentials ? 'Saved (hidden)' : 'Required'}
+            note="PIA account password. Stored encrypted at rest."
+          >
+            <Input
+              value={vpnPassword}
+              onChange={(e) => setVpnPassword(e.target.value)}
+              placeholder={vpnInfo?.hasCredentials ? '(leave blank to keep current)' : 'PIA password'}
+              type="password"
+              autoComplete="new-password"
+            />
+          </Field>
+
+          <Field
+            label="Dispatch Guard"
+            note="When enabled, scheduler blocks new torrent dispatch if VPN health check fails."
+          >
+            <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={vpnRequiredForDispatch}
+                onChange={(e) => setVpnRequiredForDispatch(e.target.checked)}
+              />
+              <span>{vpnRequiredForDispatch ? 'Require healthy VPN' : 'Do not block dispatch'}</span>
+            </label>
+          </Field>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4 text-xs text-[var(--admin-muted)]">
+          Save VPN settings first, then use <span className="font-semibold text-[var(--admin-text)]">Apply VPN</span> and{' '}
+          <span className="font-semibold text-[var(--admin-text)]">Test VPN</span> on the main card.
         </div>
       </EditModal>
     </div>
