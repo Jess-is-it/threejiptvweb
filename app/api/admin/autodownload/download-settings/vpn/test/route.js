@@ -17,7 +17,8 @@ export async function POST(req) {
 
   try {
     const includePublicIp = body?.includePublicIp !== false;
-    const result = await testQbittorrentVpnRuntime({ includePublicIp });
+    const validateCredentials = body?.validateCredentials === true;
+    const result = await testQbittorrentVpnRuntime({ includePublicIp, validateCredentials });
     return NextResponse.json({ ok: Boolean(result?.ok), result }, { status: result?.ok ? 200 : 400 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e?.message || 'VPN test failed.' }, { status: 400 });

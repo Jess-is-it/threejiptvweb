@@ -1,13 +1,9 @@
 'use client';
 
-import AdminAutoDownloadDownloadsPanel from '../../../_components/AdminAutoDownloadDownloadsPanel';
+import AdminAutoDownloadSelectionLogPanel from '../../../_components/AdminAutoDownloadSelectionLogPanel';
 
 export const dynamic = 'force-dynamic';
 
 export default function AdminSeriesDownloadsPage() {
-  return (
-    <div>
-      <AdminAutoDownloadDownloadsPanel type="series" />
-    </div>
-  );
+  return <AdminAutoDownloadSelectionLogPanel type="series" />;
 }

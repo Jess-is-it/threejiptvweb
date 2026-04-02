@@ -3,11 +3,52 @@ import { NextResponse } from 'next/server';
 import { requireAdminFromRequest } from '../../../../../lib/server/adminApiAuth';
 import { getAdminDb } from '../../../../../lib/server/adminDb';
 import { updateAutodownloadSettings } from '../../../../../lib/server/autodownload/autodownloadDb';
+import { fetchVodStorageDevices } from '../../../../../lib/server/autodownload/mountService';
 import { normalizeReleaseDelayDays, normalizeReleaseTimezone } from '../../../../../lib/server/autodownload/releaseSchedule';
+import { bytesToGb, deriveStoragePolicy } from '../../../../../lib/server/autodownload/storagePolicy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const DEFAULT_TIMEZONE = 'Asia/Manila';
+
+async function resolveStoragePolicyVolumeStats(existingDb) {
+  const fallbackResolvedPath =
+    String(existingDb?.mountSettings?.xuiVodPath || '').trim() ||
+    String(existingDb?.deletionState?.vodState?.resolvedPath || '').trim() ||
+    '/home/xui/content/vod';
+  try {
+    const vodStorage = await fetchVodStorageDevices();
+    const logicalSize = Number(vodStorage?.logical?.size || 0);
+    const logicalUsed = Number(vodStorage?.logical?.used || 0);
+    const logicalAvail = Number(vodStorage?.logical?.avail || 0);
+    if (logicalSize > 0) {
+      return {
+        totalBytes: logicalSize,
+        usedBytes: logicalUsed > 0 ? logicalUsed : 0,
+        availBytes: logicalAvail > 0 ? logicalAvail : Math.max(0, logicalSize - (logicalUsed > 0 ? logicalUsed : 0)),
+        resolvedPath: String(vodStorage?.resolvedPath || vodStorage?.preferredPath || fallbackResolvedPath).trim() || fallbackResolvedPath,
+      };
+    }
+  } catch {}
+  const fallbackTotal =
+    Number(existingDb?.deletionState?.vodState?.totalBytes || 0) ||
+    Number(existingDb?.mountStatus?.space?.total || 0) ||
+    0;
+  const fallbackUsed =
+    Number(existingDb?.deletionState?.vodState?.usedBytes || 0) ||
+    Number(existingDb?.mountStatus?.space?.used || 0) ||
+    0;
+  const fallbackAvail =
+    Number(existingDb?.deletionState?.vodState?.availBytes || 0) ||
+    Number(existingDb?.mountStatus?.space?.avail || 0) ||
+    Math.max(0, fallbackTotal - fallbackUsed);
+  return {
+    totalBytes: fallbackTotal,
+    usedBytes: fallbackUsed,
+    availBytes: fallbackAvail,
+    resolvedPath: fallbackResolvedPath,
+  };
+}
 
 function isValidTimeHHMM(s) {
   const v = String(s || '').trim();
@@ -157,8 +198,25 @@ export async function GET(req) {
   if (!admin) return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
 
   const db = await getAdminDb();
+  const storagePolicyVolume = await resolveStoragePolicyVolumeStats(db).catch(() => ({ totalBytes: 0, usedBytes: 0 }));
+  const hydratedSettings = JSON.parse(JSON.stringify(db.autodownloadSettings || null));
+  if (hydratedSettings) {
+    const policy = deriveStoragePolicy({ settings: hydratedSettings, totalBytes: Number(storagePolicyVolume?.totalBytes || 0) || 0 });
+    if (!Number.isFinite(Number(hydratedSettings?.storage?.limitGb || 0)) || Number(hydratedSettings?.storage?.limitGb || 0) <= 0) {
+      hydratedSettings.storage = {
+        ...(hydratedSettings.storage && typeof hydratedSettings.storage === 'object' ? hydratedSettings.storage : {}),
+        limitGb: Number(policy?.limitUsedGb || 0) > 0 ? policy.limitUsedGb : null,
+      };
+    }
+    if (!Number.isFinite(Number(hydratedSettings?.deletion?.triggerUsedGb || 0)) || Number(hydratedSettings?.deletion?.triggerUsedGb || 0) <= 0) {
+      hydratedSettings.deletion = {
+        ...(hydratedSettings.deletion && typeof hydratedSettings.deletion === 'object' ? hydratedSettings.deletion : {}),
+        triggerUsedGb: Number(policy?.triggerUsedGb || 0) > 0 ? policy.triggerUsedGb : null,
+      };
+    }
+  }
   return NextResponse.json(
-    { ok: true, settings: db.autodownloadSettings || null, mountStatus: db.mountStatus || null },
+    { ok: true, settings: hydratedSettings, mountStatus: db.mountStatus || null, storagePolicyVolume },
     { status: 200 }
   );
 }
@@ -193,7 +251,63 @@ export async function PUT(req) {
   if (!isValidTimeHHMM(startTime)) errors.push('Invalid start time.');
   if (!isValidTimeHHMM(endTime)) errors.push('Invalid end time.');
 
-  const storageLimitPercent = clampNum(body?.storage?.limitPercent, { min: 1, max: 100, fallback: 95 });
+  const { totalBytes: mountTotalBytes, usedBytes: mountUsedBytes } = await resolveStoragePolicyVolumeStats(existingDb);
+  const currentStoragePolicy = deriveStoragePolicy({ settings: existingSettings, totalBytes: mountTotalBytes });
+  const totalGb = bytesToGb(mountTotalBytes, 3);
+  const usedGb = bytesToGb(mountUsedBytes, 3);
+  const storageLimitGb = clampNum(body?.storage?.limitGb ?? currentStoragePolicy.limitUsedGb ?? null, {
+    min: 1,
+    max: totalGb > 0 ? Math.max(1, totalGb) : 100000,
+    fallback: currentStoragePolicy.limitUsedGb ?? null,
+  });
+  if (!Number.isFinite(storageLimitGb) || storageLimitGb <= 0) errors.push('Storage limit must be greater than 0 GB.');
+  if (Number.isFinite(storageLimitGb) && Number.isFinite(usedGb) && usedGb > 0 && storageLimitGb < usedGb) {
+    errors.push(`Storage limit must be greater than or equal to current VOD used size (${usedGb.toFixed(1)} GB).`);
+  }
+
+  const deletionEnabled = body?.deletion?.enabled === undefined ? existingSettings?.deletion?.enabled === true : Boolean(body?.deletion?.enabled);
+  const triggerUsedGb = clampNum(
+    body?.deletion?.triggerUsedGb ?? existingSettings?.deletion?.triggerUsedGb ?? (Number(storageLimitGb || 0) > 0 ? Number(storageLimitGb) - 50 : null),
+    { min: 1, max: totalGb > 0 ? Math.max(1, totalGb) : 100000, fallback: null }
+  );
+  if (!Number.isFinite(triggerUsedGb) || triggerUsedGb <= 0) errors.push('Deletion trigger must be greater than 0 GB.');
+  if (Number.isFinite(storageLimitGb) && Number.isFinite(triggerUsedGb) && triggerUsedGb > storageLimitGb) {
+    errors.push('Deletion trigger GB must be less than or equal to storage limit GB.');
+  }
+  const deleteBatchTargetGb = clampNum(body?.deletion?.deleteBatchTargetGb ?? existingSettings?.deletion?.deleteBatchTargetGb ?? 50, {
+    min: 1,
+    max: 5000,
+    fallback: 50,
+  });
+  const deleteDelayDays = clampNum(body?.deletion?.deleteDelayDays ?? existingSettings?.deletion?.deleteDelayDays ?? 3, {
+    min: 0,
+    max: 30,
+    fallback: 3,
+  });
+  const deleteExecutionTime = String(body?.deletion?.deleteExecutionTime ?? existingSettings?.deletion?.deleteExecutionTime ?? '00:00').trim() || '00:00';
+  if (!isValidTimeHHMM(deleteExecutionTime)) errors.push('Deletion execution time must use HH:MM.');
+  const previewRefreshTime = String(body?.deletion?.previewRefreshTime ?? existingSettings?.deletion?.previewRefreshTime ?? '00:00').trim() || '00:00';
+  if (!isValidTimeHHMM(previewRefreshTime)) errors.push('Deletion preview refresh time must use HH:MM.');
+  const protectRecentReleaseDays = clampNum(
+    body?.deletion?.protectRecentReleaseDays ?? existingSettings?.deletion?.protectRecentReleaseDays ?? 60,
+    { min: 0, max: 3650, fallback: 60 }
+  );
+  const protectRecentWatchDays = clampNum(
+    body?.deletion?.protectRecentWatchDays ?? existingSettings?.deletion?.protectRecentWatchDays ?? 7,
+    { min: 0, max: 3650, fallback: 7 }
+  );
+  const seriesEligibleThreshold = clampNum(
+    body?.deletion?.seriesEligibleThreshold ?? existingSettings?.deletion?.seriesEligibleThreshold ?? 10,
+    { min: 0, max: 100000, fallback: 10 }
+  );
+  const maxSeriesPerBatch = clampNum(
+    body?.deletion?.maxSeriesPerBatch ?? existingSettings?.deletion?.maxSeriesPerBatch ?? 1,
+    { min: 0, max: 100000, fallback: 1 }
+  );
+  const pauseSelectionWhileActive =
+    body?.deletion?.pauseSelectionWhileActive === undefined
+      ? existingSettings?.deletion?.pauseSelectionWhileActive !== false
+      : Boolean(body?.deletion?.pauseSelectionWhileActive);
 
   const maxMovieGb = clampNum(body?.sizeLimits?.maxMovieGb, { min: 0.1, max: 500, fallback: 2.5 });
   const maxEpisodeGbRaw = String(body?.sizeLimits?.maxEpisodeGb ?? '').trim();
@@ -296,9 +410,11 @@ export async function PUT(req) {
   // Categories/Genres are now automatic; keep the list fixed for display.
   // Any legacy defaults are ignored (but may still exist in DB for back-compat).
 
-  const movieSel = validateSelectionStrategy(body?.movieSelectionStrategy || {}, { label: 'Movie strategy' });
+  const movieSel = validateSelectionStrategy(body?.movieSelectionStrategy ?? existingSettings?.movieSelectionStrategy ?? {}, {
+    label: 'Movie strategy',
+  });
   errors.push(...movieSel.errors);
-  const seriesSel = validateSelectionStrategy(body?.seriesSelectionStrategy || {}, {
+  const seriesSel = validateSelectionStrategy(body?.seriesSelectionStrategy ?? existingSettings?.seriesSelectionStrategy ?? {}, {
     label: 'Series strategy',
     defaults: {
       recentMonthsRange: 12,
@@ -335,7 +451,20 @@ export async function PUT(req) {
     moviesEnabled,
     seriesEnabled,
     schedule: { timezone: tz, days, startTime, endTime },
-    storage: { limitPercent: storageLimitPercent },
+    storage: { limitGb: storageLimitGb, limitPercent: currentStoragePolicy.legacyLimitPercent || 95 },
+    deletion: {
+      enabled: deletionEnabled,
+      triggerUsedGb,
+      deleteBatchTargetGb,
+      deleteDelayDays,
+      deleteExecutionTime,
+      previewRefreshTime,
+      protectRecentReleaseDays,
+      protectRecentWatchDays,
+      seriesEligibleThreshold,
+      maxSeriesPerBatch,
+      pauseSelectionWhileActive,
+    },
     sizeLimits: { maxMovieGb, maxEpisodeGb },
     sourceFilters: { minMovieSeeders, minSeriesSeeders },
     timeoutChecker: {
@@ -377,6 +506,84 @@ export async function PUT(req) {
     },
   });
 
+  const db = await getAdminDb();
+  return NextResponse.json(
+    { ok: true, settings: db.autodownloadSettings || null, mountStatus: db.mountStatus || null },
+    { status: 200 }
+  );
+}
+
+export async function PATCH(req) {
+  const admin = await requireAdminFromRequest(req);
+  if (!admin) return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+
+  const existingDb = await getAdminDb();
+  const existingSettings = existingDb.autodownloadSettings || {};
+
+  let body = {};
+  try {
+    body = await req.json();
+  } catch {}
+
+  const section = String(body?.section || '').trim().toLowerCase();
+  if (section !== 'selection_rules') {
+    return NextResponse.json({ ok: false, error: 'Unsupported settings patch.' }, { status: 400 });
+  }
+
+  const type = String(body?.type || 'movie').trim().toLowerCase() === 'series' ? 'series' : 'movie';
+  const errors = [];
+  const patch = {};
+
+  if (type === 'movie') {
+    const maxMovieGb = clampNum(body?.sizeLimits?.maxMovieGb, { min: 0.1, max: 500, fallback: null });
+    const minMovieSeeders = clampNum(body?.sourceFilters?.minMovieSeeders, { min: 0, max: 100000, fallback: null });
+    const movieSel = validateSelectionStrategy(body?.selectionStrategy ?? body?.movieSelectionStrategy ?? existingSettings?.movieSelectionStrategy ?? {}, {
+      label: 'Movie strategy',
+    });
+    if (!Number.isFinite(maxMovieGb) || maxMovieGb <= 0) errors.push('Max movie size must be greater than 0.');
+    if (!Number.isFinite(minMovieSeeders) || minMovieSeeders < 0) errors.push('Min movie seeders must be 0 or greater.');
+    errors.push(...movieSel.errors);
+    patch.sizeLimits = { maxMovieGb };
+    patch.sourceFilters = { minMovieSeeders };
+    patch.movieSelectionStrategy = movieSel.value;
+  } else {
+    const maxEpisodeGbRaw = String(body?.sizeLimits?.maxEpisodeGb ?? '').trim();
+    const maxEpisodeGb =
+      maxEpisodeGbRaw === '' || maxEpisodeGbRaw === 'null'
+        ? null
+        : clampNum(maxEpisodeGbRaw, { min: 0.05, max: 500, fallback: null });
+    const minSeriesSeeders = clampNum(body?.sourceFilters?.minSeriesSeeders, { min: 0, max: 100000, fallback: null });
+    const seriesSel = validateSelectionStrategy(body?.selectionStrategy ?? body?.seriesSelectionStrategy ?? existingSettings?.seriesSelectionStrategy ?? {}, {
+      label: 'Series strategy',
+      defaults: {
+        recentMonthsRange: 12,
+        classicYearStart: 1990,
+        classicYearEnd: 2018,
+        recentAnimationCount: 1,
+        recentLiveActionCount: 2,
+        classicAnimationCount: 1,
+        classicLiveActionCount: 2,
+      },
+    });
+    if (maxEpisodeGbRaw && (!Number.isFinite(maxEpisodeGb) || maxEpisodeGb <= 0)) {
+      errors.push('Max episode size must be greater than 0 when set.');
+    }
+    if (!Number.isFinite(minSeriesSeeders) || minSeriesSeeders < 0) errors.push('Min series seeders must be 0 or greater.');
+    errors.push(...seriesSel.errors);
+    patch.sizeLimits = { maxEpisodeGb };
+    patch.sourceFilters = { minSeriesSeeders };
+    patch.timeoutChecker = {
+      strictSeriesReplacement: body?.timeoutChecker?.strictSeriesReplacement !== false,
+      deletePartialSeriesOnReplacementFailure: body?.timeoutChecker?.deletePartialSeriesOnReplacementFailure !== false,
+    };
+    patch.seriesSelectionStrategy = seriesSel.value;
+  }
+
+  if (errors.length) {
+    return NextResponse.json({ ok: false, error: 'Validation failed.', errors }, { status: 400 });
+  }
+
+  await updateAutodownloadSettings(patch);
   const db = await getAdminDb();
   return NextResponse.json(
     { ok: true, settings: db.autodownloadSettings || null, mountStatus: db.mountStatus || null },

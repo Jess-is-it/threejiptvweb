@@ -83,7 +83,7 @@ export default function SessionProvider({ children }) {
           remember,
         };
         setSession(sess);
-        return { ok: true };
+        return { ok: true, streamBase: data.streamBase, session: sess };
       } catch {
         return { ok: false, error: 'Network error. Please try again.' };
       }
@@ -92,7 +92,7 @@ export default function SessionProvider({ children }) {
     // Mode 2: legacy set-session
     const remember = opts?.remember ?? true;
     setSession({ ...arg, remember });
-    return { ok: true };
+    return { ok: true, session: { ...arg, remember } };
   }
 
   async function logout() {

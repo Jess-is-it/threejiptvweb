@@ -14,6 +14,7 @@ function safeMountSettings(s) {
     windowsHost: s.windowsHost,
     shareName: s.shareName,
     mountDir: s.mountDir,
+    xuiVodPath: s.xuiVodPath || '/home/xui/content/vod',
     domain: s.domain || '',
     smbVersion: s.smbVersion || '',
     uid: s.uid || 'xui',

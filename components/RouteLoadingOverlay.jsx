@@ -7,6 +7,19 @@ export default function RouteLoadingOverlay({ minMs = 450 }) {
   const pathname = usePathname() || '/';
   const [show, setShow] = useState(false);
   const lastKeyRef = useRef('');
+  const hideTimerRef = useRef(null);
+  const failSafeTimerRef = useRef(null);
+
+  const clearTimers = () => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    if (failSafeTimerRef.current) {
+      clearTimeout(failSafeTimerRef.current);
+      failSafeTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     const key = String(pathname || '/');
@@ -17,10 +30,39 @@ export default function RouteLoadingOverlay({ minMs = 450 }) {
     if (key === lastKeyRef.current) return;
     lastKeyRef.current = key;
 
+    clearTimers();
     setShow(true);
-    const t = setTimeout(() => setShow(false), Math.max(150, Number(minMs) || 450));
-    return () => clearTimeout(t);
+    hideTimerRef.current = setTimeout(() => {
+      hideTimerRef.current = null;
+      setShow(false);
+    }, Math.max(150, Number(minMs) || 450));
+
+    return () => {
+      clearTimers();
+    };
   }, [pathname, minMs]);
+
+  useEffect(() => {
+    const onRouteStart = (event) => {
+      const href = String(event?.detail?.href || '').trim();
+      const nextPathname = href ? href.split('?')[0].split('#')[0] : '';
+      const currentPathname = String(pathname || '/');
+      if (!nextPathname || nextPathname === currentPathname) return;
+
+      clearTimers();
+      setShow(true);
+      failSafeTimerRef.current = setTimeout(() => {
+        failSafeTimerRef.current = null;
+        setShow(false);
+      }, 10_000);
+    };
+
+    window.addEventListener('3jtv:route-start', onRouteStart);
+    return () => {
+      window.removeEventListener('3jtv:route-start', onRouteStart);
+      clearTimers();
+    };
+  }, [pathname]);
 
   if (!show) return null;
 

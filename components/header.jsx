@@ -1,12 +1,13 @@
 // components/Header.jsx
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useSession } from './SessionProvider';
 import { usePublicSettings } from './PublicSettingsProvider';
 import { useUserPreferences } from './UserPreferencesProvider';
+import { prefetchMovieCatalog, prefetchSeriesCatalog } from '../lib/publicCatalogCache';
 
 // icons
 import {
@@ -14,10 +15,7 @@ import {
   User,
   Menu,
   X,
-  Film,
-  Tv,
   SquarePlus,
-  ChevronRight,
   LogOut,
   Check,
 } from 'lucide-react';
@@ -25,10 +23,45 @@ import NotificationsBell from './NotificationsBell';
 
 const BRAND = 'var(--brand)';
 const HEADER_H = 64;
+const HERO_HEADER_SCROLL_RATIO = 0.45;
+const HERO_HEADER_SCROLL_MIN = 180;
+const PRIMARY_PUBLIC_ROUTES = ['/movies', '/series', '/live', '/bookmarks'];
+const PRIMARY_SECTION_ROUTES = new Set(PRIMARY_PUBLIC_ROUTES);
 
 // ---------- helpers ----------
 function cx(...cls) {
   return cls.filter(Boolean).join(' ');
+}
+
+function normalizeRouteHref(href = '') {
+  return String(href || '').split('#')[0].trim();
+}
+
+function prefetchRoute(router, href = '') {
+  const normalizedHref = normalizeRouteHref(href);
+  if (!normalizedHref || normalizedHref === '#') return;
+  try {
+    router.prefetch?.(normalizedHref);
+  } catch {}
+}
+
+function isPlainLeftNavClick(event) {
+  return !event.defaultPrevented && event.button === 0 && !(event.metaKey || event.ctrlKey || event.shiftKey || event.altKey);
+}
+
+function announceRouteStart(href = '') {
+  const normalizedHref = normalizeRouteHref(href);
+  if (!normalizedHref || normalizedHref === '#') return;
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('3jtv:route-start', { detail: { href: normalizedHref } }));
+}
+
+function shouldUseHardSectionNavigation(currentPath = '/', href = '') {
+  const normalizedHref = normalizeRouteHref(href);
+  if (!PRIMARY_SECTION_ROUTES.has(normalizedHref)) return false;
+  const normalizedCurrent = normalizeRouteHref(currentPath || '/');
+  if (normalizedCurrent === normalizedHref) return false;
+  return PRIMARY_SECTION_ROUTES.has(normalizedCurrent);
 }
 
 function requestCtaForPath(pathname = '/') {
@@ -39,18 +72,36 @@ function requestCtaForPath(pathname = '/') {
   if (p.startsWith('/series')) {
     return { href: '/request?type=tv', label: 'Request Series' };
   }
-  if (p === '/' || p.startsWith('/home')) {
+  if (p === '/') {
     return { href: '/request?type=all', label: 'Request' };
   }
   return { href: '/request?type=all', label: 'Request' };
 }
 
-function NavLink({ href, children }) {
+function NavLink({ href, children, onWarm }) {
+  const router = useRouter();
   const path = usePathname() || '/';
   const active = path === href || (href !== '/' && path.startsWith(href));
+  const warmRoute = () => {
+    if (active) return;
+    prefetchRoute(router, href);
+    onWarm?.();
+  };
   return (
     <Link
       href={href}
+      prefetch
+      onMouseEnter={warmRoute}
+      onFocus={warmRoute}
+      onTouchStart={warmRoute}
+      onClick={(event) => {
+        if (active || !isPlainLeftNavClick(event)) return;
+        announceRouteStart(href);
+        if (shouldUseHardSectionNavigation(path, href) && typeof window !== 'undefined') {
+          event.preventDefault();
+          window.location.assign(href);
+        }
+      }}
       className={cx(
         'relative rounded-md px-3 py-2 no-underline font-bold cursor-pointer',
         'text-[14px] md:text-[16px]',
@@ -70,13 +121,10 @@ function SearchModal({ open, onClose }) {
   const router = useRouter();
   const { session } = useSession();
   const [q, setQ] = useState('');
-  const [movieCats, setMovieCats] = useState([]);
-  const [seriesCats, setSeriesCats] = useState([]);
-  const [pick, setPick] = useState(null); // { id, name }
+  const [categories, setCategories] = useState([]);
 
   useEffect(() => {
     if (!open) return;
-    setPick(null);
 
     const load = async () => {
       try {
@@ -85,11 +133,25 @@ function SearchModal({ open, onClose }) {
           fetch(`/api/xuione/vod/categories${qs}`).then((r) => r.json()).catch(() => ({})),
           fetch(`/api/xuione/series/categories${qs}`).then((r) => r.json()).catch(() => ({})),
         ]);
-        setMovieCats(m?.categories || []);
-        setSeriesCats(s?.categories || []);
+        const merged = [...(m?.categories || []), ...(s?.categories || [])]
+          .map((category) => ({
+            id: String(category?.id || '').trim(),
+            name: String(category?.name || '').trim(),
+          }))
+          .filter((category) => category.name);
+
+        const deduped = [];
+        const seen = new Set();
+        for (const category of merged) {
+          const key = category.name.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          deduped.push(category);
+        }
+        deduped.sort((a, b) => a.name.localeCompare(b.name));
+        setCategories(deduped);
       } catch {
-        setMovieCats([]);
-        setSeriesCats([]);
+        setCategories([]);
       }
     };
     load();
@@ -102,9 +164,9 @@ function SearchModal({ open, onClose }) {
     onClose();
   };
 
-  const goCategory = (type, id) => {
-    if (type === 'movie') router.push(`/movies?cat=${encodeURIComponent(id)}`);
-    else router.push(`/series?cat=${encodeURIComponent(id)}`);
+  const goCategorySearch = (name) => {
+    if (!String(name || '').trim()) return;
+    router.push(`/search?genre=${encodeURIComponent(String(name).trim())}`);
     onClose();
   };
 
@@ -150,72 +212,24 @@ function SearchModal({ open, onClose }) {
         </form>
 
         {/* Categories */}
-        <div className="mt-6 grid grid-cols-1 gap-6 sm:grid-cols-2">
-          <div>
-            <div className="mb-2 flex items-center gap-2">
-              <Film size={16} className="text-neutral-300" />
-              <h4 className="text-sm font-semibold">Movie Categories</h4>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {movieCats.map((c) => (
-                <button
-                  key={`m-${c.id}`}
-                  onClick={() => setPick({ id: c.id, name: c.name })}
-                  className="rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500"
-                  title="Choose Movies or Series"
-                >
-                  {c.name}
-                </button>
-              ))}
-            </div>
+        <div className="mt-6">
+          <div className="mb-2 flex items-center gap-2">
+            <Search size={16} className="text-neutral-300" />
+            <h4 className="text-sm font-semibold">Categories</h4>
           </div>
-
-          <div>
-            <div className="mb-2 flex items-center gap-2">
-              <Tv size={16} className="text-neutral-300" />
-              <h4 className="text-sm font-semibold">Series Categories</h4>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {seriesCats.map((c) => (
-                <button
-                  key={`s-${c.id}`}
-                  onClick={() => setPick({ id: c.id, name: c.name })}
-                  className="rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500"
-                  title="Choose Movies or Series"
-                >
-                  {c.name}
-                </button>
-              ))}
-            </div>
+          <div className="flex flex-wrap gap-2">
+            {categories.map((category) => (
+              <button
+                key={`cat-${category.name.toLowerCase()}`}
+                onClick={() => goCategorySearch(category.name)}
+                className="rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500"
+                title={`Search ${category.name}`}
+              >
+                {category.name}
+              </button>
+            ))}
           </div>
         </div>
-
-        {/* When a category is clicked, ask Movies / Series */}
-        {pick && (
-          <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
-            <div className="mb-3 text-sm text-neutral-300">
-              <span className="font-medium text-white">{pick.name}</span> — open as:
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => goCategory('movie', pick.id)}
-                className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 hover:bg-white/15"
-              >
-                <Film size={16} />
-                Movies
-                <ChevronRight size={16} />
-              </button>
-              <button
-                onClick={() => goCategory('series', pick.id)}
-                className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 hover:bg-white/15"
-              >
-                <Tv size={16} />
-                Series
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -331,8 +345,9 @@ function ProfileMenu({ open, onClose }) {
 }
 
 // ---------- Mobile Drawer ----------
-function MobileMenu({ open, onClose, onOpenSearch, requestCta }) {
+function MobileMenu({ open, onClose, onOpenSearch, requestCta, requestEnabled }) {
   const pathname = usePathname() || '/';
+  const router = useRouter();
   if (!open) return null;
 
   return (
@@ -356,38 +371,62 @@ function MobileMenu({ open, onClose, onOpenSearch, requestCta }) {
 
         <nav className="flex flex-col gap-1">
           {[
-            ['/', 'Home'],
             ['/movies', 'Movies'],
             ['/series', 'Series'],
             ['/live', 'Live'],
             ['/bookmarks', 'My watchlist'],
           ].map(([href, label]) => (
+            (() => {
+              const active = pathname === href || (href !== '/' && pathname.startsWith(href));
+              const warmRoute = () => {
+                if (active) return;
+                prefetchRoute(router, href);
+              };
+              return (
             <Link
               key={href}
               href={href}
-              onClick={onClose}
+              prefetch
+              onMouseEnter={warmRoute}
+              onFocus={warmRoute}
+              onTouchStart={warmRoute}
+              onClick={(event) => {
+                if (!active && isPlainLeftNavClick(event)) announceRouteStart(href);
+                if (!active && isPlainLeftNavClick(event) && shouldUseHardSectionNavigation(pathname, href) && typeof window !== 'undefined') {
+                  event.preventDefault();
+                  onClose();
+                  window.location.assign(href);
+                  return;
+                }
+                onClose();
+              }}
               className={cx(
                 'rounded-lg px-3 py-3 no-underline',
-                pathname === href || (href !== '/' && pathname.startsWith(href))
+                active
                   ? 'bg-white/10 text-white'
                   : 'text-neutral-300 hover:bg-white/10 hover:text-white'
               )}
             >
               {label}
             </Link>
+              );
+            })()
           ))}
         </nav>
 
         <div className="mt-6 border-t border-neutral-800 pt-4">
-          <div className="grid grid-cols-3 gap-3">
-            <Link
-              href={requestCta?.href || '/request?type=all'}
-              onClick={onClose}
-              className="flex flex-col items-center gap-1 rounded-lg bg-white/5 p-3 hover:bg-white/10"
-              title={requestCta?.label || 'Request'}
-            >
-              <SquarePlus /> <span className="text-xs text-center">{requestCta?.label || 'Request'}</span>
-            </Link>
+          <div className={`grid gap-3 ${requestEnabled ? 'grid-cols-3' : 'grid-cols-2'}`}>
+            {requestEnabled ? (
+              <Link
+                href={requestCta?.href || '/request?type=all'}
+                prefetch
+                onClick={onClose}
+                className="flex flex-col items-center gap-1 rounded-lg bg-white/5 p-3 hover:bg-white/10"
+                title={requestCta?.label || 'Request'}
+              >
+                <SquarePlus /> <span className="text-xs text-center">{requestCta?.label || 'Request'}</span>
+              </Link>
+            ) : null}
 
             <button
               onClick={() => {
@@ -417,8 +456,9 @@ function MobileMenu({ open, onClose, onOpenSearch, requestCta }) {
 
 // ---------- Header ----------
 export default function Header() {
+  const router = useRouter();
   const { session } = useSession();
-  const { settings } = usePublicSettings();
+  const { ready, settings } = usePublicSettings();
   const pathname = usePathname() || '/';
   const [scrolled, setScrolled] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -427,30 +467,129 @@ export default function Header() {
 
   const logoUrl = settings?.brand?.logoUrl || '/brand/logo.svg';
   const requestCta = requestCtaForPath(pathname);
+  const requestEnabled = ready ? settings?.requests?.enabled !== false : false;
+  const heroBackdropEnabled = pathname.startsWith('/movies') || pathname.startsWith('/series');
+  const heroHeaderActive = heroBackdropEnabled && !scrolled;
+  const warmMovieCatalog = useCallback(() => {
+    if (!session?.streamBase) return;
+    prefetchMovieCatalog(session.streamBase).catch(() => {});
+  }, [session?.streamBase]);
+  const warmSeriesCatalog = useCallback(() => {
+    if (!session?.streamBase) return;
+    prefetchSeriesCatalog(session.streamBase).catch(() => {});
+  }, [session?.streamBase]);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 8);
+    const onScroll = () => {
+      const heroThreshold = heroBackdropEnabled
+        ? Math.max(HERO_HEADER_SCROLL_MIN, Math.round(window.innerHeight * HERO_HEADER_SCROLL_RATIO))
+        : 8;
+      setScrolled(window.scrollY > heroThreshold);
+    };
     onScroll();
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
-  }, []);
+  }, [heroBackdropEnabled]);
+
+  useEffect(() => {
+    const targets = new Set(PRIMARY_PUBLIC_ROUTES);
+    const requestHref = normalizeRouteHref(requestCta?.href || '');
+    if (requestEnabled && requestHref) targets.add(requestHref);
+
+    const warmAllRoutes = () => {
+      for (const href of targets) {
+        if (href === pathname) continue;
+        prefetchRoute(router, href);
+      }
+    };
+
+    let idleId = null;
+    let timeoutId = null;
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(warmAllRoutes, { timeout: 1200 });
+    } else {
+      timeoutId = window.setTimeout(warmAllRoutes, 250);
+    }
+
+    return () => {
+      if (idleId !== null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [pathname, requestCta?.href, requestEnabled, router, session?.streamBase]);
+
+  useEffect(() => {
+    if (!session?.streamBase) return;
+
+    let idleId = null;
+    let timeoutId = null;
+    const warmCatalogs = () => {
+      if (!pathname.startsWith('/movies')) warmMovieCatalog();
+      if (!pathname.startsWith('/series')) warmSeriesCatalog();
+    };
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(warmCatalogs, { timeout: 1500 });
+    } else {
+      timeoutId = window.setTimeout(warmCatalogs, 300);
+    }
+
+    return () => {
+      if (idleId !== null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [pathname, session?.streamBase, warmMovieCatalog, warmSeriesCatalog]);
 
   return (
     <>
       <header
         id="site-header"
         className={cx(
-          'fixed inset-x-0 top-0 z-50 h-16 transition-colors',
-          scrolled
-            ? 'border-b border-neutral-900 bg-neutral-950/70 supports-[backdrop-filter]:backdrop-blur'
-            : 'bg-transparent border-b border-transparent'
+          'fixed inset-x-0 top-0 z-50 h-16 transition-[background-color,border-color,backdrop-filter]',
+          heroHeaderActive
+            ? 'border-b border-transparent bg-transparent'
+            : 'border-b border-white/10 bg-neutral-950/55 supports-[backdrop-filter]:backdrop-blur-md'
         )}
         style={{ height: HEADER_H }}
       >
-        <div className="mx-auto flex h-16 items-center justify-between px-4 sm:px-6">
+        {heroHeaderActive ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/85 via-black/45 to-transparent"
+          />
+        ) : null}
+
+        <div className="relative z-10 mx-auto flex h-16 items-center justify-between px-4 sm:px-6">
           {/* Left: logo + nav */}
           <div className="flex items-center gap-8">
-            <Link href="/" className="flex items-center">
+            <Link
+              href="/movies"
+              prefetch
+              onMouseEnter={() => {
+                prefetchRoute(router, '/movies');
+                warmMovieCatalog();
+              }}
+              onFocus={() => {
+                prefetchRoute(router, '/movies');
+                warmMovieCatalog();
+              }}
+              onTouchStart={() => {
+                prefetchRoute(router, '/movies');
+                warmMovieCatalog();
+              }}
+              onClick={(event) => {
+                if (pathname === '/movies' || pathname.startsWith('/movies/') || !isPlainLeftNavClick(event)) return;
+                announceRouteStart('/movies');
+              }}
+              className="flex items-center"
+            >
               <img
                 src={logoUrl}
                 onError={(e) => (e.currentTarget.src = '/brand/logo.png')}
@@ -461,9 +600,8 @@ export default function Header() {
             </Link>
 
             <nav className="hidden md:flex items-center gap-2">
-              <NavLink href="/">Home</NavLink>
-              <NavLink href="/movies">Movies</NavLink>
-              <NavLink href="/series">Series</NavLink>
+              <NavLink href="/movies" onWarm={warmMovieCatalog}>Movies</NavLink>
+              <NavLink href="/series" onWarm={warmSeriesCatalog}>Series</NavLink>
               <NavLink href="/live">Live</NavLink>
               <NavLink href="/bookmarks">My watchlist</NavLink>
             </nav>
@@ -472,14 +610,29 @@ export default function Header() {
           {/* Right: actions */}
           <div className="relative flex items-center gap-1">
             {/* Request (contextual) */}
-            <Link
-              href={requestCta.href}
-              className="hidden sm:inline-flex items-center gap-1 rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-1.5 text-xs font-semibold text-neutral-100 hover:border-neutral-500 hover:bg-neutral-800"
-              title={requestCta.label}
-            >
-              <SquarePlus size={15} />
-              <span>{requestCta.label}</span>
-            </Link>
+            {requestEnabled ? (
+              <Link
+                href={requestCta.href}
+                prefetch
+                onMouseEnter={() => prefetchRoute(router, requestCta.href)}
+                onFocus={() => prefetchRoute(router, requestCta.href)}
+                onTouchStart={() => prefetchRoute(router, requestCta.href)}
+                onClick={(event) => {
+                  if (!isPlainLeftNavClick(event)) return;
+                  announceRouteStart(requestCta.href);
+                }}
+                className={cx(
+                  'hidden sm:inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-neutral-100 transition-colors',
+                  heroHeaderActive
+                    ? 'border border-white/15 bg-black/25 hover:border-white/30 hover:bg-black/35 supports-[backdrop-filter]:backdrop-blur-sm'
+                    : 'border border-neutral-700 bg-neutral-900 hover:border-neutral-500 hover:bg-neutral-800'
+                )}
+                title={requestCta.label}
+              >
+                <SquarePlus size={15} />
+                <span>{requestCta.label}</span>
+              </Link>
+            ) : null}
 
             {/* Search (opens modal) */}
             <button
@@ -498,7 +651,12 @@ export default function Header() {
             <div className="relative">
               <button
                 onClick={() => setProfileOpen((v) => !v)}
-                className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-2 text-neutral-200 hover:border-neutral-500"
+                className={cx(
+                  'inline-flex items-center rounded-full p-2 text-neutral-200 transition-colors',
+                  heroHeaderActive
+                    ? 'border border-white/15 bg-black/25 hover:border-white/30 hover:bg-black/35 supports-[backdrop-filter]:backdrop-blur-sm'
+                    : 'border border-neutral-700 bg-neutral-900 hover:border-neutral-500'
+                )}
                 aria-label="Profile"
                 title="Profile"
               >
@@ -530,6 +688,7 @@ export default function Header() {
         onClose={() => setMobileOpen(false)}
         onOpenSearch={() => setSearchOpen(true)}
         requestCta={requestCta}
+        requestEnabled={requestEnabled}
       />
     </>
   );

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
+import AdminAutoDownloadSelectionSettingsButton from './AdminAutoDownloadSelectionSettingsButton';
 import HelpTooltip from './HelpTooltip';
 import NotesButton from './NotesButton';
 
@@ -318,6 +319,7 @@ export default function AdminAutoDownloadDownloadsPanel({ type = 'movie' }) {
         </div>
         <div className="flex items-center gap-2">
           <NotesButton title={`${titleLabel} — Notes`} sections={notes} />
+          {t === 'series' ? <AdminAutoDownloadSelectionSettingsButton type="series" /> : null}
           {t === 'movie' ? (
             <Button
               kind="primary"

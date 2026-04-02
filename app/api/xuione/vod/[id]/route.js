@@ -1,7 +1,24 @@
 import { NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 
-import { parseStreamBase, xtreamWithFallback } from '../../_shared';
+import { parseStreamBase, resolveXuioneAssetUrl, xtreamWithFallback } from '../../_shared';
+import { findLocalMovieSubtitles } from '../../../../../lib/server/subtitles/localSubtitleService';
+import { searchMovieSubtitles } from '../../../../../lib/server/subtitles/openSubtitlesService';
+import { mergeSubtitleTrackLists } from '../../../../../lib/server/subtitles/trackUtils';
+
+function mapLanguageCode(value = '') {
+  const raw = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (!raw) return '';
+  if (raw.includes('tagalog') || raw.includes('filipino')) return 'tl';
+  if (raw.includes('english')) return 'en';
+  if (raw === 'eng') return 'en';
+  if (raw === 'fil') return 'tl';
+  if (raw === 'tgl') return 'tl';
+  return raw.slice(0, 2);
+}
+
 async function handle(req, ctx) {
   try {
     const { id } = await ctx.params; // ✅ await params
@@ -21,16 +38,35 @@ async function handle(req, ctx) {
     });
 
     const i = info?.info || {};
-    const image = i.cover || i.movie_image || info?.movie_data?.stream_icon || '';
+    const image = resolveXuioneAssetUrl(i.cover || i.movie_image || info?.movie_data?.stream_icon || '', server);
     const subsRaw = info?.movie_data?.subtitles;
-    const subtitles = Array.isArray(subsRaw)
+    const xuiSubtitles = Array.isArray(subsRaw)
       ? subsRaw
           .map((s) => ({
             lang: s?.language || s?.lang || 'Subtitle',
+            label: s?.language || s?.lang || 'Subtitle',
+            srclang: mapLanguageCode(s?.language || s?.lang || ''),
             url: s?.url || s?.path || '',
           }))
           .filter((s) => s.url)
       : [];
+    let localSubtitles = [];
+    try {
+      localSubtitles = await findLocalMovieSubtitles({
+        title: i.name || `Movie ${id}`,
+        year: (i.releasedate || '').slice(0, 4) || '',
+      });
+    } catch {}
+
+    const mergedExisting = mergeSubtitleTrackLists(localSubtitles, xuiSubtitles);
+    let openSubtitles = [];
+    try {
+      openSubtitles = await searchMovieSubtitles({
+        title: i.name || `Movie ${id}`,
+        year: (i.releasedate || '').slice(0, 4) || '',
+        acceptLanguage: req.headers.get('accept-language') || '',
+      });
+    } catch {}
 
     return NextResponse.json(
       {
@@ -49,7 +85,7 @@ async function handle(req, ctx) {
           i?.container_extension ||
           info?.info?.container_extension ||
           null,
-        subtitles,
+        subtitles: mergeSubtitleTrackLists(localSubtitles, xuiSubtitles, openSubtitles),
       },
       { status: 200 }
     );

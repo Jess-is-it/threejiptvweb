@@ -7,13 +7,15 @@ function cx(...cls) {
   return cls.filter(Boolean).join(' ');
 }
 
-export function EditIconButton({ onClick, className = '', title = 'Edit' }) {
+export function EditIconButton({ onClick, className = '', title = 'Edit', disabled = false }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
       className={cx(
-        'inline-flex items-center justify-center rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-2 text-[var(--admin-muted)] hover:bg-black/10 hover:text-[var(--admin-text)]',
+        'inline-flex items-center justify-center rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-2 text-[var(--admin-muted)]',
+        disabled ? 'cursor-not-allowed opacity-50' : 'hover:bg-black/10 hover:text-[var(--admin-text)]',
         className
       )}
       title={title}

@@ -435,11 +435,13 @@ export default function RequestPage() {
     seriesEpisodesRemaining: 8,
   });
   const [settings, setSettings] = useState({
+    enabled: true,
     dailyLimitDefault: 3,
     seriesEpisodeLimitDefault: 8,
     defaultLandingCategory: 'popular',
     statusTags: {},
   });
+  const [baseDataReady, setBaseDataReady] = useState(false);
   const [myRequests, setMyRequests] = useState([]);
 
   const [selected, setSelected] = useState([]);
@@ -485,6 +487,7 @@ export default function RequestPage() {
 
   const hydrateBaseData = useCallback(async () => {
     if (!username) return;
+    setBaseDataReady(false);
     const params = new URLSearchParams();
     params.set('username', username);
     if (streamBase) params.set('streamBase', streamBase);
@@ -502,6 +505,7 @@ export default function RequestPage() {
     setSettings(j?.settings || {});
     setMyRequests(Array.isArray(j?.myRequests) ? j.myRequests : []);
     if (j?.quota) setQuota(j.quota);
+    setBaseDataReady(true);
 
     if (!didApplyDefaultFilter.current && !searchParams?.get('filter')) {
       setFilter(normalizeFilter(j?.settings?.defaultLandingCategory));
@@ -593,16 +597,18 @@ export default function RequestPage() {
   }, [hydrateBaseData, push]);
 
   useEffect(() => {
+    if (!baseDataReady || settings?.enabled === false) return;
     if (!username || !streamBase) return;
     setPage(1);
     fetchCatalogPage({ targetPage: 1, reset: true });
-  }, [username, streamBase, type, filter, debouncedQuery, fetchCatalogPage]);
+  }, [baseDataReady, settings?.enabled, username, streamBase, type, filter, debouncedQuery, fetchCatalogPage]);
 
   useEffect(() => {
+    if (!baseDataReady || settings?.enabled === false) return;
     if (!username || !streamBase) return;
     if (page <= 1) return;
     fetchCatalogPage({ targetPage: page, reset: false });
-  }, [page, username, streamBase, fetchCatalogPage]);
+  }, [baseDataReady, settings?.enabled, page, username, streamBase, fetchCatalogPage]);
 
   useEffect(() => {
     if (!sentinelRef.current) return;
@@ -1165,6 +1171,21 @@ export default function RequestPage() {
       push,
     ]
   );
+
+  if (baseDataReady && settings?.enabled === false) {
+    return (
+      <Protected>
+        <section className="relative px-4 py-6 sm:px-6 lg:px-10">
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-6">
+            <h1 className="text-2xl font-bold">Request</h1>
+            <p className="mt-2 text-sm text-neutral-300">
+              Requests are currently disabled by the administrator.
+            </p>
+          </div>
+        </section>
+      </Protected>
+    );
+  }
 
   return (
     <Protected>

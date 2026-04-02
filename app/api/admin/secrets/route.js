@@ -22,6 +22,10 @@ async function storedSecrets() {
   const keys = secretKeys();
   return {
     [keys.tmdbApiKey]: await getSecret(keys.tmdbApiKey),
+    [keys.opensubtitlesApiKey]: await getSecret(keys.opensubtitlesApiKey),
+    [keys.opensubtitlesUsername]: await getSecret(keys.opensubtitlesUsername),
+    [keys.opensubtitlesPassword]: await getSecret(keys.opensubtitlesPassword),
+    [keys.opensubtitlesUserAgent]: await getSecret(keys.opensubtitlesUserAgent),
     [keys.mailFrom]: await getSecret(keys.mailFrom),
     [keys.mailUser]: await getSecret(keys.mailUser),
     [keys.mailPass]: await getSecret(keys.mailPass),
@@ -39,6 +43,10 @@ async function effectiveSecrets() {
 
   return {
     [keys.tmdbApiKey]: await get(keys.tmdbApiKey, 'TMDB_API_KEY'),
+    [keys.opensubtitlesApiKey]: await get(keys.opensubtitlesApiKey, 'OPENSUBTITLES_API_KEY'),
+    [keys.opensubtitlesUsername]: await get(keys.opensubtitlesUsername, 'OPENSUBTITLES_USERNAME'),
+    [keys.opensubtitlesPassword]: await get(keys.opensubtitlesPassword, 'OPENSUBTITLES_PASSWORD'),
+    [keys.opensubtitlesUserAgent]: await get(keys.opensubtitlesUserAgent, 'OPENSUBTITLES_USER_AGENT'),
     [keys.mailFrom]: await get(keys.mailFrom, 'MAIL_FROM'),
     [keys.mailUser]: await get(keys.mailUser, 'MAIL_USER'),
     [keys.mailPass]: await get(keys.mailPass, 'MAIL_PASS'),

@@ -10,6 +10,14 @@ const insecureDispatcher = new Agent({
   connect: { rejectUnauthorized: false },
 });
 
+function normalizeOrigin(raw = '') {
+  try {
+    return `${new URL(String(raw || '').trim()).origin}/`;
+  } catch {
+    return '';
+  }
+}
+
 function isPrivateIp(ip) {
   if (!ip) return false;
   const fam = net.isIP(ip);
@@ -26,7 +34,16 @@ function isPrivateIp(ip) {
   return s === '::1' || s.startsWith('fe80:') || s.startsWith('fc') || s.startsWith('fd');
 }
 
-async function allowInsecureTlsFor(upstreamUrl) {
+function isLocalHostname(hostname = '') {
+  const normalized = String(hostname || '').trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized === 'localhost') return true;
+  if (normalized.endsWith('.local')) return true;
+  if (isPrivateIp(normalized)) return true;
+  return false;
+}
+
+export async function allowInsecureTlsFor(upstreamUrl) {
   if (String(process.env.ALLOW_INSECURE_UPSTREAM_TLS || '').toLowerCase() === 'true') return true;
   try {
     const u = new URL(upstreamUrl);
@@ -39,6 +56,94 @@ async function allowInsecureTlsFor(upstreamUrl) {
     if (a6?.address && isPrivateIp(a6.address)) return true;
   } catch {}
   return false;
+}
+
+export { insecureDispatcher };
+
+export function normalizeXuioneAssetSource(value = '') {
+  let raw = String(value || '').trim();
+  if (!raw) return '';
+  raw = raw.replace(/^['"]+|['"]+$/g, '').trim();
+  raw = raw.replace(/\\\//g, '/').replace(/&amp;/gi, '&').trim();
+  return raw;
+}
+
+export function resolveXuioneAssetUrl(value = '', server = '') {
+  const raw = normalizeXuioneAssetSource(value);
+  if (!raw) return '';
+  if (/^(?:data|javascript):/i.test(raw)) return '';
+
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  const origin = normalizeOrigin(server);
+  if (/^\/\//.test(raw)) {
+    if (!origin) return `https:${raw}`;
+    try {
+      return `${new URL(origin).protocol}${raw}`;
+    } catch {
+      return `https:${raw}`;
+    }
+  }
+
+  if (!origin) return '';
+  try {
+    const path = raw.startsWith('/') ? raw : `/${raw.replace(/^\.?\/+/, '')}`;
+    return new URL(path, origin).toString();
+  } catch {
+    return '';
+  }
+}
+
+export function buildXuioneAssetProxyUrl({ source = '', server = '', kind = 'image' } = {}) {
+  const raw = normalizeXuioneAssetSource(source);
+  if (!raw) return '';
+  const params = new URLSearchParams();
+  params.set('src', raw);
+  const origin = normalizeOrigin(server);
+  if (origin) params.set('server', origin);
+  if (kind) params.set('kind', kind);
+  return `/api/xuione/image?${params.toString()}`;
+}
+
+export function buildXuioneCatalogAssetSources({ source = '', server = '', kind = 'image' } = {}) {
+  const resolved = resolveXuioneAssetUrl(source, server);
+  const proxy = buildXuioneAssetProxyUrl({ source, server, kind });
+  const placeholder = '/placeholders/poster-fallback.jpg';
+
+  if (!resolved) {
+    return {
+      image: proxy || placeholder,
+      imageFallback: placeholder,
+    };
+  }
+
+  let useDirectImage = false;
+  try {
+    const url = new URL(resolved);
+    const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
+    useDirectImage = isHttp && !isLocalHostname(url.hostname);
+  } catch {
+    useDirectImage = false;
+  }
+
+  if (kind === 'poster') {
+    return {
+      image: proxy || resolved || placeholder,
+      imageFallback: placeholder,
+    };
+  }
+
+  if (useDirectImage) {
+    return {
+      image: resolved,
+      imageFallback: proxy || placeholder,
+    };
+  }
+
+  return {
+    image: proxy || resolved || placeholder,
+    imageFallback: placeholder,
+  };
 }
 
 export function parseStreamBase(streamBase = '') {

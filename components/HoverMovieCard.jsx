@@ -6,6 +6,8 @@ import { Bell, Info, Play, Star } from 'lucide-react';
 import { useSession } from './SessionProvider';
 import { readJsonSafe } from '../lib/readJsonSafe';
 import { useUserPreferences } from './UserPreferencesProvider';
+import { persistMoviePlaySeed, persistMovieReturnState } from '../lib/moviePlaySeed';
+import CatalogPosterImage from './CatalogPosterImage';
 
 const trailerCache = new Map();
 
@@ -74,7 +76,15 @@ function formatReleaseDate(dateValue, { includeYear = true } = {}) {
   }
 }
 
-export default function HoverMovieCard({ item, kind = 'movie', className = '', style = {}, showTitle = false }) {
+export default function HoverMovieCard({
+  item,
+  kind = 'movie',
+  className = '',
+  style = {},
+  showTitle = false,
+  playContext = null,
+  eagerImage = false,
+}) {
   const router = useRouter();
   const { session } = useSession();
   const { movieCardClickAction } = useUserPreferences();
@@ -89,7 +99,9 @@ export default function HoverMovieCard({ item, kind = 'movie', className = '', s
   const [remindError, setRemindError] = useState('');
   const [remindSuccess, setRemindSuccess] = useState('');
   const [reminded, setReminded] = useState(Boolean(item?.reminded));
+  const [launching, setLaunching] = useState(false);
   const closeTimer = useRef(null);
+  const prefetchedRef = useRef(false);
 
   const cacheKey = `${String(item?.title || '').trim()}|${String(item?.year || '').trim()}`;
   const trailerUrl = useMemo(() => ytSrc(trailerKey), [trailerKey]);
@@ -125,6 +137,17 @@ export default function HoverMovieCard({ item, kind = 'movie', className = '', s
     setRemindError('');
     setRemindSuccess('');
   }, [item?.id, item?.reminded]);
+
+  useEffect(() => {
+    setLaunching(false);
+    prefetchedRef.current = false;
+  }, [item?.id]);
+
+  useEffect(() => {
+    if (!launching) return undefined;
+    const timer = setTimeout(() => setLaunching(false), 4000);
+    return () => clearTimeout(timer);
+  }, [launching]);
 
   const closeModal = () => {
     setModalOpen(false);
@@ -231,8 +254,34 @@ export default function HoverMovieCard({ item, kind = 'movie', className = '', s
     e.stopPropagation();
     try {
       sessionStorage.setItem('3jtv.playIntent', String(Date.now()));
+      if (kind === 'movie') {
+        const currentHref =
+          typeof window !== 'undefined'
+            ? `${window.location.pathname}${window.location.search}${window.location.hash}`
+            : item?.id
+              ? `/movies/${item.id}`
+              : '/movies';
+        persistMovieReturnState({
+          href: currentHref,
+          movieId: item?.id,
+          scrollY: typeof window !== 'undefined' ? window.scrollY || 0 : 0,
+          source: playContext?.source,
+          visibleCount: playContext?.visibleCount,
+          allMoviesIndex: playContext?.allMoviesIndex,
+        });
+        persistMoviePlaySeed(item, {
+          backHref: currentHref,
+        });
+      }
     } catch {}
-    if (kind === 'movie') router.push(`/watch/movie/${item.id}?auto=1`);
+    if (kind === 'movie') {
+      setLaunching(true);
+      if (typeof window !== 'undefined') {
+        window.location.href = `/watch/movie/${item.id}?auto=1`;
+        return;
+      }
+      router.push(`/watch/movie/${item.id}?auto=1`);
+    }
     else router.push(item?.href || '#');
   };
 
@@ -291,7 +340,15 @@ export default function HoverMovieCard({ item, kind = 'movie', className = '', s
   };
 
   const href = item?.href || (item?.id ? `/movies/${item.id}` : '#');
-  const img = item?.image || '/placeholders/poster-fallback.jpg';
+  const canPrefetchMoviePlayback =
+    kind === 'movie' && !isUpcoming && movieCardClickAction !== 'preview' && Number(item?.id || 0) > 0;
+  const prefetchPlayRoute = () => {
+    if (!canPrefetchMoviePlayback || prefetchedRef.current) return;
+    prefetchedRef.current = true;
+    try {
+      router.prefetch?.(`/watch/movie/${item.id}`);
+    } catch {}
+  };
 
   const modalEl =
     modalOpen && typeof document !== 'undefined' ? (
@@ -328,7 +385,12 @@ export default function HoverMovieCard({ item, kind = 'movie', className = '', s
               />
             ) : (
               <>
-                <img src={img} alt={item?.title || ''} className="h-full w-full object-cover" />
+                <CatalogPosterImage
+                  item={item}
+                  alt={item?.title || ''}
+                  eager={true}
+                  className="h-full w-full object-cover"
+                />
                 {loadingTrailer ? (
                   <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-neutral-900 via-neutral-800/40 to-neutral-900" />
                 ) : null}
@@ -430,11 +492,14 @@ export default function HoverMovieCard({ item, kind = 'movie', className = '', s
         className
       }
       style={style}
+      data-movie-card-id={kind === 'movie' && item?.id ? String(item.id) : undefined}
     >
       {/* Click behavior is controlled by user preference. */}
       <button
         type="button"
-        className="absolute inset-0 overflow-hidden rounded-lg bg-neutral-800"
+        className={`absolute inset-0 overflow-hidden rounded-lg bg-neutral-800 transition-opacity ${
+          launching ? 'cursor-progress opacity-80' : 'cursor-pointer'
+        }`}
         onClick={(e) => {
           if (kind !== 'movie') return router.push(href);
           if (isUpcoming || movieCardClickAction === 'preview') {
@@ -445,14 +510,30 @@ export default function HoverMovieCard({ item, kind = 'movie', className = '', s
           }
           return onPlay(e);
         }}
+        onMouseEnter={prefetchPlayRoute}
+        onFocus={prefetchPlayRoute}
         onContextMenu={(e) => e.preventDefault()}
+        aria-busy={launching}
         aria-label={item?.title ? (isUpcoming ? `Preview ${item.title}` : `Play ${item.title}`) : isUpcoming ? 'Preview' : 'Play'}
         title={item?.title || ''}
       >
-        <img src={img} alt={item?.title || ''} className="h-full w-full object-cover" loading="lazy" />
+        <CatalogPosterImage
+          item={item}
+          alt={item?.title || ''}
+          eager={eagerImage}
+          className="h-full w-full object-cover"
+        />
         {isUpcoming && releaseDateCardLabel ? (
           <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-amber-300/40 bg-black/65 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
             {releaseDateCardLabel}
+          </div>
+        ) : null}
+        {launching ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/45">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/75 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-sm">
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/75 border-t-transparent" />
+              Opening...
+            </div>
           </div>
         ) : null}
       </button>

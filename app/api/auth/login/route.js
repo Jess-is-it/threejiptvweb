@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import { getPublicSettings } from '../../../../lib/server/settings';
 import { xtreamWithFallback } from '../../xuione/_shared';
+import { getXuioneServersForRequest } from '../../../../lib/server/xuiServerRouting';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -89,15 +90,7 @@ async function handle(req) {
     }
 
     const settings = await getPublicSettings();
-    const servers = (settings?.xuione?.servers || [])
-      .map((u) => {
-        try {
-          return { origin: new URL(u).origin };
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    const servers = await getXuioneServersForRequest({ req, settings });
     if (!servers.length) {
       return NextResponse.json(
         { ok: false, error: 'No Xuione servers configured.' },

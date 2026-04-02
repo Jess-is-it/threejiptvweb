@@ -11,14 +11,14 @@ function cx(...cls) {
 }
 
 function Field({ label, hint, children, note }) {
+  const infoText = [hint, note].map((item) => String(item || '').trim()).filter(Boolean).join(' • ');
   return (
     <div>
-      <div className="mb-1 flex items-end justify-between gap-3">
+      <div className="mb-1 flex items-center gap-2">
         <label className="inline-flex items-center gap-2 text-sm font-medium text-[var(--admin-text)]">
           <span>{label}</span>
-          {note ? <HelpTooltip text={note} /> : null}
+          {infoText ? <HelpTooltip text={infoText} /> : null}
         </label>
-        {hint ? <div className="text-[11px] text-[var(--admin-muted)]">{hint}</div> : null}
       </div>
       {children}
     </div>
@@ -178,8 +178,6 @@ export default function AdminAutoDownloadSettingsPanel() {
   const [editCoreOpen, setEditCoreOpen] = useState(false);
   const [editLimitsOpen, setEditLimitsOpen] = useState(false);
   const [editFileRulesOpen, setEditFileRulesOpen] = useState(false);
-  const [editSelectionOpen, setEditSelectionOpen] = useState(false);
-  const [editSeriesSelectionOpen, setEditSeriesSelectionOpen] = useState(false);
 
   const [mountStatus, setMountStatus] = useState(null);
 
@@ -192,8 +190,7 @@ export default function AdminAutoDownloadSettingsPanel() {
   const [startTime, setStartTime] = useState('00:00');
   const [endTime, setEndTime] = useState('23:59');
 
-  const [storageLimitPercent, setStorageLimitPercent] = useState(95);
-
+  const [storageLimitGb, setStorageLimitGb] = useState(0);
   const [maxMovieGb, setMaxMovieGb] = useState(2.5);
   const [maxEpisodeGb, setMaxEpisodeGb] = useState('');
   const [minMovieSeeders, setMinMovieSeeders] = useState(1);
@@ -218,24 +215,6 @@ export default function AdminAutoDownloadSettingsPanel() {
   const [subExtsText, setSubExtsText] = useState('srt, ass, ssa, sub, vtt');
   const [skipSample, setSkipSample] = useState(true);
 
-  // Selection strategy
-  const [recentMonthsRange, setRecentMonthsRange] = useState(5);
-  const [classicYearStart, setClassicYearStart] = useState(1996);
-  const [classicYearEnd, setClassicYearEnd] = useState(2012);
-  const [recentAnimationCount, setRecentAnimationCount] = useState(1);
-  const [recentLiveActionCount, setRecentLiveActionCount] = useState(3);
-  const [classicAnimationCount, setClassicAnimationCount] = useState(1);
-  const [classicLiveActionCount, setClassicLiveActionCount] = useState(3);
-
-  // Series selection strategy
-  const [seriesRecentMonthsRange, setSeriesRecentMonthsRange] = useState(12);
-  const [seriesClassicYearStart, setSeriesClassicYearStart] = useState(1990);
-  const [seriesClassicYearEnd, setSeriesClassicYearEnd] = useState(2018);
-  const [seriesRecentAnimationCount, setSeriesRecentAnimationCount] = useState(1);
-  const [seriesRecentLiveActionCount, setSeriesRecentLiveActionCount] = useState(2);
-  const [seriesClassicAnimationCount, setSeriesClassicAnimationCount] = useState(1);
-  const [seriesClassicLiveActionCount, setSeriesClassicLiveActionCount] = useState(2);
-
   const load = async () => {
     setLoading(true);
     setErr('');
@@ -255,8 +234,10 @@ export default function AdminAutoDownloadSettingsPanel() {
       setStartTime(s?.schedule?.startTime || '00:00');
       setEndTime(s?.schedule?.endTime || '23:59');
 
-      setStorageLimitPercent(Number(s?.storage?.limitPercent ?? 95) || 95);
-
+      const totalGb = Number(j?.mountStatus?.space?.total || 0) > 0 ? Number(j.mountStatus.space.total) / (1024 * 1024 * 1024) : 0;
+      const legacyLimitPercent = Number(s?.storage?.limitPercent ?? 95) || 95;
+      const resolvedLimitGb = Number(s?.storage?.limitGb ?? (totalGb > 0 ? (legacyLimitPercent / 100) * totalGb : 0)) || 0;
+      setStorageLimitGb(Math.round(resolvedLimitGb * 1000) / 1000);
       setMaxMovieGb(Number(s?.sizeLimits?.maxMovieGb ?? 2.5) || 2.5);
       setMaxEpisodeGb(s?.sizeLimits?.maxEpisodeGb === null || s?.sizeLimits?.maxEpisodeGb === undefined ? '' : String(s.sizeLimits.maxEpisodeGb));
       setMinMovieSeeders(Math.max(0, Number(s?.sourceFilters?.minMovieSeeders ?? 1) || 0));
@@ -282,24 +263,6 @@ export default function AdminAutoDownloadSettingsPanel() {
       setSubExtsText((Array.isArray(s?.fileRules?.subtitleExtensions) ? s.fileRules.subtitleExtensions : []).join(', ') || subExtsText);
       setSkipSample(s?.fileRules?.skipSample !== false);
 
-      const ms = s?.movieSelectionStrategy || {};
-      setRecentMonthsRange(Number(ms.recentMonthsRange ?? 5) || 5);
-      setClassicYearStart(Number(ms.classicYearStart ?? 1996) || 1996);
-      setClassicYearEnd(Number(ms.classicYearEnd ?? 2012) || 2012);
-      setRecentAnimationCount(Number(ms.recentAnimationCount ?? 1) || 1);
-      setRecentLiveActionCount(Number(ms.recentLiveActionCount ?? 3) || 3);
-      setClassicAnimationCount(Number(ms.classicAnimationCount ?? 1) || 1);
-      setClassicLiveActionCount(Number(ms.classicLiveActionCount ?? 3) || 3);
-
-      const ss = s?.seriesSelectionStrategy || {};
-      setSeriesRecentMonthsRange(Number(ss.recentMonthsRange ?? 12) || 12);
-      setSeriesClassicYearStart(Number(ss.classicYearStart ?? 1990) || 1990);
-      setSeriesClassicYearEnd(Number(ss.classicYearEnd ?? 2018) || 2018);
-      setSeriesRecentAnimationCount(Number(ss.recentAnimationCount ?? 1) || 1);
-      setSeriesRecentLiveActionCount(Number(ss.recentLiveActionCount ?? 2) || 2);
-      setSeriesClassicAnimationCount(Number(ss.classicAnimationCount ?? 1) || 1);
-      setSeriesClassicLiveActionCount(Number(ss.classicLiveActionCount ?? 2) || 2);
-
       setMountStatus(j.mountStatus || null);
     } catch (e) {
       setErr(e?.message || 'Failed to load settings.');
@@ -320,8 +283,8 @@ export default function AdminAutoDownloadSettingsPanel() {
     if (!d.length) errors.push('Select at least one day.');
     if (!isValidTimeHHMM(startTime)) errors.push('Start time is invalid.');
     if (!isValidTimeHHMM(endTime)) errors.push('End time is invalid.');
-    const sl = Number(storageLimitPercent);
-    if (!Number.isFinite(sl) || sl <= 0 || sl > 100) errors.push('Storage limit percent must be 1–100.');
+    const sl = Number(storageLimitGb);
+    if (!Number.isFinite(sl) || sl <= 0) errors.push('Storage limit must be greater than 0 GB.');
     const mm = Number(maxMovieGb);
     if (!Number.isFinite(mm) || mm <= 0) errors.push('Max movie size must be > 0.');
     if (!Number.isFinite(Number(minMovieSeeders)) || Number(minMovieSeeders) < 0) errors.push('Min movie seeders must be >= 0.');
@@ -354,31 +317,13 @@ export default function AdminAutoDownloadSettingsPanel() {
     if (!ve.length) errors.push('Allowed video extensions must not be empty.');
     if (!se.length) errors.push('Allowed subtitle extensions must not be empty.');
 
-    if (classicYearStart >= classicYearEnd) errors.push('Classic year start must be less than classic year end.');
-    if (recentMonthsRange < 1) errors.push('Recent months range must be >= 1.');
-    const totalCounts =
-      Number(recentAnimationCount) +
-      Number(recentLiveActionCount) +
-      Number(classicAnimationCount) +
-      Number(classicLiveActionCount);
-    if (!(totalCounts > 0)) errors.push('At least one selection count must be > 0.');
-
-    if (seriesClassicYearStart >= seriesClassicYearEnd) errors.push('Series classic year start must be less than classic year end.');
-    if (seriesRecentMonthsRange < 1) errors.push('Series recent months range must be >= 1.');
-    const totalSeriesCounts =
-      Number(seriesRecentAnimationCount) +
-      Number(seriesRecentLiveActionCount) +
-      Number(seriesClassicAnimationCount) +
-      Number(seriesClassicLiveActionCount);
-    if (!(totalSeriesCounts > 0)) errors.push('At least one series selection count must be > 0.');
-
     return errors;
   }, [
     tz,
     days,
     startTime,
     endTime,
-    storageLimitPercent,
+    storageLimitGb,
     maxMovieGb,
     minMovieSeeders,
     minSeriesSeeders,
@@ -392,20 +337,6 @@ export default function AdminAutoDownloadSettingsPanel() {
     releaseDelayDays,
     videoExtsText,
     subExtsText,
-    classicYearStart,
-    classicYearEnd,
-    recentMonthsRange,
-    recentAnimationCount,
-    recentLiveActionCount,
-    classicAnimationCount,
-    classicLiveActionCount,
-    seriesClassicYearStart,
-    seriesClassicYearEnd,
-    seriesRecentMonthsRange,
-    seriesRecentAnimationCount,
-    seriesRecentLiveActionCount,
-    seriesClassicAnimationCount,
-    seriesClassicLiveActionCount,
   ]);
 
   const canSave = validationErrors.length === 0;
@@ -430,7 +361,7 @@ export default function AdminAutoDownloadSettingsPanel() {
         moviesEnabled,
         seriesEnabled,
         schedule: { timezone: tz, days, startTime, endTime },
-        storage: { limitPercent: Number(storageLimitPercent) },
+        storage: { limitGb: Number(storageLimitGb) },
         sizeLimits: {
           maxMovieGb: Number(maxMovieGb),
           maxEpisodeGb: maxEpisodeGb.trim() ? Number(maxEpisodeGb) : null,
@@ -471,24 +402,6 @@ export default function AdminAutoDownloadSettingsPanel() {
         categories: {
           categories: FIXED_CATEGORIES,
         },
-        movieSelectionStrategy: {
-          recentMonthsRange: clampNumber(recentMonthsRange, { min: 1, max: 120, fallback: 5 }),
-          classicYearStart: clampNumber(classicYearStart, { min: 1900, max: 2100, fallback: 1996 }),
-          classicYearEnd: clampNumber(classicYearEnd, { min: 1900, max: 2100, fallback: 2012 }),
-          recentAnimationCount: clampNumber(recentAnimationCount, { min: 0, max: 100, fallback: 1 }),
-          recentLiveActionCount: clampNumber(recentLiveActionCount, { min: 0, max: 100, fallback: 3 }),
-          classicAnimationCount: clampNumber(classicAnimationCount, { min: 0, max: 100, fallback: 1 }),
-          classicLiveActionCount: clampNumber(classicLiveActionCount, { min: 0, max: 100, fallback: 3 }),
-        },
-        seriesSelectionStrategy: {
-          recentMonthsRange: clampNumber(seriesRecentMonthsRange, { min: 1, max: 120, fallback: 12 }),
-          classicYearStart: clampNumber(seriesClassicYearStart, { min: 1900, max: 2100, fallback: 1990 }),
-          classicYearEnd: clampNumber(seriesClassicYearEnd, { min: 1900, max: 2100, fallback: 2018 }),
-          recentAnimationCount: clampNumber(seriesRecentAnimationCount, { min: 0, max: 100, fallback: 1 }),
-          recentLiveActionCount: clampNumber(seriesRecentLiveActionCount, { min: 0, max: 100, fallback: 2 }),
-          classicAnimationCount: clampNumber(seriesClassicAnimationCount, { min: 0, max: 100, fallback: 1 }),
-          classicLiveActionCount: clampNumber(seriesClassicLiveActionCount, { min: 0, max: 100, fallback: 2 }),
-        },
       };
 
       const r = await fetch('/api/admin/autodownload/settings', {
@@ -512,7 +425,11 @@ export default function AdminAutoDownloadSettingsPanel() {
 
   const used = mountStatus?.space?.used || 0;
   const total = mountStatus?.space?.total || 0;
+  const avail = mountStatus?.space?.avail || 0;
   const usedPct = total ? Math.round((used / total) * 100) : null;
+  const totalGb = total ? total / (1024 * 1024 * 1024) : 0;
+  const availableGb = avail ? Math.round((avail / (1024 * 1024 * 1024)) * 1000) / 1000 : 0;
+  const bufferBeforeLimitGb = Number(storageLimitGb) > 0 ? Math.max(0, Math.round((totalGb - Number(storageLimitGb)) * 1000) / 1000) : 0;
   const sampleMovieTokens = {
     title: 'Run Ronnie Run',
     year: '2002',
@@ -574,10 +491,10 @@ export default function AdminAutoDownloadSettingsPanel() {
         </div>
       </div>
 
-      {!(editCoreOpen || editLimitsOpen || editFileRulesOpen || editSelectionOpen || editSeriesSelectionOpen) && err ? (
+      {!(editCoreOpen || editLimitsOpen || editFileRulesOpen) && err ? (
         <div className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div>
       ) : null}
-      {!(editCoreOpen || editLimitsOpen || editFileRulesOpen || editSelectionOpen || editSeriesSelectionOpen) && ok ? (
+      {!(editCoreOpen || editLimitsOpen || editFileRulesOpen) && ok ? (
         <div className="mt-4 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{ok}</div>
       ) : null}
 
@@ -623,44 +540,44 @@ export default function AdminAutoDownloadSettingsPanel() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">Limits & Timeouts</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Storage guardrail, size limits, and timeout checker.</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">Storage guardrail, timeout checker, cleaning, and release hold.</div>
             </div>
             <EditIconButton onClick={() => setEditLimitsOpen(true)} />
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
               <div className="text-xs text-[var(--admin-muted)]">Storage limit</div>
-              <div className="mt-1 text-sm font-semibold">{storageLimitPercent}%</div>
+              <div className="mt-1 text-sm font-semibold">{storageLimitGb ? `${storageLimitGb} GB used` : '—'}</div>
               <div className="mt-1 text-xs text-[var(--admin-muted)]">
-                Current: {usedPct === null ? '—' : `${usedPct}%`} • {mountStatus?.ok ? 'Mounted' : 'Not ready'}
+                Current: {usedPct === null ? '—' : `${usedPct}%`} • Free before limit: {bufferBeforeLimitGb.toFixed(1)} GB
               </div>
             </div>
             <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="text-xs text-[var(--admin-muted)]">Size limits</div>
-              <div className="mt-1 text-sm font-semibold">Movie: {maxMovieGb} GB</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Episode: {maxEpisodeGb ? `${maxEpisodeGb} GB` : '—'}</div>
-            </div>
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="text-xs text-[var(--admin-muted)]">Min seeders</div>
-              <div className="mt-1 text-sm font-semibold">Movie: {minMovieSeeders}</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Series: {minSeriesSeeders}</div>
-            </div>
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
               <div className="text-xs text-[var(--admin-muted)]">Download checker</div>
               <div className="mt-1 text-sm font-semibold">{timeoutEnabled ? `Enabled (${maxWaitHours}h max)` : 'Disabled'}</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">
-                Strict series replacement: {strictSeriesReplacement ? 'On' : 'Off'} • Delete partials: {deletePartialSeriesOnReplacementFailure ? 'On' : 'Off'}
-              </div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">Deletes stalled jobs that exceed the timeout window.</div>
             </div>
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+              <div className="text-xs text-[var(--admin-muted)]">AutoDelete</div>
+              <div className="mt-1 text-sm font-semibold">Moved to AutoDelete Settings</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">Use the AutoDelete navigation to edit deletion trigger, delay, and protection windows.</div>
+            </div>
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
               <div className="text-xs text-[var(--admin-muted)]">Cleaning</div>
               <div className="mt-1 text-sm font-semibold">{cleaningEnabled ? 'Enabled' : 'Disabled'}</div>
               <div className="mt-1 text-xs text-[var(--admin-muted)]">Completed items are cleaned sequentially on every scheduler tick.</div>
             </div>
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
               <div className="text-xs text-[var(--admin-muted)]">Release delay</div>
               <div className="mt-1 text-sm font-semibold">{releaseDelayDays} day(s)</div>
               <div className="mt-1 text-xs text-[var(--admin-muted)]">Timezone: {DEFAULT_TIMEZONE}</div>
+            </div>
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 sm:col-span-2">
+              <div className="text-xs text-[var(--admin-muted)]">Selection rules + strategies</div>
+              <div className="mt-1 text-sm font-semibold">Moved to Selection Log Settings</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                Movie size/seeders and Movie Selection Strategy now live on Movie Selection Log Settings. Series episode size/seeders, replacement rules, and Series Selection Strategy now live on Series Selection Log Settings.
+              </div>
             </div>
           </div>
         </div>
@@ -693,57 +610,6 @@ export default function AdminAutoDownloadSettingsPanel() {
           </div>
         </div>
 
-        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold">Movie Selection Strategy</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Buckets + counts used for automatic movie queueing.</div>
-            </div>
-            <EditIconButton onClick={() => setEditSelectionOpen(true)} />
-          </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="text-xs text-[var(--admin-muted)]">Ranges</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Recent: {recentMonthsRange} months</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Classic: {classicYearStart}–{classicYearEnd}</div>
-            </div>
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="text-xs text-[var(--admin-muted)]">Counts per cycle</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">
-                Recent A/L: {recentAnimationCount}/{recentLiveActionCount}
-              </div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">
-                Classic A/L: {classicAnimationCount}/{classicLiveActionCount}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold">Series Selection Strategy</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Buckets + counts prepared for automatic series queueing.</div>
-            </div>
-            <EditIconButton onClick={() => setEditSeriesSelectionOpen(true)} />
-          </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="text-xs text-[var(--admin-muted)]">Ranges</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Recent: {seriesRecentMonthsRange} months</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">Classic: {seriesClassicYearStart}–{seriesClassicYearEnd}</div>
-            </div>
-            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="text-xs text-[var(--admin-muted)]">Counts per cycle</div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">
-                Recent A/L: {seriesRecentAnimationCount}/{seriesRecentLiveActionCount}
-              </div>
-              <div className="mt-1 text-xs text-[var(--admin-muted)]">
-                Classic A/L: {seriesClassicAnimationCount}/{seriesClassicLiveActionCount}
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
 
       <EditModal
@@ -844,7 +710,7 @@ export default function AdminAutoDownloadSettingsPanel() {
       <EditModal
         open={editLimitsOpen}
         title="Edit Limits & Timeouts"
-        description="Storage guardrail, size limits, and timeout checker."
+        description="Storage guardrail, timeout checker, cleaning, and release hold."
         error={err}
         success={ok}
         onCancel={async () => {
@@ -861,13 +727,12 @@ export default function AdminAutoDownloadSettingsPanel() {
         <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
           <div className="text-sm font-semibold">Storage guardrail</div>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <Field label="Storage limit percent" hint="Reject new jobs above this threshold">
+            <Field label="Storage limit (GB used)" hint="Pause new jobs when NAS usage reaches this amount">
               <Input
                 type="number"
                 min={1}
-                max={100}
-                value={storageLimitPercent}
-                onChange={(e) => setStorageLimitPercent(Number(e.target.value || 95))}
+                value={storageLimitGb}
+                onChange={(e) => setStorageLimitGb(Number(e.target.value || 0))}
               />
             </Field>
             <div className="md:col-span-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 text-sm">
@@ -888,6 +753,10 @@ export default function AdminAutoDownloadSettingsPanel() {
                   <div className="text-xs text-[var(--admin-muted)]">Used %</div>
                   <div className="mt-1 font-mono text-xs">{usedPct === null ? '—' : `${usedPct}%`}</div>
                 </div>
+                <div>
+                  <div className="text-xs text-[var(--admin-muted)]">Available</div>
+                  <div className="mt-1 font-mono text-xs">{availableGb ? `${availableGb.toFixed(1)} GB` : '—'}</div>
+                </div>
               </div>
               <div className="mt-2 text-xs text-[var(--admin-muted)]">
                 Last checked: {mountStatus?.checkedAt ? new Date(mountStatus.checkedAt).toLocaleString() : '—'}
@@ -896,53 +765,7 @@ export default function AdminAutoDownloadSettingsPanel() {
           </div>
         </div>
 
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
-            <div className="text-sm font-semibold">Size limits</div>
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <Field label="Max movie size (GB)">
-                <Input
-                  type="number"
-                  min={0.1}
-                  step="0.1"
-                  value={maxMovieGb}
-                  onChange={(e) => setMaxMovieGb(Number(e.target.value || 2.5))}
-                />
-              </Field>
-              <Field label="Max episode size (GB)" hint="Optional">
-                <Input
-                  type="number"
-                  min={0.05}
-                  step="0.05"
-                  value={maxEpisodeGb}
-                  onChange={(e) => setMaxEpisodeGb(e.target.value)}
-                  placeholder="(optional)"
-                />
-              </Field>
-            </div>
-            <div className="mt-4 text-sm font-semibold">Source quality gates</div>
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <Field label="Min movie seeders">
-                <Input
-                  type="number"
-                  min={0}
-                  step="1"
-                  value={minMovieSeeders}
-                  onChange={(e) => setMinMovieSeeders(Number(e.target.value || 0))}
-                />
-              </Field>
-              <Field label="Min series seeders">
-                <Input
-                  type="number"
-                  min={0}
-                  step="1"
-                  value={minSeriesSeeders}
-                  onChange={(e) => setMinSeriesSeeders(Number(e.target.value || 0))}
-                />
-              </Field>
-            </div>
-          </div>
-
+        <div className="mt-4">
           <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
             <div className="text-sm font-semibold">Download checker</div>
             <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -957,28 +780,6 @@ export default function AdminAutoDownloadSettingsPanel() {
               </Field>
             </div>
             <div className="mt-2 text-xs text-[var(--admin-muted)]">On timeout: delete job and delete files (fixed behavior).</div>
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <Field label="Strict series replacement" hint="When replacement fails, series run is marked as failed">
-                <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={strictSeriesReplacement}
-                    onChange={(e) => setStrictSeriesReplacement(e.target.checked)}
-                  />
-                  <span>{strictSeriesReplacement ? 'Enabled' : 'Disabled'}</span>
-                </label>
-              </Field>
-              <Field label="Delete partial series on failed replacement" hint="After all sources fail for missing episode/season">
-                <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={deletePartialSeriesOnReplacementFailure}
-                    onChange={(e) => setDeletePartialSeriesOnReplacementFailure(e.target.checked)}
-                  />
-                  <span>{deletePartialSeriesOnReplacementFailure ? 'Enabled' : 'Disabled'}</span>
-                </label>
-              </Field>
-            </div>
             <div className="mt-4 text-sm font-semibold">Cleaning</div>
             <div className="mt-4 grid gap-4 md:grid-cols-1">
               <Field label="Enable Cleaning" hint="If disabled, completed items wait until manual process">
@@ -1126,139 +927,6 @@ export default function AdminAutoDownloadSettingsPanel() {
         </div>
       </EditModal>
 
-      <EditModal
-        open={editSelectionOpen}
-        title="Edit Movie Selection Strategy"
-        description="Controls automatic movie queue selection buckets and counts."
-        error={err}
-        success={ok}
-        onCancel={async () => {
-          setEditSelectionOpen(false);
-          await load();
-        }}
-        onSave={async () => {
-          await save();
-          setEditSelectionOpen(false);
-        }}
-        saveDisabled={loading || busy || !canSave}
-        saving={busy}
-      >
-        <div className="grid gap-4 md:grid-cols-3">
-          <Field label="Recent months range" hint="Default 5">
-            <Input type="number" min={1} max={120} value={recentMonthsRange} onChange={(e) => setRecentMonthsRange(Number(e.target.value || 5))} />
-          </Field>
-          <Field label="Classic year start" hint="Default 1996">
-            <Input type="number" min={1900} max={2100} value={classicYearStart} onChange={(e) => setClassicYearStart(Number(e.target.value || 1996))} />
-          </Field>
-          <Field label="Classic year end" hint="Default 2012">
-            <Input type="number" min={1900} max={2100} value={classicYearEnd} onChange={(e) => setClassicYearEnd(Number(e.target.value || 2012))} />
-          </Field>
-        </div>
-
-        <div className="mt-4 text-sm font-medium">Counts per cycle</div>
-        <div className="mt-3 grid gap-4 md:grid-cols-4">
-          <Field label="Recent Animation">
-            <Input type="number" min={0} max={100} value={recentAnimationCount} onChange={(e) => setRecentAnimationCount(Number(e.target.value || 0))} />
-          </Field>
-          <Field label="Recent Live Action">
-            <Input type="number" min={0} max={100} value={recentLiveActionCount} onChange={(e) => setRecentLiveActionCount(Number(e.target.value || 0))} />
-          </Field>
-          <Field label="Classic Animation">
-            <Input type="number" min={0} max={100} value={classicAnimationCount} onChange={(e) => setClassicAnimationCount(Number(e.target.value || 0))} />
-          </Field>
-          <Field label="Classic Live Action">
-            <Input type="number" min={0} max={100} value={classicLiveActionCount} onChange={(e) => setClassicLiveActionCount(Number(e.target.value || 0))} />
-          </Field>
-        </div>
-      </EditModal>
-
-      <EditModal
-        open={editSeriesSelectionOpen}
-        title="Edit Series Selection Strategy"
-        description="Controls automatic series queue selection buckets and counts."
-        error={err}
-        success={ok}
-        onCancel={async () => {
-          setEditSeriesSelectionOpen(false);
-          await load();
-        }}
-        onSave={async () => {
-          await save();
-          setEditSeriesSelectionOpen(false);
-        }}
-        saveDisabled={loading || busy || !canSave}
-        saving={busy}
-      >
-        <div className="grid gap-4 md:grid-cols-3">
-          <Field label="Recent months range" hint="Default 12">
-            <Input
-              type="number"
-              min={1}
-              max={120}
-              value={seriesRecentMonthsRange}
-              onChange={(e) => setSeriesRecentMonthsRange(Number(e.target.value || 12))}
-            />
-          </Field>
-          <Field label="Classic year start" hint="Default 1990">
-            <Input
-              type="number"
-              min={1900}
-              max={2100}
-              value={seriesClassicYearStart}
-              onChange={(e) => setSeriesClassicYearStart(Number(e.target.value || 1990))}
-            />
-          </Field>
-          <Field label="Classic year end" hint="Default 2018">
-            <Input
-              type="number"
-              min={1900}
-              max={2100}
-              value={seriesClassicYearEnd}
-              onChange={(e) => setSeriesClassicYearEnd(Number(e.target.value || 2018))}
-            />
-          </Field>
-        </div>
-
-        <div className="mt-4 text-sm font-medium">Counts per cycle</div>
-        <div className="mt-3 grid gap-4 md:grid-cols-4">
-          <Field label="Recent Animation">
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              value={seriesRecentAnimationCount}
-              onChange={(e) => setSeriesRecentAnimationCount(Number(e.target.value || 0))}
-            />
-          </Field>
-          <Field label="Recent Live Action">
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              value={seriesRecentLiveActionCount}
-              onChange={(e) => setSeriesRecentLiveActionCount(Number(e.target.value || 0))}
-            />
-          </Field>
-          <Field label="Classic Animation">
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              value={seriesClassicAnimationCount}
-              onChange={(e) => setSeriesClassicAnimationCount(Number(e.target.value || 0))}
-            />
-          </Field>
-          <Field label="Classic Live Action">
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              value={seriesClassicLiveActionCount}
-              onChange={(e) => setSeriesClassicLiveActionCount(Number(e.target.value || 0))}
-            />
-          </Field>
-        </div>
-      </EditModal>
     </div>
   );
 }

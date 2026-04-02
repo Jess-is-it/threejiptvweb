@@ -1,6 +1,7 @@
 'use client';
 
 import { useId } from 'react';
+import { Info } from 'lucide-react';
 
 function cx(...cls) {
   return cls.filter(Boolean).join(' ');
@@ -21,7 +22,7 @@ export default function HelpTooltip({ text = '', className = '' }) {
           tabIndex={-1}
           className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--admin-border)] bg-[var(--admin-surface)] text-[11px] text-[var(--admin-muted)] hover:text-[var(--admin-text)]"
         >
-          ?
+          <Info className="h-3.5 w-3.5" />
         </button>
         <span
           id={id}

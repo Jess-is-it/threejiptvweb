@@ -1,7 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getCatalogSettings } from '../../../lib/catalogSettings';
+import {
+  CATALOG_HERO_SORT_OPTIONS,
+  CATALOG_HERO_SOURCE_OPTIONS,
+  CATALOG_LAYOUT_BUILTINS,
+  getCatalogSettings,
+  makeCatalogBuiltinRowToken,
+  makeCatalogGenreRowToken,
+  normalizeCatalogGenreName,
+  parseCatalogRowToken,
+} from '../../../lib/catalogSettings';
 
 function clampInt(value, fallback, { min = 1, max = 500 } = {}) {
   const n = Number(value);
@@ -16,6 +25,7 @@ function coerceCatalogForSave(catalog) {
       moviesPage: {
         top: String(normalized.labels.moviesPage.top || '').trim(),
         recentlyAdded: String(normalized.labels.moviesPage.recentlyAdded || '').trim(),
+        leavingSoon: String(normalized.labels.moviesPage.leavingSoon || '').trim(),
         recommended: String(normalized.labels.moviesPage.recommended || '').trim(),
         worthToWait: String(normalized.labels.moviesPage.worthToWait || '').trim(),
         allMovies: String(normalized.labels.moviesPage.allMovies || '').trim(),
@@ -23,17 +33,36 @@ function coerceCatalogForSave(catalog) {
       seriesPage: {
         top: String(normalized.labels.seriesPage.top || '').trim(),
         recentlyAdded: String(normalized.labels.seriesPage.recentlyAdded || '').trim(),
+        leavingSoon: String(normalized.labels.seriesPage.leavingSoon || '').trim(),
         worthToWait: String(normalized.labels.seriesPage.worthToWait || '').trim(),
       },
-      homePage: {
-        topMovies: String(normalized.labels.homePage.topMovies || '').trim(),
-        worthToWait: String(normalized.labels.homePage.worthToWait || '').trim(),
-        recentlyAdded: String(normalized.labels.homePage.recentlyAdded || '').trim(),
-        recentMixed: String(normalized.labels.homePage.recentMixed || '').trim(),
-        top10: String(normalized.labels.homePage.top10 || '').trim(),
-        recommendedMovies: String(normalized.labels.homePage.recommendedMovies || '').trim(),
-        topSeries: String(normalized.labels.homePage.topSeries || '').trim(),
-        recentMovies: String(normalized.labels.homePage.recentMovies || '').trim(),
+    },
+    layouts: {
+      moviesPage: {
+        rows: Array.isArray(normalized.layouts?.moviesPage?.rows) ? normalized.layouts.moviesPage.rows : [],
+      },
+      seriesPage: {
+        rows: Array.isArray(normalized.layouts?.seriesPage?.rows) ? normalized.layouts.seriesPage.rows : [],
+      },
+    },
+    hero: {
+      moviesPage: {
+        rules: Array.isArray(normalized.hero?.moviesPage?.rules)
+          ? normalized.hero.moviesPage.rules.map((rule) => ({
+              source: String(rule?.source || '').trim(),
+              count: clampInt(rule?.count, 0, { min: 0, max: 30 }),
+              sort: String(rule?.sort || '').trim(),
+            }))
+          : [],
+      },
+      seriesPage: {
+        rules: Array.isArray(normalized.hero?.seriesPage?.rules)
+          ? normalized.hero.seriesPage.rules.map((rule) => ({
+              source: String(rule?.source || '').trim(),
+              count: clampInt(rule?.count, 0, { min: 0, max: 30 }),
+              sort: String(rule?.sort || '').trim(),
+            }))
+          : [],
       },
     },
     categories: {
@@ -70,22 +99,81 @@ function coerceCatalogForSave(catalog) {
   };
 }
 
+function layoutRowLabel(catalog, pageKey, row) {
+  if (!row) return '';
+  if (row.kind === 'genre') return row.name;
+
+  if (pageKey === 'moviesPage') {
+    if (row.key === 'top') return catalog.labels.moviesPage.top;
+    if (row.key === 'recentlyAdded') return catalog.labels.moviesPage.recentlyAdded;
+    if (row.key === 'leavingSoon') return catalog.labels.moviesPage.leavingSoon;
+    if (row.key === 'recommended') return catalog.labels.moviesPage.recommended;
+    if (row.key === 'worthToWait') return catalog.labels.moviesPage.worthToWait;
+    if (row.key === 'allMovies') return catalog.labels.moviesPage.allMovies;
+  }
+
+  if (pageKey === 'seriesPage') {
+    if (row.key === 'top') return catalog.labels.seriesPage.top;
+    if (row.key === 'recentlyAdded') return catalog.labels.seriesPage.recentlyAdded;
+    if (row.key === 'leavingSoon') return catalog.labels.seriesPage.leavingSoon;
+    if (row.key === 'worthToWait') return catalog.labels.seriesPage.worthToWait;
+  }
+
+  return row.key || '';
+}
+
+function heroSourceLabel(catalog, pageKey, sourceKey) {
+  const key = String(sourceKey || '').trim();
+  if (!key) return '';
+
+  if (pageKey === 'moviesPage') {
+    if (key === 'top') return catalog.labels.moviesPage.top;
+    if (key === 'recentlyAdded') return catalog.labels.moviesPage.recentlyAdded;
+    if (key === 'leavingSoon') return catalog.labels.moviesPage.leavingSoon;
+    if (key === 'recommended') return catalog.labels.moviesPage.recommended;
+    if (key === 'worthToWait') return catalog.labels.moviesPage.worthToWait;
+  }
+
+  if (pageKey === 'seriesPage') {
+    if (key === 'top') return catalog.labels.seriesPage.top;
+    if (key === 'recentlyAdded') return catalog.labels.seriesPage.recentlyAdded;
+    if (key === 'leavingSoon') return catalog.labels.seriesPage.leavingSoon;
+    if (key === 'worthToWait') return catalog.labels.seriesPage.worthToWait;
+  }
+
+  return CATALOG_HERO_SOURCE_OPTIONS[pageKey]?.find((entry) => entry.key === key)?.label || key;
+}
+
 export default function AdminCategorySettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [okMsg, setOkMsg] = useState('');
   const [catalog, setCatalog] = useState(() => getCatalogSettings());
+  const [genreOptions, setGenreOptions] = useState({ moviesPage: [], seriesPage: [] });
+  const [draggingRow, setDraggingRow] = useState(null);
 
   const load = async () => {
     setLoading(true);
     setErr('');
     setOkMsg('');
     try {
-      const response = await fetch('/api/admin/settings', { cache: 'no-store' });
+      const [response, genresResponse] = await Promise.all([
+        fetch('/api/admin/settings', { cache: 'no-store' }),
+        fetch('/api/admin/autodownload/tmdb/genres', { cache: 'no-store' }),
+      ]);
       const json = await response.json().catch(() => ({}));
+      const genresJson = await genresResponse.json().catch(() => ({}));
       if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to load category settings.');
       setCatalog(getCatalogSettings(json.settings || {}));
+      setGenreOptions({
+        moviesPage: Array.isArray(genresJson?.movie)
+          ? genresJson.movie.map((genre) => String(genre?.name || '').trim()).filter(Boolean)
+          : [],
+        seriesPage: Array.isArray(genresJson?.tv)
+          ? genresJson.tv.map((genre) => String(genre?.name || '').trim()).filter(Boolean)
+          : [],
+      });
     } catch (error) {
       setErr(error?.message || 'Failed to load category settings.');
     } finally {
@@ -123,6 +211,122 @@ export default function AdminCategorySettingsPanel() {
     }));
   };
 
+  const updateLayoutRows = (pageKey, rows) => {
+    setCatalog((prev) => ({
+      ...prev,
+      layouts: {
+        ...(prev.layouts || {}),
+        [pageKey]: {
+          ...(prev.layouts?.[pageKey] || {}),
+          rows,
+        },
+      },
+    }));
+  };
+
+  const updateHeroRules = (pageKey, rules) => {
+    setCatalog((prev) => ({
+      ...prev,
+      hero: {
+        ...(prev.hero || {}),
+        [pageKey]: {
+          ...(prev.hero?.[pageKey] || {}),
+          rules,
+        },
+      },
+    }));
+  };
+
+  const updateHeroRule = (pageKey, index, fieldKey, value) => {
+    const currentRules = Array.isArray(catalog.hero?.[pageKey]?.rules) ? catalog.hero[pageKey].rules : [];
+    updateHeroRules(
+      pageKey,
+      currentRules.map((rule, ruleIndex) =>
+        ruleIndex === index
+          ? {
+              ...rule,
+              [fieldKey]: value,
+            }
+          : rule
+      )
+    );
+  };
+
+  const addHeroRule = (pageKey) => {
+    const currentRules = Array.isArray(catalog.hero?.[pageKey]?.rules) ? catalog.hero[pageKey].rules : [];
+    const options = Array.isArray(CATALOG_HERO_SOURCE_OPTIONS[pageKey]) ? CATALOG_HERO_SOURCE_OPTIONS[pageKey] : [];
+    const usedSources = new Set(currentRules.map((rule) => String(rule?.source || '').trim()).filter(Boolean));
+    const nextSource =
+      options.find((entry) => !usedSources.has(entry.key))?.key ||
+      options[0]?.key ||
+      'recentlyAdded';
+
+    updateHeroRules(pageKey, [
+      ...currentRules,
+      {
+        source: nextSource,
+        count: 1,
+        sort: 'latest',
+      },
+    ]);
+  };
+
+  const removeHeroRule = (pageKey, index) => {
+    const currentRules = Array.isArray(catalog.hero?.[pageKey]?.rules) ? catalog.hero[pageKey].rules : [];
+    updateHeroRules(
+      pageKey,
+      currentRules.filter((_, ruleIndex) => ruleIndex !== index)
+    );
+  };
+
+  const moveHeroRule = (pageKey, index, delta) => {
+    const currentRules = Array.isArray(catalog.hero?.[pageKey]?.rules) ? [...catalog.hero[pageKey].rules] : [];
+    const nextIndex = index + delta;
+    if (index < 0 || index >= currentRules.length || nextIndex < 0 || nextIndex >= currentRules.length) return;
+    const [moved] = currentRules.splice(index, 1);
+    currentRules.splice(nextIndex, 0, moved);
+    updateHeroRules(pageKey, currentRules);
+  };
+
+  const toggleGenreRow = (pageKey, genreName, checked) => {
+    const token = makeCatalogGenreRowToken(genreName);
+    if (!token) return;
+
+    const currentRows = Array.isArray(catalog.layouts?.[pageKey]?.rows) ? catalog.layouts[pageKey].rows : [];
+    const filtered = currentRows.filter((rowToken) => rowToken !== token);
+    if (!checked) {
+      updateLayoutRows(pageKey, filtered);
+      return;
+    }
+
+    if (pageKey === 'moviesPage') {
+      const allMoviesToken = makeCatalogBuiltinRowToken('allMovies');
+      const allMoviesIndex = filtered.indexOf(allMoviesToken);
+      if (allMoviesIndex >= 0) {
+        filtered.splice(allMoviesIndex, 0, token);
+      } else {
+        filtered.push(token);
+      }
+      updateLayoutRows(pageKey, filtered);
+      return;
+    }
+
+    filtered.push(token);
+    updateLayoutRows(pageKey, filtered);
+  };
+
+  const moveLayoutRow = (pageKey, fromToken, toToken) => {
+    if (!fromToken || !toToken || fromToken === toToken) return;
+    const currentRows = Array.isArray(catalog.layouts?.[pageKey]?.rows) ? [...catalog.layouts[pageKey].rows] : [];
+    const fromIndex = currentRows.indexOf(fromToken);
+    const toIndex = currentRows.indexOf(toToken);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+
+    const [moved] = currentRows.splice(fromIndex, 1);
+    currentRows.splice(toIndex, 0, moved);
+    updateLayoutRows(pageKey, currentRows);
+  };
+
   const save = async () => {
     setSaving(true);
     setErr('');
@@ -156,10 +360,10 @@ export default function AdminCategorySettingsPanel() {
       <section className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
         <h2 className="text-lg font-semibold">Category Names</h2>
         <p className="mt-1 text-sm text-[var(--admin-muted)]">
-          Rename the category titles shown on public Home, Movies, and Series pages.
+          Rename the category titles shown on the public Movies and Series pages.
         </p>
 
-        <div className="mt-5 grid gap-5 lg:grid-cols-3">
+        <div className="mt-5 grid gap-5 lg:grid-cols-2">
           <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
             <div className="mb-3 text-sm font-semibold">Movies page</div>
             <div className="space-y-3">
@@ -176,6 +380,14 @@ export default function AdminCategorySettingsPanel() {
                 <input
                   value={catalog.labels.moviesPage.recentlyAdded}
                   onChange={(event) => updateLabel('moviesPage', 'recentlyAdded', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
+                />
+              </label>
+              <label className="block text-xs text-[var(--admin-muted)]">
+                Leaving soon
+                <input
+                  value={catalog.labels.moviesPage.leavingSoon}
+                  onChange={(event) => updateLabel('moviesPage', 'leavingSoon', event.target.value)}
                   className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
                 />
               </label>
@@ -226,6 +438,14 @@ export default function AdminCategorySettingsPanel() {
                 />
               </label>
               <label className="block text-xs text-[var(--admin-muted)]">
+                Leaving soon
+                <input
+                  value={catalog.labels.seriesPage.leavingSoon}
+                  onChange={(event) => updateLabel('seriesPage', 'leavingSoon', event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
+                />
+              </label>
+              <label className="block text-xs text-[var(--admin-muted)]">
                 Worth to wait
                 <input
                   value={catalog.labels.seriesPage.worthToWait}
@@ -235,76 +455,250 @@ export default function AdminCategorySettingsPanel() {
               </label>
             </div>
           </div>
+        </div>
+      </section>
 
-          <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
-            <div className="mb-3 text-sm font-semibold">Home page</div>
-            <div className="space-y-3">
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Top movies
-                <input
-                  value={catalog.labels.homePage.topMovies}
-                  onChange={(event) => updateLabel('homePage', 'topMovies', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Worth to wait
-                <input
-                  value={catalog.labels.homePage.worthToWait}
-                  onChange={(event) => updateLabel('homePage', 'worthToWait', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Recently added
-                <input
-                  value={catalog.labels.homePage.recentlyAdded}
-                  onChange={(event) => updateLabel('homePage', 'recentlyAdded', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Recently mixed
-                <input
-                  value={catalog.labels.homePage.recentMixed}
-                  onChange={(event) => updateLabel('homePage', 'recentMixed', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Top 10 row
-                <input
-                  value={catalog.labels.homePage.top10}
-                  onChange={(event) => updateLabel('homePage', 'top10', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Recommended movies
-                <input
-                  value={catalog.labels.homePage.recommendedMovies}
-                  onChange={(event) => updateLabel('homePage', 'recommendedMovies', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Top series
-                <input
-                  value={catalog.labels.homePage.topSeries}
-                  onChange={(event) => updateLabel('homePage', 'topSeries', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-              <label className="block text-xs text-[var(--admin-muted)]">
-                Recently added movies
-                <input
-                  value={catalog.labels.homePage.recentMovies}
-                  onChange={(event) => updateLabel('homePage', 'recentMovies', event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-                />
-              </label>
-            </div>
-          </div>
+      <section className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
+        <h2 className="text-lg font-semibold">Page Layout</h2>
+        <p className="mt-1 text-sm text-[var(--admin-muted)]">
+          Movies is now the landing page. Choose which genres appear and drag rows to reorder built-in categories and selected genres.
+        </p>
+
+        <div className="mt-5 grid gap-5 xl:grid-cols-2">
+          {['moviesPage', 'seriesPage'].map((pageKey) => {
+            const title = pageKey === 'moviesPage' ? 'Landing / Movies page' : 'Series page';
+            const rows = Array.isArray(catalog.layouts?.[pageKey]?.rows) ? catalog.layouts[pageKey].rows : [];
+            const selectedGenreKeys = new Set(
+              rows
+                .map((token) => parseCatalogRowToken(token))
+                .filter((row) => row?.kind === 'genre')
+                .map((row) => normalizeCatalogGenreName(row.name))
+                .filter(Boolean)
+            );
+            const options = Array.isArray(genreOptions?.[pageKey]) ? genreOptions[pageKey] : [];
+
+            return (
+              <div key={pageKey} className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+                <div className="mb-3 text-sm font-semibold">{title}</div>
+
+                <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] p-3">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-[var(--admin-muted)]">
+                    Row Order
+                  </div>
+                  <div className="space-y-2">
+                    {rows.map((token) => {
+                      const row = parseCatalogRowToken(token);
+                      if (!row) return null;
+                      const isBuiltin = row.kind === 'builtin';
+                      const builtinLabel =
+                        isBuiltin
+                          ? CATALOG_LAYOUT_BUILTINS[pageKey]?.find((entry) => entry.key === row.key)?.label || row.key
+                          : '';
+                      return (
+                        <div
+                          key={`${pageKey}-${token}`}
+                          draggable
+                          onDragStart={() => setDraggingRow({ pageKey, token })}
+                          onDragEnd={() => setDraggingRow(null)}
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            if (draggingRow?.pageKey !== pageKey) return;
+                            moveLayoutRow(pageKey, draggingRow?.token, token);
+                            setDraggingRow(null);
+                          }}
+                          className={
+                            'flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ' +
+                            (draggingRow?.pageKey === pageKey && draggingRow?.token === token
+                              ? 'border-[var(--brand)] bg-[var(--brand)]/10'
+                              : 'border-[var(--admin-border)] bg-[var(--admin-surface)]')
+                          }
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="cursor-grab text-base text-[var(--admin-muted)] active:cursor-grabbing">⋮⋮</span>
+                            <div>
+                              <div className="font-medium text-[var(--admin-text)]">
+                                {layoutRowLabel(catalog, pageKey, row)}
+                              </div>
+                              <div className="text-xs text-[var(--admin-muted)]">
+                                {isBuiltin ? `Built-in: ${builtinLabel}` : 'Genre row'}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] p-3">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-[var(--admin-muted)]">
+                    Genres To Display
+                  </div>
+                  {!options.length ? (
+                    <div className="text-sm text-[var(--admin-muted)]">No genres available right now.</div>
+                  ) : (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {options.map((genreName) => {
+                        const normalizedName = normalizeCatalogGenreName(genreName);
+                        const checked = selectedGenreKeys.has(normalizedName);
+                        return (
+                          <label
+                            key={`${pageKey}-genre-${normalizedName}`}
+                            className="flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2 text-sm text-[var(--admin-text)]"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => toggleGenreRow(pageKey, genreName, event.target.checked)}
+                            />
+                            <span>{genreName}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
+        <h2 className="text-lg font-semibold">Hero Section</h2>
+        <p className="mt-1 text-sm text-[var(--admin-muted)]">
+          Build the public hero slider from category sources. Set how many titles each source contributes and how each source is sorted before it is featured.
+        </p>
+
+        <div className="mt-5 grid gap-5 xl:grid-cols-2">
+          {['moviesPage', 'seriesPage'].map((pageKey) => {
+            const title = pageKey === 'moviesPage' ? 'Landing / Movies page hero' : 'Series page hero';
+            const rules = Array.isArray(catalog.hero?.[pageKey]?.rules) ? catalog.hero[pageKey].rules : [];
+            const totalSlides = rules.reduce(
+              (sum, rule) => sum + Math.max(0, Number(rule?.count || 0) || 0),
+              0
+            );
+            const sourceOptions = Array.isArray(CATALOG_HERO_SOURCE_OPTIONS[pageKey])
+              ? CATALOG_HERO_SOURCE_OPTIONS[pageKey]
+              : [];
+
+            return (
+              <div key={`hero-${pageKey}`} className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-semibold">{title}</div>
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      Total featured slides: {totalSlides}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => addHeroRule(pageKey)}
+                    className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-xs font-medium text-[var(--admin-text)] hover:bg-black/10"
+                  >
+                    Add source
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {rules.map((rule, index) => (
+                    <div
+                      key={`${pageKey}-hero-rule-${index}`}
+                      className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-medium text-[var(--admin-text)]">
+                            Rule {index + 1}: {heroSourceLabel(catalog, pageKey, rule?.source)}
+                          </div>
+                          <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                            Source order controls the hero slide order after each rule is sorted.
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => moveHeroRule(pageKey, index, -1)}
+                            disabled={index === 0}
+                            className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2 py-1 text-xs disabled:opacity-40"
+                          >
+                            Up
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveHeroRule(pageKey, index, 1)}
+                            disabled={index === rules.length - 1}
+                            className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2 py-1 text-xs disabled:opacity-40"
+                          >
+                            Down
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeHeroRule(pageKey, index)}
+                            className="rounded-lg border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-200"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 grid gap-3 md:grid-cols-3">
+                        <label className="text-xs text-[var(--admin-muted)]">
+                          Retrieve from
+                          <select
+                            value={rule?.source || ''}
+                            onChange={(event) => updateHeroRule(pageKey, index, 'source', event.target.value)}
+                            className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
+                          >
+                            {sourceOptions.map((option) => (
+                              <option key={`${pageKey}-hero-source-${option.key}`} value={option.key}>
+                                {heroSourceLabel(catalog, pageKey, option.key)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="text-xs text-[var(--admin-muted)]">
+                          Featured items
+                          <input
+                            type="number"
+                            min={0}
+                            max={30}
+                            value={Number(rule?.count || 0)}
+                            onChange={(event) =>
+                              updateHeroRule(
+                                pageKey,
+                                index,
+                                'count',
+                                clampInt(event.target.value, 0, { min: 0, max: 30 })
+                              )
+                            }
+                            className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
+                          />
+                        </label>
+
+                        <label className="text-xs text-[var(--admin-muted)]">
+                          Sort by
+                          <select
+                            value={rule?.sort || 'latest'}
+                            onChange={(event) => updateHeroRule(pageKey, index, 'sort', event.target.value)}
+                            className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
+                          >
+                            {CATALOG_HERO_SORT_OPTIONS.map((option) => (
+                              <option key={`${pageKey}-hero-sort-${option.key}`} value={option.key}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -458,23 +852,6 @@ export default function AdminCategorySettingsPanel() {
             />
           </label>
           <label className="text-xs text-[var(--admin-muted)]">
-            Movie genre rows shown
-            <input
-              type="number"
-              min={1}
-              max={25}
-              value={catalog.categories.movieGenreRows.maxCategories}
-              onChange={(event) =>
-                updateCategory(
-                  'movieGenreRows',
-                  'maxCategories',
-                  clampInt(event.target.value, 5, { min: 1, max: 25 })
-                )
-              }
-              className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-            />
-          </label>
-          <label className="text-xs text-[var(--admin-muted)]">
             Movie genre cards per row
             <input
               type="number"
@@ -503,23 +880,6 @@ export default function AdminCategorySettingsPanel() {
                   'recentlyAddedSeries',
                   'displayCount',
                   clampInt(event.target.value, 20, { min: 1, max: 200 })
-                )
-              }
-              className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"
-            />
-          </label>
-          <label className="text-xs text-[var(--admin-muted)]">
-            Series genre rows shown
-            <input
-              type="number"
-              min={1}
-              max={25}
-              value={catalog.categories.seriesGenreRows.maxCategories}
-              onChange={(event) =>
-                updateCategory(
-                  'seriesGenreRows',
-                  'maxCategories',
-                  clampInt(event.target.value, 5, { min: 1, max: 25 })
                 )
               }
               className="mt-1 w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm text-[var(--admin-text)] outline-none focus:ring-2 focus:ring-[--brand]/30"

@@ -19,6 +19,10 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className="h-full">
+      <head>
+        <link rel="preconnect" href="https://image.tmdb.org" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://image.tmdb.org" />
+      </head>
       <body className="min-h-screen bg-neutral-950 text-neutral-100 antialiased">
         <PublicSettingsProvider>
           <UserPreferencesProvider>

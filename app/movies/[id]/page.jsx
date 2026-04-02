@@ -6,6 +6,7 @@ import { useSession } from '../../../components/SessionProvider';
 import { getContinueList } from '../../../components/continueStore';
 import HeroDetail from '../../../components/HeroDetail';
 import { readJsonSafe } from '../../../lib/readJsonSafe';
+import { persistMoviePlaySeed, persistMovieReturnState } from '../../../lib/moviePlaySeed';
 
 export default function MovieDetails() {
   const { id } = useParams();
@@ -15,6 +16,7 @@ export default function MovieDetails() {
   const isUpcoming = String(searchParams?.get('upcoming') || '').trim() === '1';
   const [meta, setMeta] = useState(null);
   const [upcoming, setUpcoming] = useState(null);
+  const [leavingSoon, setLeavingSoon] = useState(null);
   const [details, setDetails] = useState(null);
   const [remindBusy, setRemindBusy] = useState(false);
   const [remindText, setRemindText] = useState('');
@@ -41,6 +43,7 @@ export default function MovieDetails() {
           if (!alive) return;
           if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
           setUpcoming(d?.upcoming || null);
+          setLeavingSoon(null);
           setDetails(d?.details || null);
           setMeta(null);
           setRemindText(d?.upcoming?.reminded ? 'Reminder saved.' : '');
@@ -53,6 +56,10 @@ export default function MovieDetails() {
           setMeta(d);
           setUpcoming(null);
           setDetails(null);
+          const leavingResp = await fetch(`/api/public/autodownload/leaving-soon/details?mediaType=movie&xuiId=${encodeURIComponent(String(id))}`, { cache: 'no-store' });
+          const leavingJson = await readJsonSafe(leavingResp);
+          if (!alive) return;
+          setLeavingSoon(leavingResp.ok && leavingJson?.ok ? leavingJson.item || null : null);
         }
         setErr('');
       } catch(e){ if (alive) setErr(e.message || 'Failed to load'); }
@@ -126,7 +133,32 @@ export default function MovieDetails() {
           <HeroDetail
             item={item}
             onPlay={isUpcoming ? null : () => {
-              try { sessionStorage.setItem('3jtv.playIntent', String(Date.now())); } catch {}
+              try {
+                const currentHref =
+                  typeof window !== 'undefined'
+                    ? `${window.location.pathname}${window.location.search}${window.location.hash}`
+                    : `/movies/${id}`;
+                sessionStorage.setItem('3jtv.playIntent', String(Date.now()));
+                persistMovieReturnState({
+                  href: currentHref,
+                  movieId: id,
+                  scrollY: typeof window !== 'undefined' ? window.scrollY || 0 : 0,
+                });
+                persistMoviePlaySeed(
+                  {
+                    id,
+                    title: meta?.title,
+                    image: meta?.image,
+                    plot: meta?.plot,
+                    year: meta?.year,
+                    genre: meta?.genre,
+                    duration: meta?.duration,
+                    rating: meta?.rating,
+                    ext: meta?.ext,
+                  },
+                  { backHref: currentHref }
+                );
+              } catch {}
               window.location.href = `/watch/movie/${id}?auto=1`;
             }}
             buttons={(
@@ -152,6 +184,13 @@ export default function MovieDetails() {
             )}
             height="min-h-[58vh] md:min-h-[62vh]"     // ✅ same as /movies hero
           />
+        ) : null}
+
+        {!isUpcoming && leavingSoon ? (
+          <div className="mb-6 rounded-xl border border-amber-700/50 bg-amber-950/30 p-4">
+            <div className="text-sm font-semibold text-amber-100">Leaving soon</div>
+            <div className="mt-1 text-sm text-amber-50">Scheduled removal date: {leavingSoon?.deleteDate || '—'}</div>
+          </div>
         ) : null}
 
         {isUpcoming && upcoming ? (

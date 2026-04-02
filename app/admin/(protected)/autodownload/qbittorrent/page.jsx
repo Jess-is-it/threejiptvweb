@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export default function AdminQbittorrentPage() {
   return (
     <div>
-      <AdminAutoDownloadDownloadSettingsPanel />
+      <AdminAutoDownloadDownloadSettingsPanel showVpnSection={false} />
     </div>
   );
 }

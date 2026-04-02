@@ -16,6 +16,7 @@ export default function SeriesDetails() {
 
   const [meta, setMeta] = useState(null);
   const [upcoming, setUpcoming] = useState(null);
+  const [leavingSoon, setLeavingSoon] = useState(null);
   const [details, setDetails] = useState(null);
   const [remindBusy, setRemindBusy] = useState(false);
   const [remindText, setRemindText] = useState('');
@@ -38,6 +39,7 @@ export default function SeriesDetails() {
           if (!alive) return;
           if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
           setUpcoming(d?.upcoming || null);
+          setLeavingSoon(null);
           setDetails(d?.details || null);
           setMeta(null);
           setRemindText(d?.upcoming?.reminded ? 'Reminder saved.' : '');
@@ -53,6 +55,10 @@ export default function SeriesDetails() {
         setMeta(d);
         setUpcoming(null);
         setDetails(null);
+        const leavingResp = await fetch(`/api/public/autodownload/leaving-soon/details?mediaType=series&xuiId=${encodeURIComponent(String(id))}`, { cache: 'no-store' });
+        const leavingJson = await readJsonSafe(leavingResp);
+        if (!alive) return;
+        setLeavingSoon(leavingResp.ok && leavingJson?.ok ? leavingJson.item || null : null);
         const firstSeason = String(d?.seasons?.[0]?.season || '1');
         setActiveSeason(firstSeason);
         setErr('');
@@ -174,6 +180,13 @@ export default function SeriesDetails() {
             }
             height="min-h-[58vh] md:min-h-[62vh]"
           />
+        ) : null}
+
+        {!isUpcoming && leavingSoon ? (
+          <div className="mb-6 rounded-xl border border-amber-700/50 bg-amber-950/30 p-4">
+            <div className="text-sm font-semibold text-amber-100">Leaving soon</div>
+            <div className="mt-1 text-sm text-amber-50">Scheduled removal date: {leavingSoon?.deleteDate || '—'}</div>
+          </div>
         ) : null}
 
         {isUpcoming && upcoming ? (

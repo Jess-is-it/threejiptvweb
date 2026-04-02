@@ -4,37 +4,50 @@ import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
 import Row from '../../components/Row';
-import HeroDetail from '../../components/HeroDetail';
+import CatalogHero from '../../components/CatalogHero';
 import { readJsonSafe } from '../../lib/readJsonSafe';
-import { getCatalogSettings, selectRotatingCategory } from '../../lib/catalogSettings';
+import { prefetchSeriesCatalog, readSeriesCatalog } from '../../lib/publicCatalogCache';
+import {
+  catalogItemMatchesGenre,
+  getCatalogSettings,
+  parseCatalogRowToken,
+  selectRotatingCategory,
+} from '../../lib/catalogSettings';
 
 export default function SeriesPage() {
   const { session } = useSession();
   const { settings } = usePublicSettings();
   const username = String(session?.user?.username || '').trim();
   const [all, setAll] = useState([]);
-  const [cats, setCats] = useState([]);
   const [worthToWait, setWorthToWait] = useState([]);
+  const [leavingSoon, setLeavingSoon] = useState([]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!session?.streamBase) return;
     let alive = true;
-    setLoading(true);
+    const cached = readSeriesCatalog(session.streamBase);
+    if (cached?.ok && Array.isArray(cached.items)) {
+      setAll(cached.items.map((s) => ({ ...s, href: `/series/${s.id}` })));
+      setErr('');
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     (async () => {
       try {
-        const [sRes, cRes] = await Promise.all([
-          fetch(`/api/xuione/series?streamBase=${encodeURIComponent(session.streamBase)}`).then(readJsonSafe),
-          fetch(`/api/xuione/series/categories?streamBase=${encodeURIComponent(session.streamBase)}`).then(readJsonSafe),
-        ]);
+        const sRes = await prefetchSeriesCatalog(session.streamBase);
         if (!alive) return;
         if (!sRes.ok) throw new Error(sRes.error || 'Failed to load series');
         setAll((sRes.items || []).map(s => ({ ...s, href: `/series/${s.id}` })));
-        setCats(cRes?.categories || []);
         setErr('');
-      } catch (e) { if (alive) setErr(e.message || 'Network error'); }
-      finally { if (alive) setLoading(false); }
+      } catch (e) {
+        if (!alive) return;
+        if (!cached?.ok) setErr(e.message || 'Network error');
+      } finally {
+        if (alive && !cached?.ok) setLoading(false);
+      }
     })();
     return () => { alive = false; };
   }, [session?.streamBase]);
@@ -46,14 +59,23 @@ export default function SeriesPage() {
         const sp = new URLSearchParams();
         if (username) sp.set('username', username);
         sp.set('limit', '120');
-        const r = await fetch(`/api/public/autodownload/upcoming?${sp.toString()}`, { cache: 'no-store' });
+        const leavingSp = new URLSearchParams();
+        leavingSp.set('mediaType', 'series');
+        leavingSp.set('limit', '120');
+        const [r, leavingResp] = await Promise.all([
+          fetch(`/api/public/autodownload/upcoming?${sp.toString()}`, { cache: 'no-store' }),
+          fetch(`/api/public/autodownload/leaving-soon?${leavingSp.toString()}`, { cache: 'no-store' }),
+        ]);
         const d = await readJsonSafe(r);
+        const leavingJson = await readJsonSafe(leavingResp);
         if (!alive) return;
         if (!r.ok || !d?.ok) throw new Error(d?.error || 'Failed to load upcoming queue');
         const items = (Array.isArray(d?.items) ? d.items : []).filter((x) => String(x?.mediaType || '').toLowerCase() === 'tv');
         setWorthToWait(items);
+        setLeavingSoon(leavingResp.ok && leavingJson?.ok && Array.isArray(leavingJson.items) ? leavingJson.items : []);
       } catch {
         if (alive) setWorthToWait([]);
+        if (alive) setLeavingSoon([]);
       }
     })();
     return () => {
@@ -75,54 +97,67 @@ export default function SeriesPage() {
     () => [...all].sort((a,b)=>(b.added||0)-(a.added||0)).slice(0, catalog.categories.recentlyAddedSeries.displayCount),
     [all, catalog]
   );
-  const heroItem = useMemo(() => {
-    const i = recent[0] || top[0] || all[0];
-    return i ? { ...i, overview:'', image:i.image } : null;
-  }, [recent, top, all]);
+  const seriesLayoutRows = useMemo(
+    () => (Array.isArray(catalog.layouts?.seriesPage?.rows) ? catalog.layouts.seriesPage.rows : []),
+    [catalog.layouts?.seriesPage?.rows]
+  );
+  const seriesGenreRows = useMemo(() => {
+    const displayCount = Number(catalog.categories.seriesGenreRows.displayCount || 0);
+    if (displayCount <= 0) return new Map();
+
+    const out = new Map();
+    for (const token of seriesLayoutRows) {
+      const row = parseCatalogRowToken(token);
+      if (!row || row.kind !== 'genre') continue;
+      const items = all.filter((item) => catalogItemMatchesGenre(item, row.name)).slice(0, displayCount);
+      if (!items.length) continue;
+      out.set(row.name, items);
+    }
+    return out;
+  }, [all, seriesLayoutRows, catalog.categories.seriesGenreRows.displayCount]);
 
   return (
     <Protected>
       <section className="py-6 px-4 sm:px-6 lg:px-10">
         {err ? <p className="mb-4 text-sm text-red-400">{err}</p> : null}
 
-        {heroItem ? (
-          <HeroDetail
-            item={heroItem}
-            onPlay={() => (window.location.href = `/series/${heroItem.id}`)}
-            buttons={
-              <>
-                <a href={`/series/${heroItem.id}`} className="rounded border border-neutral-700 bg-neutral-900 px-4 py-2 text-neutral-200 hover:border-neutral-500">Open Series</a>
-                <button className="rounded border border-neutral-700 bg-neutral-900 px-4 py-2 text-neutral-200 hover:border-neutral-500">+ Watchlist</button>
-              </>
-            }
-            height="min-h-[58vh] md:min-h-[62vh]"
-          />
-        ) : loading ? (
-          <div className="-mx-4 sm:-mx-6 lg:-mx-10 min-h-[58vh] md:min-h-[62vh] overflow-hidden rounded-xl border border-neutral-900 bg-neutral-950/60">
-            <div className="h-full w-full animate-pulse bg-gradient-to-br from-neutral-900 via-neutral-800/30 to-neutral-900" />
-          </div>
-        ) : null}
+        <CatalogHero
+          pageKey="seriesPage"
+          catalog={catalog}
+          sourceItems={{
+            top,
+            recentlyAdded: recent,
+            leavingSoon,
+            worthToWait,
+          }}
+          loading={loading}
+        />
 
-        <Row title={catalog.labels.seriesPage.top} items={top} loading={loading} kind="series" />
-        <Row title={catalog.labels.seriesPage.recentlyAdded} items={recent} loading={loading} kind="series" />
-        {cats.slice(0, catalog.categories.seriesGenreRows.maxCategories).map(c => (
-          <Row
-            key={c.id}
-            title={c.name}
-            items={all
-              .filter(s => String(s.category_id)===String(c.id))
-              .slice(0, catalog.categories.seriesGenreRows.displayCount)}
-            kind="series"
-          />
-        ))}
-        {worthToWait.length || loading ? (
-          <Row title={catalog.labels.seriesPage.worthToWait} items={worthToWait} loading={loading} kind="series" />
-        ) : (
-          <section className="mt-8">
-            <h3 className="mb-3 text-lg font-semibold">{catalog.labels.seriesPage.worthToWait}</h3>
-            <p className="text-sm text-neutral-400">No upcoming queued series right now.</p>
-          </section>
-        )}
+        {seriesLayoutRows.map((token) => {
+          const row = parseCatalogRowToken(token);
+          if (!row) return null;
+
+          if (row.kind === 'genre') {
+            const items = seriesGenreRows.get(row.name) || [];
+            if (!loading && !items.length) return null;
+            return <Row key={token} title={row.name} items={items} loading={loading} kind="series" />;
+          }
+
+          if (row.key === 'top') {
+            return <Row key={token} title={catalog.labels.seriesPage.top} items={top} loading={loading} kind="series" />;
+          }
+          if (row.key === 'recentlyAdded') {
+            return <Row key={token} title={catalog.labels.seriesPage.recentlyAdded} items={recent} loading={loading} kind="series" />;
+          }
+          if (row.key === 'leavingSoon') {
+            return <Row key={token} title={catalog.labels.seriesPage.leavingSoon} items={leavingSoon} loading={loading} kind="series" />;
+          }
+          if (row.key === 'worthToWait') {
+            return <Row key={token} title={catalog.labels.seriesPage.worthToWait} items={worthToWait} loading={loading} kind="series" />;
+          }
+
+          return null;
+        })}
       </section>
     </Protected>
   );

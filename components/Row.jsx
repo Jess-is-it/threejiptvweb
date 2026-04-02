@@ -1,14 +1,26 @@
 // components/Row.jsx
 'use client';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import HoverMovieCard from './HoverMovieCard';
 import Link from 'next/link';
+import CatalogPosterImage from './CatalogPosterImage';
+
+const SCROLL_EDGE_TOLERANCE = 4;
+const INITIAL_RENDER_COUNT = 12;
+const RENDER_CHUNK_SIZE = 12;
+const RENDER_AHEAD_MULTIPLIER = 1.25;
 
 export default function Row({ title, items = [], loading = false, skeletonCount = 12, kind = 'movie' }) {
   const scroller = useRef(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const [renderedCount, setRenderedCount] = useState(() =>
+    Math.min(Array.isArray(items) ? items.length : 0, INITIAL_RENDER_COUNT)
+  );
   const hasItems = Array.isArray(items) && items.length > 0;
-  const showSkeleton = loading && !hasItems;
+  const showSkeleton = Boolean(loading);
   const skeletonItems = showSkeleton ? Array.from({ length: skeletonCount }, (_, i) => ({ id: `sk-${i}` })) : [];
+  const renderedItems = showSkeleton ? [] : (Array.isArray(items) ? items.slice(0, renderedCount) : []);
 
   const scrollByAmount = (dir) => {
     const el = scroller.current;
@@ -22,8 +34,33 @@ export default function Row({ title, items = [], loading = false, skeletonCount 
  const cardStyle = { width: 'calc(clamp(150px, 15.38vw, 210px) + 32px)' };
 
   useEffect(() => {
+    if (showSkeleton) return;
+    setRenderedCount(Math.min(Array.isArray(items) ? items.length : 0, INITIAL_RENDER_COUNT));
+  }, [items, showSkeleton]);
+
+  useEffect(() => {
     const el = scroller.current;
-    if (!el || showSkeleton) return;
+    if (!el || showSkeleton) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+
+    const updateScrollControls = () => {
+      if (renderedCount < items.length) {
+        const remaining = Math.max(0, el.scrollWidth - (el.scrollLeft + el.clientWidth));
+        if (remaining <= el.clientWidth * RENDER_AHEAD_MULTIPLIER) {
+          setRenderedCount((current) => Math.min(items.length, current + RENDER_CHUNK_SIZE));
+        }
+      }
+
+      const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+      const nextCanScrollLeft = el.scrollLeft > SCROLL_EDGE_TOLERANCE;
+      const nextCanScrollRight =
+        renderedCount < items.length || maxScrollLeft - el.scrollLeft > SCROLL_EDGE_TOLERANCE;
+      setCanScrollLeft((prev) => (prev === nextCanScrollLeft ? prev : nextCanScrollLeft));
+      setCanScrollRight((prev) => (prev === nextCanScrollRight ? prev : nextCanScrollRight));
+    };
 
     const onWheel = (e) => {
       // Convert vertical wheel gestures into horizontal row scrolling.
@@ -32,14 +69,33 @@ export default function Row({ title, items = [], loading = false, skeletonCount 
       e.preventDefault();
     };
 
+    updateScrollControls();
+
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [showSkeleton, items.length]);
+    el.addEventListener('scroll', updateScrollControls, { passive: true });
+    window.addEventListener('resize', updateScrollControls, { passive: true });
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => updateScrollControls());
+      resizeObserver.observe(el);
+    }
+
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('scroll', updateScrollControls);
+      window.removeEventListener('resize', updateScrollControls);
+      resizeObserver?.disconnect();
+    };
+  }, [showSkeleton, items, renderedCount]);
 
   if (!loading && !hasItems) return null;
 
   return (
-    <section className="group relative my-6">
+    <section
+      className="group relative my-6"
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '340px' }}
+    >
       {title && <h3 className="mb-3 text-lg font-semibold">{title}</h3>}
 
       <div className="relative">
@@ -60,16 +116,18 @@ export default function Row({ title, items = [], loading = false, skeletonCount 
                   </div>
                 </div>
               ))
-            : items.map((x) => {
+            : renderedItems.map((x, index) => {
                 const rowKind = String(kind || '').toLowerCase();
                 const itemKind = String(x?.kind || '').toLowerCase();
                 const treatAsMovie = rowKind === 'movie' || (rowKind === 'mixed' && itemKind === 'movie');
+                const eagerPoster = index < 8;
 
                 return treatAsMovie ? (
                   <HoverMovieCard
                     key={x.id}
                     item={x}
                     kind="movie"
+                    eagerImage={eagerPoster}
                     className="snap-start shrink-0"
                     style={cardStyle}
                   />
@@ -83,11 +141,11 @@ export default function Row({ title, items = [], loading = false, skeletonCount 
                     aria-label={x.title || 'Poster'}
                   >
                     <div className="aspect-[2/3] overflow-hidden rounded-lg bg-neutral-800">
-                      <img
-                        src={x.image || '/placeholders/poster-fallback.jpg'}
+                      <CatalogPosterImage
+                        item={x}
                         alt={x.title || ''}
+                        eager={eagerPoster}
                         className="h-full w-full object-cover"
-                        loading="lazy"
                       />
                     </div>
                   </Link>
@@ -98,39 +156,43 @@ export default function Row({ title, items = [], loading = false, skeletonCount 
         {/* Arrows: desktop only, show on row hover */}
         {!showSkeleton && hasItems ? (
           <>
-            <button
-              onClick={() => scrollByAmount('left')}
-              aria-label="Scroll left"
-              className="
-                absolute left-0 top-1/2 -translate-y-1/2 z-30
-                hidden md:flex h-12 w-12 items-center justify-center rounded-full
-                border border-neutral-700 bg-neutral-900/70 hover:bg-neutral-800/90
-                opacity-0 md:group-hover:opacity-100
-                pointer-events-none md:group-hover:pointer-events-auto
-                transition-opacity
-              "
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" />
-              </svg>
-            </button>
+            {canScrollLeft ? (
+              <button
+                onClick={() => scrollByAmount('left')}
+                aria-label="Scroll left"
+                className="
+                  absolute left-0 top-1/2 -translate-y-1/2 z-30
+                  hidden md:flex h-12 w-12 items-center justify-center rounded-full
+                  border border-neutral-700 bg-neutral-900/70 hover:bg-neutral-800/90
+                  opacity-0 md:group-hover:opacity-100
+                  pointer-events-none md:group-hover:pointer-events-auto
+                  transition-opacity
+                "
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </button>
+            ) : null}
 
-            <button
-              onClick={() => scrollByAmount('right')}
-              aria-label="Scroll right"
-              className="
-                absolute right-0 top-1/2 -translate-y-1/2 z-30
-                hidden md:flex h-12 w-12 items-center justify-center rounded-full
-                border border-neutral-700 bg-neutral-900/70 hover:bg-neutral-800/90
-                opacity-0 md:group-hover:opacity-100
-                pointer-events-none md:group-hover:pointer-events-auto
-                transition-opacity
-              "
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" />
-              </svg>
-            </button>
+            {canScrollRight ? (
+              <button
+                onClick={() => scrollByAmount('right')}
+                aria-label="Scroll right"
+                className="
+                  absolute right-0 top-1/2 -translate-y-1/2 z-30
+                  hidden md:flex h-12 w-12 items-center justify-center rounded-full
+                  border border-neutral-700 bg-neutral-900/70 hover:bg-neutral-800/90
+                  opacity-0 md:group-hover:opacity-100
+                  pointer-events-none md:group-hover:pointer-events-auto
+                  transition-opacity
+                "
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </button>
+            ) : null}
           </>
         ) : null}
 

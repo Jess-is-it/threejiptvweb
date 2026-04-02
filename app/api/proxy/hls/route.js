@@ -5,6 +5,7 @@ import net from 'node:net';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 3600;
 
 const defaultDispatcher = new Agent({
   // Large VOD files can stream for many minutes; avoid undici body timeout cutting playback.
@@ -28,6 +29,66 @@ function normalizeUpstreamUrl(u) {
     }
   } catch {}
   return u;
+}
+
+function redirectStatus(status = 0) {
+  return [301, 302, 303, 307, 308].includes(Number(status || 0));
+}
+
+async function hostResolvesPrivate(hostname = '') {
+  const host = String(hostname || '').trim();
+  if (!host) return false;
+  if (isPrivateIp(host)) return true;
+  try {
+    const a4 = await dns.lookup(host, { family: 4 }).catch(() => null);
+    if (a4?.address && isPrivateIp(a4.address)) return true;
+    const a6 = await dns.lookup(host, { family: 6 }).catch(() => null);
+    if (a6?.address && isPrivateIp(a6.address)) return true;
+  } catch {}
+  return false;
+}
+
+async function rewriteRedirectLocation(location = '', fromUrl, preferPrivate = false) {
+  const next = normalizeUpstreamUrl(new URL(String(location || ''), fromUrl));
+  if (!preferPrivate) return next;
+  try {
+    if (await hostResolvesPrivate(next.hostname)) {
+      const a4 = await dns.lookup(next.hostname, { family: 4 }).catch(() => null);
+      if (a4?.address && isPrivateIp(a4.address)) {
+        next.protocol = 'http:';
+        next.hostname = a4.address;
+        if (!next.port) next.port = fromUrl.port || '';
+        return next;
+      }
+      const a6 = await dns.lookup(next.hostname, { family: 6 }).catch(() => null);
+      if (a6?.address && isPrivateIp(a6.address)) {
+        const port = next.port ? `:${next.port}` : '';
+        return normalizeUpstreamUrl(new URL(`http://[${a6.address}]${port}${next.pathname}${next.search}${next.hash}`));
+      }
+    }
+  } catch {}
+  return next;
+}
+
+async function fetchWithRedirects(url, opts, { preferPrivateRedirect = false, maxHops = 5 } = {}) {
+  let current = normalizeUpstreamUrl(new URL(url));
+  let lastResponse = null;
+  for (let hop = 0; hop < maxHops; hop += 1) {
+    const insecureTls = await allowInsecureTlsFor(current);
+    const response = await fetch(current.toString(), {
+      ...opts,
+      redirect: 'manual',
+      dispatcher: insecureTls ? insecureDispatcher : defaultDispatcher,
+    });
+    lastResponse = response;
+    if (!redirectStatus(response.status)) {
+      return { response, finalUrl: current.toString() };
+    }
+    const location = response.headers.get('location') || '';
+    if (!location) return { response, finalUrl: current.toString() };
+    current = await rewriteRedirectLocation(location, current, preferPrivateRedirect);
+  }
+  return { response: lastResponse, finalUrl: current.toString() };
 }
 
 function mirrorCandidates(urlStr) {
@@ -58,8 +119,15 @@ function withCors(headers = {}) {
     'access-control-allow-methods': 'GET,HEAD,OPTIONS',
     'access-control-allow-headers': '*',
     'access-control-expose-headers': '*',
-    'cache-control': 'no-store',
+    'cache-control': 'no-store, no-transform',
   };
+}
+
+function sanitizeAcceptRanges(value = '', { hasContentRange = false } = {}) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'bytes') return 'bytes';
+  if (hasContentRange) return 'bytes';
+  return '';
 }
 
 function rewritePlaylist(text, upstreamUrl) {
@@ -146,21 +214,20 @@ async function proxy(req) {
 
   const range = req.headers.get('range') || '';
   const method = req.method === 'HEAD' ? 'HEAD' : 'GET';
-  const insecureTls = await allowInsecureTlsFor(upstream);
+  const preferPrivateRedirect = await hostResolvesPrivate(upstream.hostname);
   let r;
+  let finalUrl = upstream.toString();
   try {
     const candidates = mirrorCandidates(upstream.toString());
-    const dispatcher = insecureTls ? insecureDispatcher : defaultDispatcher;
     const opts = {
       method,
-      dispatcher,
       cache: 'no-store',
-      redirect: 'follow',
       headers: {
         ...(range ? { range } : {}),
         'user-agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
         accept: '*/*',
+        'accept-encoding': 'identity',
         'accept-language': 'en-US,en;q=0.7',
         referer: upstream.origin + '/',
       },
@@ -169,11 +236,13 @@ async function proxy(req) {
     let last;
     for (const c of candidates.length ? candidates : [upstream]) {
       try {
-        const resp = await fetch(c.toString(), opts);
-        last = resp;
+        const result = await fetchWithRedirects(c.toString(), opts, { preferPrivateRedirect });
+        const resp = result.response;
+        last = result;
         // Retry other mirrors only on 5xx (panel hiccups) or upstream timeouts (caught below)
         if (resp.status >= 500) continue;
         r = resp;
+        finalUrl = result.finalUrl || c.toString();
         break;
       } catch (e) {
         last = e;
@@ -181,7 +250,10 @@ async function proxy(req) {
     }
 
     if (!r) {
-      if (last instanceof Response) r = last;
+      if (last?.response instanceof Response) {
+        r = last.response;
+        finalUrl = last.finalUrl || finalUrl;
+      }
       else throw last;
     }
   } catch (e) {
@@ -190,7 +262,8 @@ async function proxy(req) {
         ok: false,
         error: e?.message || 'Upstream fetch failed',
         upstream: upstream.toString(),
-        insecureTls,
+        finalUrl,
+        preferPrivateRedirect,
       },
       { status: 502, headers: withCors({}) }
     );
@@ -202,7 +275,21 @@ async function proxy(req) {
 
   if (isM3u8) {
     const text = await r.text().catch(() => '');
-    const rewritten = rewritePlaylist(text, r.url || upstream.toString());
+    const looksHtml =
+      ct.includes('text/html') || /^\s*</.test(String(text || '')) || /<html/i.test(String(text || ''));
+    if (looksHtml) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'Upstream HLS manifest resolved to HTML instead of a playlist.',
+          upstream: upstream.toString(),
+          finalUrl,
+          status: r.status,
+        },
+        { status: r.status >= 400 ? r.status : 502, headers: withCors({}) }
+      );
+    }
+    const rewritten = rewritePlaylist(text, finalUrl || r.url || upstream.toString());
     return new Response(method === 'HEAD' ? null : rewritten, {
       status: r.status,
       headers: withCors({
@@ -215,11 +302,9 @@ async function proxy(req) {
   const headers = withCors({
     'content-type': r.headers.get('content-type') || 'application/octet-stream',
   });
-  const cl = r.headers.get('content-length');
-  if (cl) headers['content-length'] = cl;
   const cr = r.headers.get('content-range');
   if (cr) headers['content-range'] = cr;
-  const ar = r.headers.get('accept-ranges');
+  const ar = sanitizeAcceptRanges(r.headers.get('accept-ranges') || '', { hasContentRange: Boolean(cr) });
   if (ar) headers['accept-ranges'] = ar;
 
   return new Response(method === 'HEAD' ? null : r.body, { status: r.status, headers });

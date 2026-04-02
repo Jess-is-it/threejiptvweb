@@ -86,13 +86,22 @@ export async function GET(req) {
     return NextResponse.json({
       ok: true,
       id: pick.id,
+      tmdbId: pick.id,
       media_type: mediaType,
       title: details?.title || details?.name || '',
       overview: details?.overview || '',
       rating: details?.vote_average ?? null,
+      voteCount: details?.vote_count ?? null,
+      popularity: details?.popularity ?? null,
       genres,
       runtime,
       cast,
+      posterPath: String(details?.poster_path || pick?.poster_path || '').trim(),
+      backdropPath: String(details?.backdrop_path || pick?.backdrop_path || '').trim(),
+      releaseDate:
+        mediaType === 'movie'
+          ? String(details?.release_date || '').trim()
+          : String(details?.first_air_date || '').trim(),
     });
   } catch (e) {
     return NextResponse.json({ ok:false, error:e.message || 'TMDB error' }, { status:500 });

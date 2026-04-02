@@ -1,10 +1,11 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Hls from 'hls.js';
 import { upsertContinue } from './continueStore';
 import { useSession } from './SessionProvider';
 import { readJsonSafe } from '../lib/readJsonSafe';
+import { readMovieReturnState } from '../lib/moviePlaySeed';
 import {
   ArrowLeft,
   Flag,
@@ -19,7 +20,46 @@ import {
   Minimize2,
   Check,
   X,
+  SkipForward,
+  List,
 } from 'lucide-react';
+
+function isPrivateHostname(host = '') {
+  const value = String(host || '').trim().toLowerCase();
+  if (!value) return false;
+  if (value === 'localhost') return true;
+  const ipv4 = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    if (a === 10 || a === 127) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    return false;
+  }
+  return value === '::1' || value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd');
+}
+
+function toBrowserMediaUrl(raw, { forceProxy = false } = {}) {
+  try {
+    if (typeof window === 'undefined') return raw;
+    const url = new URL(String(raw || ''), window.location.href);
+    const hintedExt = String(
+      url.searchParams.get('extension') || url.searchParams.get('format') || url.searchParams.get('type') || ''
+    )
+      .trim()
+      .toLowerCase();
+    const hlsLike = /\.m3u8($|\?)/i.test(url.toString()) || hintedExt === 'm3u8';
+    const privateHost = isPrivateHostname(url.hostname);
+    const crossOrigin = url.origin !== window.location.origin;
+    if (!crossOrigin) return url.toString();
+    if (forceProxy || hlsLike || privateHost) {
+      return `/api/proxy/hls?url=${encodeURIComponent(url.toString())}`;
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
 
 function useToasts() {
   const [msgs, setMsgs] = useState([]);
@@ -70,6 +110,7 @@ export default function VideoPlayer({
   activeOrigin = '',
   onSelectServer = null,
   subtitles = [],
+  seriesNavigation = null,
 }) {
   const router = useRouter();
   const { session } = useSession();
@@ -94,6 +135,9 @@ export default function VideoPlayer({
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [fsArmed, setFsArmed] = useState(Boolean(autoFullscreen));
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const [nextPreviewOpen, setNextPreviewOpen] = useState(false);
+  const [episodeBrowserOpen, setEpisodeBrowserOpen] = useState(false);
+  const [episodeBrowserSeason, setEpisodeBrowserSeason] = useState(null);
   const stallTimer = useRef(null);
   const attemptRef = useRef({ key: '', triedMp4: false, triedHls: false });
   const currentRef = useRef({ kind: '', url: '' });
@@ -104,17 +148,69 @@ export default function VideoPlayer({
   const isHlsSource = (raw) => {
     const s = String(raw || '');
     if (/\.m3u8($|\?)/i.test(s)) return true;
+    try {
+      const u = new URL(s, typeof window !== 'undefined' ? window.location.href : 'http://localhost');
+      const ext = String(
+        u.searchParams.get('extension') || u.searchParams.get('format') || u.searchParams.get('type') || ''
+      )
+        .trim()
+        .toLowerCase();
+      if (ext === 'm3u8') return true;
+    } catch {}
     // Our proxy hides the upstream extension in the querystring.
     // Detect `.../api/proxy/hls?url=<upstream.m3u8>`
     if (s.startsWith('/api/proxy/hls?')) {
       try {
         const u = new URL(s, typeof window !== 'undefined' ? window.location.href : 'http://localhost');
         const inner = u.searchParams.get('url') || '';
-        return /\.m3u8($|\?)/i.test(inner);
+        if (/\.m3u8($|\?)/i.test(inner)) return true;
+        const innerUrl = new URL(inner, typeof window !== 'undefined' ? window.location.href : 'http://localhost');
+        const ext = String(
+          innerUrl.searchParams.get('extension') ||
+            innerUrl.searchParams.get('format') ||
+            innerUrl.searchParams.get('type') ||
+            ''
+        )
+          .trim()
+          .toLowerCase();
+        return ext === 'm3u8';
       } catch {}
     }
     return false;
   };
+
+  const subtitleTracks = useMemo(
+    () =>
+      (subtitles || [])
+        .map((track) => ({
+          ...track,
+          url: toBrowserMediaUrl(track?.url || '', { forceProxy: true }),
+        }))
+        .filter((track) => track.url),
+    [subtitles]
+  );
+  const seriesSeasons = useMemo(
+    () => (Array.isArray(seriesNavigation?.seasons) ? seriesNavigation.seasons : []),
+    [seriesNavigation?.seasons]
+  );
+  const currentSeriesSeasonNumber = Number(seriesNavigation?.currentSeasonNumber || 0) || null;
+  const currentSeriesEpisodeId = String(seriesNavigation?.currentEpisodeId || '').trim();
+  const nextSeriesEpisode =
+    meta?.type === 'series' && seriesNavigation?.nextEpisode ? seriesNavigation.nextEpisode : null;
+  const activeEpisodeBrowserSeason = useMemo(() => {
+    if (!episodeBrowserSeason) return null;
+    return (
+      seriesSeasons.find((season) => Number(season?.seasonNumber || 0) === Number(episodeBrowserSeason || 0)) || null
+    );
+  }, [episodeBrowserSeason, seriesSeasons]);
+  const canNavigateSeriesEpisodes =
+    meta?.type === 'series' && typeof seriesNavigation?.onSelectEpisode === 'function' && seriesSeasons.length > 0;
+
+  useEffect(() => {
+    setNextPreviewOpen(false);
+    setEpisodeBrowserOpen(false);
+    setEpisodeBrowserSeason(currentSeriesSeasonNumber || null);
+  }, [meta?.id, currentSeriesSeasonNumber]);
 
   // overlay visibility
   useEffect(() => {
@@ -172,7 +268,7 @@ export default function VideoPlayer({
     }
   }, [mp4, preferHls]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     try {
@@ -230,17 +326,8 @@ export default function VideoPlayer({
       }
 
       const maybeProxy = (raw) => {
-        try {
-          if (typeof window === 'undefined') return raw;
-          const u = new URL(String(raw || ''), window.location.href);
-
-          // Always proxy cross-origin media. Many IPTV panels block browser hotlinking/CORS,
-          // but server-side fetch via our proxy works reliably.
-          if (u.origin !== window.location.origin) {
-            return `/api/proxy/hls?url=${encodeURIComponent(u.toString())}`;
-          }
-        } catch {}
-        return raw;
+        const proxied = toBrowserMediaUrl(raw, { forceProxy: meta?.type === 'live' });
+        return proxied || raw;
       };
 
       const isHlsLike = isHlsSource(url);
@@ -705,9 +792,21 @@ export default function VideoPlayer({
     } catch {}
 
     try {
-      if (window.history.length > 1) return router.back();
+      if (window.history.length > 1) {
+        window.history.back();
+        return;
+      }
     } catch {}
+    const movieReturnState = meta?.type === 'movie' ? readMovieReturnState() : null;
+    if (movieReturnState?.href && typeof window !== 'undefined') {
+      window.location.href = movieReturnState.href;
+      return;
+    }
     const href = meta?.backHref || (meta?.type === 'movie' ? `/movies/${meta?.id}` : '/');
+    if (typeof window !== 'undefined') {
+      window.location.href = href;
+      return;
+    }
     router.push(href);
   };
 
@@ -719,6 +818,29 @@ export default function VideoPlayer({
         await wrapRef.current?.requestFullscreen?.();
       }
     } catch {}
+  };
+
+  const goToSeriesEpisode = (episode) => {
+    if (!canNavigateSeriesEpisodes || !episode?.id) return;
+    if (String(episode.id) === currentSeriesEpisodeId) {
+      setEpisodeBrowserOpen(false);
+      setNextPreviewOpen(false);
+      return;
+    }
+    setEpisodeBrowserOpen(false);
+    setNextPreviewOpen(false);
+    seriesNavigation.onSelectEpisode(episode);
+  };
+
+  const toggleEpisodeBrowser = () => {
+    if (!canNavigateSeriesEpisodes) return;
+    setSubsOpen(false);
+    setVolOpen(false);
+    setEpisodeBrowserOpen((open) => {
+      const nextOpen = !open;
+      setEpisodeBrowserSeason(nextOpen ? currentSeriesSeasonNumber || null : currentSeriesSeasonNumber || null);
+      return nextOpen;
+    });
   };
 
   const reportOptions = [
@@ -743,6 +865,15 @@ export default function VideoPlayer({
       info: "There's something else thats wrong with the show or movie.",
     },
   ];
+  const nextEpisodeLabel = nextSeriesEpisode
+    ? `S${nextSeriesEpisode.seasonNumber} • E${nextSeriesEpisode.episodeNumber}`
+    : '';
+  const nextEpisodeHint =
+    nextSeriesEpisode?.nextSeasonStart
+      ? `Next season episode 1`
+      : nextSeriesEpisode
+        ? 'Next episode'
+        : '';
 
   const sendReport = async () => {
     if (!reportChoice) return;
@@ -814,8 +945,14 @@ export default function VideoPlayer({
           controls={false}
           preload="auto"
         >
-          {(subtitles || []).map((t, i) => (
-            <track key={i} kind="subtitles" src={t.url} label={t.lang || `Sub ${i+1}`} />
+          {subtitleTracks.map((t, i) => (
+            <track
+              key={i}
+              kind="subtitles"
+              src={t.url}
+              label={t.label || t.lang || `Sub ${i+1}`}
+              srcLang={t.srclang || undefined}
+            />
           ))}
         </video>
 
@@ -1003,6 +1140,164 @@ export default function VideoPlayer({
 
           {/* Bottom right: subtitles + fullscreen */}
           <div className="absolute bottom-4 right-4 flex items-center gap-3">
+            {canNavigateSeriesEpisodes ? (
+              <div className="relative">
+                <button
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+                  onClick={toggleEpisodeBrowser}
+                  aria-label="View all episodes"
+                  title="View all episodes"
+                >
+                  <List size={22} />
+                </button>
+
+                {episodeBrowserOpen ? (
+                  <div className="absolute bottom-14 right-0 w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-black/75 text-white shadow-2xl backdrop-blur-md">
+                    {activeEpisodeBrowserSeason ? (
+                      <>
+                        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-3 py-3">
+                          <button
+                            className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-neutral-100 hover:bg-white/10"
+                            onClick={() => setEpisodeBrowserSeason(null)}
+                          >
+                            <ArrowLeft size={14} />
+                            Seasons
+                          </button>
+                          <div className="text-right">
+                            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-300">
+                              Season {activeEpisodeBrowserSeason.seasonNumber}
+                            </div>
+                            <div className="text-[11px] text-neutral-400">
+                              {activeEpisodeBrowserSeason.episodes.length} episode{activeEpisodeBrowserSeason.episodes.length === 1 ? '' : 's'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="max-h-[60vh] space-y-2 overflow-auto p-3">
+                          {activeEpisodeBrowserSeason.episodes.map((episode) => {
+                            const isCurrent = String(episode.id) === currentSeriesEpisodeId;
+                            return (
+                              <button
+                                key={episode.id}
+                                className={
+                                  'flex w-full items-center gap-3 rounded-xl border p-3 text-left transition ' +
+                                  (isCurrent
+                                    ? 'border-[var(--brand)] bg-white/10'
+                                    : 'border-white/10 bg-white/5 hover:bg-white/10')
+                                }
+                                onClick={() => goToSeriesEpisode(episode)}
+                                title={`S${episode.seasonNumber}E${episode.episodeNumber} — ${episode.title}`}
+                              >
+                                <div className="h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-neutral-800">
+                                  {episode.image ? (
+                                    <img src={episode.image} alt={episode.title || ''} className="h-full w-full object-cover" />
+                                  ) : null}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
+                                    Episode {episode.episodeNumber}
+                                  </div>
+                                  <div className="mt-1 line-clamp-2 text-sm font-semibold text-white">
+                                    {episode.title || `Episode ${episode.episodeNumber}`}
+                                  </div>
+                                </div>
+                                {isCurrent ? (
+                                  <span className="rounded-full border border-white/10 bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-200">
+                                    Now
+                                  </span>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="border-b border-white/10 px-4 py-3">
+                          <div className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-300">
+                            Seasons
+                          </div>
+                          <div className="mt-1 text-[11px] text-neutral-400">
+                            Choose another season, then jump to any episode.
+                          </div>
+                        </div>
+                        <div className="max-h-[60vh] space-y-2 overflow-auto p-3">
+                          {seriesSeasons.map((season) => {
+                            const isCurrent = Number(season.seasonNumber) === Number(currentSeriesSeasonNumber || 0);
+                            return (
+                              <button
+                                key={season.seasonNumber}
+                                className={
+                                  'flex w-full items-center justify-between rounded-xl border p-3 text-left transition ' +
+                                  (isCurrent
+                                    ? 'border-[var(--brand)] bg-white/10'
+                                    : 'border-white/10 bg-white/5 hover:bg-white/10')
+                                }
+                                onClick={() => setEpisodeBrowserSeason(season.seasonNumber)}
+                              >
+                                <div>
+                                  <div className="text-sm font-semibold text-white">Season {season.seasonNumber}</div>
+                                  <div className="mt-1 text-[11px] text-neutral-400">
+                                    {season.episodes.length} episode{season.episodes.length === 1 ? '' : 's'}
+                                    {isCurrent ? ' • Current season' : ''}
+                                  </div>
+                                </div>
+                                <span className="rounded-full border border-white/10 bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-200">
+                                  Open
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {nextSeriesEpisode?.id && canNavigateSeriesEpisodes ? (
+              <div className="relative">
+                <button
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+                  onClick={() => goToSeriesEpisode(nextSeriesEpisode)}
+                  onMouseEnter={() => setNextPreviewOpen(true)}
+                  onMouseLeave={() => setNextPreviewOpen(false)}
+                  onFocus={() => setNextPreviewOpen(true)}
+                  onBlur={() => setNextPreviewOpen(false)}
+                  aria-label="Play next episode"
+                  title="Next episode"
+                >
+                  <SkipForward size={22} />
+                </button>
+
+                {nextPreviewOpen ? (
+                  <div className="pointer-events-none absolute bottom-14 right-0 w-72 overflow-hidden rounded-2xl border border-white/10 bg-black/75 text-white shadow-2xl backdrop-blur-md">
+                    <div className="flex gap-3 p-3">
+                      <div className="h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-neutral-800">
+                        {nextSeriesEpisode.image ? (
+                          <img
+                            src={nextSeriesEpisode.image}
+                            alt={nextSeriesEpisode.title || ''}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : null}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-neutral-300">
+                          {nextSeriesEpisode.nextSeasonStart ? 'Next season' : 'Up next'}
+                        </div>
+                        <div className="mt-1 text-xs text-neutral-300">{nextEpisodeLabel}</div>
+                        <div className="mt-1 line-clamp-2 text-sm font-semibold text-white">
+                          {nextSeriesEpisode.title || `Episode ${nextSeriesEpisode.episodeNumber}`}
+                        </div>
+                        <div className="mt-1 text-[11px] text-neutral-400">{nextEpisodeHint}</div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="relative">
               <button
                 className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
@@ -1030,7 +1325,7 @@ export default function VideoPlayer({
                   >
                     Off
                   </button>
-                  {(subtitles || []).map((t, idx) => (
+                  {subtitleTracks.map((t, idx) => (
                     <button
                       key={`${t.url}-${idx}`}
                       className="flex w-full items-center justify-between rounded-lg px-2 py-2 hover:bg-white/10"
@@ -1044,13 +1339,13 @@ export default function VideoPlayer({
                           });
                         } catch {}
                         setSubsOpen(false);
-                        push(`Subtitles: ${t.lang || 'On'}`);
+                        push(`Subtitles: ${t.label || t.lang || 'On'}`);
                       }}
                     >
-                      <span className="truncate">{t.lang || `Subtitle ${idx + 1}`}</span>
+                      <span className="truncate">{t.label || t.lang || `Subtitle ${idx + 1}`}</span>
                     </button>
                   ))}
-                  {!subtitles?.length ? (
+                  {!subtitleTracks.length ? (
                     <div className="px-2 py-2 text-xs text-neutral-200">No subtitles available.</div>
                   ) : null}
                 </div>

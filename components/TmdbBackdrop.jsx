@@ -11,11 +11,17 @@ import { useState } from 'react';
 export default function TmdbBackdrop({ path, alt = '' }) {
   const [loaded, setLoaded] = useState(false);
 
+  const raw = String(path || '').trim();
   const src =
-    path?.startsWith('http')
-      ? path
-      : path
-      ? `https://image.tmdb.org/t/p/original${path.startsWith('/') ? path : `/${path}`}`
+    raw.startsWith('http')
+      ? raw
+      : raw.startsWith('/api/') ||
+        raw.startsWith('/placeholders/') ||
+        raw.startsWith('/images/') ||
+        raw.startsWith('/brand/')
+      ? raw
+      : raw
+      ? `https://image.tmdb.org/t/p/original${raw.startsWith('/') ? raw : `/${raw}`}`
       : '';
 
   return (
@@ -24,6 +30,9 @@ export default function TmdbBackdrop({ path, alt = '' }) {
         <img
           src={src}
           alt={alt}
+          loading="eager"
+          fetchPriority="high"
+          decoding="async"
           onLoad={() => setLoaded(true)}
           className={`h-full w-full object-cover transition-opacity duration-300 ${
             loaded ? 'opacity-100' : 'opacity-0'

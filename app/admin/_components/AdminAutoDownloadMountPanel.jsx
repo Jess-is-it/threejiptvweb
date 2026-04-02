@@ -8,14 +8,14 @@ import EditModal from './EditModal';
 import NotesButton from './NotesButton';
 
 function Field({ label, children, hint, note }) {
+  const infoText = [hint, note].map((item) => String(item || '').trim()).filter(Boolean).join(' • ');
   return (
     <div>
-      <div className="mb-1 flex items-end justify-between gap-3">
+      <div className="mb-1 flex items-center gap-2">
         <label className="inline-flex items-center gap-2 text-sm font-medium text-[var(--admin-text)]">
           <span>{label}</span>
-          {note ? <HelpTooltip text={note} /> : null}
+          {infoText ? <HelpTooltip text={infoText} /> : null}
         </label>
-        {hint ? <div className="text-[11px] text-[var(--admin-muted)]">{hint}</div> : null}
       </div>
       {children}
     </div>
@@ -47,6 +47,11 @@ function fmtBytes(n) {
   return `${x.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function fmtPct(n) {
+  const value = Number(n);
+  return Number.isFinite(value) ? `${Math.round(value)}%` : '—';
+}
+
 function normalizeFolderBase(value) {
   return String(value || '')
     .trim()
@@ -63,11 +68,17 @@ function relativeSegments(fullPath, rootPrefix) {
   return rel.split('/').filter(Boolean);
 }
 
-function CreatedBadge({ ready, checking = false }) {
+function CreatedBadge({
+  ready,
+  checking = false,
+  readyLabel = 'Ready',
+  failLabel = 'Not Ready',
+  checkingLabel = 'Checking',
+}) {
   if (checking) {
     return (
       <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 data-[theme=dark]:text-amber-200">
-        Checking
+        {checkingLabel}
       </span>
     );
   }
@@ -80,7 +91,7 @@ function CreatedBadge({ ready, checking = false }) {
           : 'border-red-500/40 bg-red-500/10 text-red-700 data-[theme=dark]:text-red-200')
       }
     >
-      {ready ? 'Created' : 'Not Created'}
+      {ready ? readyLabel : failLabel}
     </span>
   );
 }
@@ -115,6 +126,7 @@ export default function AdminAutoDownloadMountPanel() {
   const [windowsHost, setWindowsHost] = useState('');
   const [shareName, setShareName] = useState('');
   const [mountDir, setMountDir] = useState('/mnt/windows_vod');
+  const [xuiVodPath, setXuiVodPath] = useState('/home/xui/content/vod');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [domain, setDomain] = useState('');
@@ -123,6 +135,8 @@ export default function AdminAutoDownloadMountPanel() {
   const [gid, setGid] = useState('xui');
 
   const [status, setStatus] = useState(null);
+  const [storageDevices, setStorageDevices] = useState(null);
+  const [storageDevicesError, setStorageDevicesError] = useState('');
   const [hasSavedCredentials, setHasSavedCredentials] = useState(false);
   const [needsVerification, setNeedsVerification] = useState(true);
   const [folderSummary, setFolderSummary] = useState(null);
@@ -151,8 +165,8 @@ export default function AdminAutoDownloadMountPanel() {
     {
       title: 'What this tab does',
       items: [
-        'Shows mount health, folder readiness, and categories/genres folder readiness.',
-        'All actions and edits are in Settings: mount operations, SMB/CIFS config, and folder structure.',
+        'Shows mount health, folder readiness, categories/genres folder readiness, and the auto-detected XUI VOD storage volume.',
+        'All actions and edits are in Settings: mount operations, SMB/CIFS config, folder structure, and XUI VOD path override.',
       ],
     },
     {
@@ -205,13 +219,28 @@ export default function AdminAutoDownloadMountPanel() {
   const refreshStatus = async () => {
     setRefreshing(true);
     try {
-      const r = await fetch('/api/admin/autodownload/mount/status', { cache: 'no-store' });
-      const j = await r.json().catch(() => ({}));
-      if (r.ok && j?.ok) {
-        const next = j.status || null;
+      const [mountRes, storageRes] = await Promise.all([
+        fetch('/api/admin/autodownload/mount/status', { cache: 'no-store' }),
+        fetch('/api/admin/autodownload/mount/storage-devices', { cache: 'no-store' }).catch(() => null),
+      ]);
+
+      const mountJson = await mountRes.json().catch(() => ({}));
+      if (mountRes.ok && mountJson?.ok) {
+        const next = mountJson.status || null;
         setStatus(next);
         if (next?.mounted) await syncFolderSummary({ silent: true });
         else setFolderSummary(null);
+      }
+
+      if (storageRes) {
+        const storageJson = await storageRes.json().catch(() => ({}));
+        if (storageRes.ok && storageJson?.ok) {
+          setStorageDevices(storageJson.storageDevices || null);
+          setStorageDevicesError('');
+        } else {
+          setStorageDevices(null);
+          setStorageDevicesError(storageJson?.error || 'Failed to read storage devices.');
+        }
       }
       return true;
     } catch {
@@ -225,11 +254,12 @@ export default function AdminAutoDownloadMountPanel() {
     setLoading(true);
     setErr('');
     try {
-      const [r1, r2, r3, r4] = await Promise.all([
+      const [r1, r2, r3, r4, r5] = await Promise.all([
         fetch('/api/admin/autodownload/mount', { cache: 'no-store' }),
         fetch('/api/admin/autodownload/mount/status', { cache: 'no-store' }).catch(() => null),
         fetch('/api/admin/autodownload/library-folders', { cache: 'no-store' }).catch(() => null),
         fetch('/api/admin/autodownload/tmdb/genres', { cache: 'no-store' }).catch(() => null),
+        fetch('/api/admin/autodownload/mount/storage-devices', { cache: 'no-store' }).catch(() => null),
       ]);
 
       const j1 = await r1.json().catch(() => ({}));
@@ -239,6 +269,7 @@ export default function AdminAutoDownloadMountPanel() {
         setWindowsHost(mount.windowsHost || '');
         setShareName(mount.shareName || '');
         setMountDir(mount.mountDir || '/mnt/windows_vod');
+        setXuiVodPath(mount.xuiVodPath || '/home/xui/content/vod');
         setDomain(mount.domain || '');
         setSmbVersion(mount.smbVersion || '');
         setUid(mount.uid || 'xui');
@@ -291,6 +322,21 @@ export default function AdminAutoDownloadMountPanel() {
         }
       }
 
+      if (r5) {
+        const j5 = await r5.json().catch(() => ({}));
+        if (j5?.ok) {
+          const nextStorageDevices = j5.storageDevices || null;
+          setStorageDevices(nextStorageDevices);
+          setStorageDevicesError('');
+          if (!j1?.mount?.xuiVodPath && nextStorageDevices?.resolvedPath) {
+            setXuiVodPath(nextStorageDevices.resolvedPath);
+          }
+        } else {
+          setStorageDevices(null);
+          setStorageDevicesError(j5?.error || 'Failed to read storage devices.');
+        }
+      }
+
       if (loadedStatus?.mounted) {
         await syncFolderSummary({ silent: true });
       } else {
@@ -329,6 +375,7 @@ export default function AdminAutoDownloadMountPanel() {
           windowsHost,
           shareName,
           mountDir,
+          xuiVodPath,
           username,
           password,
           domain,
@@ -364,6 +411,7 @@ export default function AdminAutoDownloadMountPanel() {
           windowsHost,
           shareName,
           mountDir,
+          xuiVodPath,
           username,
           password,
           domain,
@@ -397,6 +445,7 @@ export default function AdminAutoDownloadMountPanel() {
           windowsHost,
           shareName,
           mountDir,
+          xuiVodPath,
           username,
           password,
           domain,
@@ -773,6 +822,8 @@ export default function AdminAutoDownloadMountPanel() {
     mountReady && folderSummary && !folderSummary?.errors?.length && categoriesCreated && movieGenresCreated && seriesGenresCreated
   );
 
+  const storageRows = Array.isArray(storageDevices?.rows) ? storageDevices.rows : [];
+
   return (
     <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -791,97 +842,243 @@ export default function AdminAutoDownloadMountPanel() {
       {!settingsOpen && err ? <div className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-700 data-[theme=dark]:text-red-300">{err}</div> : null}
       {!settingsOpen && ok ? <div className="mt-4 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 data-[theme=dark]:text-emerald-200">{ok}</div> : null}
 
-      <div className="mt-5 grid gap-4 xl:grid-cols-3">
+      <div className="mt-5 grid gap-5 xl:grid-cols-[1.8fr,1.2fr]">
         <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
           <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-semibold">1. Mount Status</div>
-            <CreatedBadge ready={Boolean(status?.mounted && status?.writable)} checking={loading || refreshing} />
-          </div>
-          <div className="mt-2 text-xs text-[var(--admin-muted)]">
-            {status?.checkedAt ? `Last checked: ${new Date(status.checkedAt).toLocaleString()}` : 'Not checked yet'}
-          </div>
-          <div className="mt-3 grid gap-2 text-sm">
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Mounted</span>
-              <span className="font-semibold">{status ? (status.mounted ? 'Yes' : 'No') : '—'}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Writable</span>
-              <span className="font-semibold">{status ? (status.writable ? 'Yes' : 'No') : '—'}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Persisted (fstab)</span>
-              <span className="font-semibold">{status ? (fstabPresent ? 'Yes' : 'No') : '—'}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Space</span>
-              <span className="font-semibold text-right">
-                {total
-                  ? `${fmtBytes(used)} / ${fmtBytes(total)}${usedPct !== null ? ` (${usedPct}%)` : ''}`
-                  : '—'}
-              </span>
+            <div>
+              <div className="text-base font-semibold">NAS</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                Mount health, library folder structure, and categories/genres readiness for the NAS workflow.
+              </div>
             </div>
           </div>
-          {status?.error ? (
-            <div className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 data-[theme=dark]:text-red-300">{status.error}</div>
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-3">
+            <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold">1. Mount Status</div>
+                <CreatedBadge ready={Boolean(status?.mounted && status?.writable)} checking={loading || refreshing} />
+              </div>
+              <div className="mt-2 text-xs text-[var(--admin-muted)]">
+                {status?.checkedAt ? `Last checked: ${new Date(status.checkedAt).toLocaleString()}` : 'Not checked yet'}
+              </div>
+              <div className="mt-3 grid gap-2 text-sm">
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Mounted</span>
+                  <span className="font-semibold">{status ? (status.mounted ? 'Yes' : 'No') : '—'}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Writable</span>
+                  <span className="font-semibold">{status ? (status.writable ? 'Yes' : 'No') : '—'}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Persisted (fstab)</span>
+                  <span className="font-semibold">{status ? (fstabPresent ? 'Yes' : 'No') : '—'}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Space</span>
+                  <span className="font-semibold text-right">
+                    {total
+                      ? `${fmtBytes(used)} / ${fmtBytes(total)}${usedPct !== null ? ` (${usedPct}%)` : ''}`
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+              {status?.error ? (
+                <div className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 data-[theme=dark]:text-red-300">{status.error}</div>
+              ) : null}
+            </div>
+
+            <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold">2. Folder Structure</div>
+                <CreatedBadge ready={folderStructureCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
+              </div>
+              <div className="mt-2 text-xs text-[var(--admin-muted)]">Staging folders are checked/created from current settings.</div>
+
+              <div className="mt-3 grid gap-3 text-sm">
+                <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="font-medium">Movies</div>
+                    <CreatedBadge ready={moviesStageCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
+                  </div>
+                  <div className="text-[11px] text-[var(--admin-muted)]">{`${moviesStageBaseDir}/${moviesDownloadingFolder}`}</div>
+                  <div className="text-[11px] text-[var(--admin-muted)]">{`${moviesStageBaseDir}/${moviesDownloadedFolder}`}</div>
+                  <div className="text-[11px] text-[var(--admin-muted)]">{`${moviesStageBaseDir}/${moviesProcessingFolder}`}</div>
+                </div>
+                <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="font-medium">Series</div>
+                    <CreatedBadge ready={seriesStageCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
+                  </div>
+                  <div className="text-[11px] text-[var(--admin-muted)]">{`${seriesStageBaseDir}/${seriesDownloadingFolder}`}</div>
+                  <div className="text-[11px] text-[var(--admin-muted)]">{`${seriesStageBaseDir}/${seriesDownloadedFolder}`}</div>
+                  <div className="text-[11px] text-[var(--admin-muted)]">{`${seriesStageBaseDir}/${seriesProcessingFolder}`}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold">3. Categories / Genres</div>
+                <CreatedBadge ready={categoriesGenresCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
+              </div>
+              <div className="mt-2 text-xs text-[var(--admin-muted)]">
+                Final folders are auto-created from fixed categories and TMDB genres.
+              </div>
+
+              <div className="mt-3 grid gap-2 text-sm">
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Movies categories</span>
+                  <span className="font-semibold">English, Asian</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Movie genres (TMDB)</span>
+                  <span className="font-semibold">{tmdbMovieGenres.length || 0}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Series genres (TMDB)</span>
+                  <span className="font-semibold">{tmdbTvGenres.length || 0}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2">
+                  <span className="text-xs text-[var(--admin-muted)]">Folders present on NAS</span>
+                  <span className="font-semibold">{categoriesGenresCreated ? 'Yes' : 'No'}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-base font-semibold">Storage Devices</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                Auto-detected XUI VOD volume and its backing devices on the engine host.
+              </div>
+            </div>
+            <CreatedBadge
+              ready={Boolean(storageDevices?.logical?.source || storageDevices?.resolvedPath || Number(storageDevices?.logical?.size || 0) > 0)}
+              checking={loading || refreshing}
+              readyLabel="Detected"
+              failLabel="Not Detected"
+            />
+          </div>
+
+          {storageDevicesError ? (
+            <div className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-700 data-[theme=dark]:text-red-300">{storageDevicesError}</div>
           ) : null}
-        </div>
 
-        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-semibold">2. Folder Structure</div>
-            <CreatedBadge ready={folderStructureCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
-          </div>
-          <div className="mt-2 text-xs text-[var(--admin-muted)]">Staging folders are checked/created from current settings.</div>
+          {storageDevices?.note ? (
+            <div className="mt-4 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-800 data-[theme=dark]:text-amber-100">{storageDevices.note}</div>
+          ) : null}
 
-          <div className="mt-3 grid gap-3 text-sm">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="font-medium">Movies</div>
-                <CreatedBadge ready={moviesStageCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
+              <div className="text-[11px] uppercase tracking-wide text-[var(--admin-muted)]">Resolved VOD path</div>
+              <div className="mt-1 text-sm font-semibold break-all">{storageDevices?.resolvedPath || '—'}</div>
+              <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                Preferred: {storageDevices?.preferredPath || '/home/xui/content/vod'}
               </div>
-              <div className="text-[11px] text-[var(--admin-muted)]">{`${moviesStageBaseDir}/${moviesDownloadingFolder}`}</div>
-              <div className="text-[11px] text-[var(--admin-muted)]">{`${moviesStageBaseDir}/${moviesDownloadedFolder}`}</div>
-              <div className="text-[11px] text-[var(--admin-muted)]">{`${moviesStageBaseDir}/${moviesProcessingFolder}`}</div>
             </div>
             <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="font-medium">Series</div>
-                <CreatedBadge ready={seriesStageCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
+              <div className="text-[11px] uppercase tracking-wide text-[var(--admin-muted)]">Mounted source</div>
+              <div className="mt-1 text-sm font-semibold break-all">{storageDevices?.logical?.source || '—'}</div>
+              <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                FS: {storageDevices?.logical?.fstype || '—'} · Pool: {storageDevices?.logical?.poolType || '—'}
               </div>
-              <div className="text-[11px] text-[var(--admin-muted)]">{`${seriesStageBaseDir}/${seriesDownloadingFolder}`}</div>
-              <div className="text-[11px] text-[var(--admin-muted)]">{`${seriesStageBaseDir}/${seriesDownloadedFolder}`}</div>
-              <div className="text-[11px] text-[var(--admin-muted)]">{`${seriesStageBaseDir}/${seriesProcessingFolder}`}</div>
+            </div>
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+              <div className="text-[11px] uppercase tracking-wide text-[var(--admin-muted)]">Volume capacity</div>
+              <div className="mt-1 text-sm font-semibold">
+                {storageDevices?.logical?.size
+                  ? `${fmtBytes(storageDevices.logical.used)} / ${fmtBytes(storageDevices.logical.size)}`
+                  : '—'}
+              </div>
+              <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                Free: {fmtBytes(storageDevices?.logical?.avail)} · Used: {fmtPct(storageDevices?.logical?.usedPct)}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+              <div className="text-[11px] uppercase tracking-wide text-[var(--admin-muted)]">Physical member disks</div>
+              <div className="mt-1 text-sm font-semibold">{storageDevices?.memberDiskCount ?? 0}</div>
+              <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                Raw size total: {fmtBytes(storageDevices?.memberDiskRawTotal)}
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-semibold">3. Categories / Genres</div>
-            <CreatedBadge ready={categoriesGenresCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
-          </div>
-          <div className="mt-2 text-xs text-[var(--admin-muted)]">
-            Final folders are auto-created from fixed categories and TMDB genres.
-          </div>
+          {Array.isArray(storageDevices?.candidatePaths) && storageDevices.candidatePaths.length ? (
+            <div className="mt-4">
+              <div className="text-xs font-medium text-[var(--admin-text)]">Detected VOD path candidates</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {storageDevices.candidatePaths.map((path) => (
+                  <span
+                    key={path}
+                    className="rounded-full border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2.5 py-1 text-[11px] text-[var(--admin-muted)]"
+                  >
+                    {path}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
-          <div className="mt-3 grid gap-2 text-sm">
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Movies categories</span>
-              <span className="font-semibold">English, Asian</span>
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Movie genres (TMDB)</span>
-              <span className="font-semibold">{tmdbMovieGenres.length || 0}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Series genres (TMDB)</span>
-              <span className="font-semibold">{tmdbTvGenres.length || 0}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2">
-              <span className="text-xs text-[var(--admin-muted)]">Folders present on NAS</span>
-              <span className="font-semibold">{categoriesGenresCreated ? 'Yes' : 'No'}</span>
-            </div>
+          <div className="mt-4 overflow-x-auto rounded-lg border border-[var(--admin-border)]">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-[var(--admin-surface)] text-[var(--admin-muted)]">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Role</th>
+                  <th className="px-3 py-2 font-medium">Device</th>
+                  <th className="px-3 py-2 font-medium">Type</th>
+                  <th className="px-3 py-2 font-medium">Raw Size</th>
+                  <th className="px-3 py-2 font-medium">Available</th>
+                  <th className="px-3 py-2 font-medium">Mount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--admin-border)] bg-[var(--admin-surface-2)]">
+                {storageRows.length ? (
+                  storageRows.map((row) => (
+                    <tr key={`${row.role}:${row.path || row.name}`}>
+                      <td className="px-3 py-2 align-top">
+                        <div className="font-medium">{row.role}</div>
+                        {row.note ? <div className="mt-1 text-[11px] text-[var(--admin-muted)]">{row.note}</div> : null}
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <div className="font-medium">{row.name || '—'}</div>
+                        <div className="mt-1 text-[11px] text-[var(--admin-muted)] break-all">{row.path || '—'}</div>
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <div>{row.type || '—'}</div>
+                        {row.fstype ? <div className="mt-1 text-[11px] text-[var(--admin-muted)]">{row.fstype}</div> : null}
+                      </td>
+                      <td className="px-3 py-2 align-top">{fmtBytes(row.size)}</td>
+                      <td className="px-3 py-2 align-top">
+                        {row.availableKnown ? (
+                          <div>
+                            <div>{fmtBytes(row.available)}</div>
+                            <div className="mt-1 text-[11px] text-[var(--admin-muted)]">Used {fmtPct(row.usedPct)}</div>
+                          </div>
+                        ) : storageDevices?.logical?.pooled ? (
+                          <span className="text-[var(--admin-muted)]">Combined pool</span>
+                        ) : (
+                          <span className="text-[var(--admin-muted)]">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <div className="break-all">{row.mountpoint || '—'}</div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-4 text-center text-[var(--admin-muted)]">
+                      No storage device details detected yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -909,6 +1106,70 @@ export default function AdminAutoDownloadMountPanel() {
             Run <span className="font-semibold">Test SMB</span> or <span className="font-semibold">Mount</span> before saving NAS settings.
           </div>
         ) : null}
+
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div>
+            <div className="text-sm font-semibold">XUI Local VOD Volume</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">
+              Auto-detect the XUI VOD folder for storage reporting. If detection is wrong or missing on another server, override it here.
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+            <Field
+              label={
+                <span className="inline-flex items-center gap-2">
+                  XUI VOD Path <HelpTooltip text="Engine Host path used to detect the local XUI VOD volume and its backing storage devices." />
+                </span>
+              }
+              hint="Editable override"
+            >
+              <Input
+                value={xuiVodPath}
+                onChange={(e) => {
+                  setXuiVodPath(e.target.value);
+                }}
+                placeholder="/home/xui/content/vod"
+              />
+              <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                Detected now: {storageDevices?.resolvedPath || '/home/xui/content/vod'}
+              </div>
+            </Field>
+
+            <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+              <div className="text-[11px] uppercase tracking-wide text-[var(--admin-muted)]">Status</div>
+              <div className="mt-2">
+                <CreatedBadge
+                  ready={Boolean(storageDevices?.logical?.source || storageDevices?.resolvedPath || Number(storageDevices?.logical?.size || 0) > 0)}
+                  checking={loading || refreshing}
+                  readyLabel="Detected"
+                  failLabel="Not Detected"
+                />
+              </div>
+              <div className="mt-2 text-[11px] text-[var(--admin-muted)] break-all">
+                Preferred path: {storageDevices?.preferredPath || xuiVodPath || '/home/xui/content/vod'}
+              </div>
+            </div>
+          </div>
+
+          {Array.isArray(storageDevices?.candidatePaths) && storageDevices.candidatePaths.length ? (
+            <div className="mt-3">
+              <div className="text-xs font-medium text-[var(--admin-text)]">Detected candidates</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {storageDevices.candidatePaths.map((path) => (
+                  <button
+                    key={path}
+                    type="button"
+                    onClick={() => setXuiVodPath(path)}
+                    className="rounded-full border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2.5 py-1 text-[11px] text-[var(--admin-muted)] hover:bg-black/10"
+                  >
+                    Use {path}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
           <div className="text-sm font-semibold">Mount Operations</div>

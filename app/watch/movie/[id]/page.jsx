@@ -5,6 +5,7 @@ import Protected from '../../../../components/Protected';
 import { useSession } from '../../../../components/SessionProvider';
 import VideoPlayer from '../../../../components/VideoPlayer';
 import { readJsonSafe } from '../../../../lib/readJsonSafe';
+import { readMoviePlaySeed } from '../../../../lib/moviePlaySeed';
 
 function parseCreds(streamBase) {
   const u = new URL(streamBase);
@@ -13,64 +14,114 @@ function parseCreds(streamBase) {
   return { username: p[i + 1], password: p[i + 2] };
 }
 
+function getOriginFromStreamBase(streamBase) {
+  try {
+    return streamBase ? new URL(streamBase).origin : '';
+  } catch {
+    return '';
+  }
+}
+
+function buildInitialMeta(id, seed = null) {
+  return {
+    id,
+    type: 'movie',
+    title: seed?.title || `Movie #${id}`,
+    image: seed?.image || '',
+    year: seed?.year || null,
+    genre: seed?.genre || null,
+    plot: seed?.plot || '',
+    duration: seed?.duration || null,
+    backHref: seed?.backHref || (id ? `/movies/${id}` : '/movies'),
+  };
+}
+
 export default function WatchMovie() {
   const { session, setServerOrigin } = useSession();
   const { id } = useParams();
   const q = useSearchParams();
   const auto = q.get('auto') === '1';
+  const moviePlaySeed = useMemo(() => readMoviePlaySeed(id), [id]);
+  const sessionOrigin = useMemo(() => getOriginFromStreamBase(session?.streamBase), [session?.streamBase]);
+  const fallbackOrigin = sessionOrigin || '';
 
-  const [servers, setServers] = useState([]);
-  const [origin, setOrigin] = useState('');
-  const [ext, setExt] = useState(null);
-  const [meta, setMeta] = useState({
-    id,
-    type: 'movie',
-    title: `Movie #${id}`,
-    image: '',
-    year: null,
-    genre: null,
-    plot: '',
-    duration: null,
-    backHref: id ? `/movies/${id}` : '/movies',
-  });
+  const [servers, setServers] = useState(() =>
+    fallbackOrigin ? [{ label: 'Current server', origin: fallbackOrigin }] : []
+  );
+  const [origin, setOrigin] = useState(fallbackOrigin);
+  const [ext, setExt] = useState(moviePlaySeed?.ext || null);
+  const [meta, setMeta] = useState(() => buildInitialMeta(id, moviePlaySeed));
   const [subs, setSubs] = useState([]);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch('/api/auth/health');
-        const d = await readJsonSafe(r);
-        const list = (d?.servers || []).map((u, i) => ({ label:`Server ${i+1}`, origin:new URL(u).origin }));
-        setServers(list);
-        if (!origin && list.length) setOrigin(list[0].origin);
-      } catch {}
-    })();
-  }, [origin]);
+    setMeta(buildInitialMeta(id, moviePlaySeed));
+    setExt(moviePlaySeed?.ext || null);
+    setSubs([]);
+  }, [id, moviePlaySeed]);
 
   useEffect(() => {
-    if (!session?.streamBase || !servers.length) return;
-    const o = new URL(session.streamBase).origin;
-    const found = servers.find(s => s.origin === o);
-    if (found) setOrigin(found.origin);
-  }, [session?.streamBase, servers]);
+    if (!sessionOrigin) return;
+    setOrigin((current) => current || sessionOrigin);
+    setServers((current) => {
+      if (current.some((row) => row.origin === sessionOrigin)) return current;
+      return [{ label: 'Current server', origin: sessionOrigin }, ...current];
+    });
+  }, [sessionOrigin]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/auth/health', { cache: 'no-store' });
+        const d = await readJsonSafe(r);
+        if (cancelled) return;
+        const list = (d?.servers || []).map((u, i) => ({ label:`Server ${i+1}`, origin:new URL(u).origin }));
+        setServers((current) => {
+          const merged = [...current];
+          for (const row of list) {
+            if (!row?.origin || merged.some((entry) => entry.origin === row.origin)) continue;
+            merged.push(row);
+          }
+          return merged;
+        });
+        const preferred = list.find((row) => row.origin === sessionOrigin) || list[0] || null;
+        if (preferred?.origin) {
+          setOrigin((current) => {
+            if (!current || current === sessionOrigin) return preferred.origin;
+            return current;
+          });
+          if (preferred.origin !== sessionOrigin) setServerOrigin?.(preferred.origin);
+        }
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionOrigin, setServerOrigin]);
+
+  const playbackOrigin = origin || sessionOrigin;
 
   const { mp4, hls } = useMemo(() => {
-    if (!session?.streamBase || !id || !origin) return { mp4:'', hls:'' };
+    if (!session?.streamBase || !id || !playbackOrigin) return { mp4:'', hls:'' };
     const { username, password } = parseCreds(session.streamBase);
-    const safeExt = ext && ext.toLowerCase() !== 'm3u8' ? ext.toLowerCase() : null;
+    const normalizedExt = String(ext || '').trim().toLowerCase();
+    const isHlsOnly = normalizedExt === 'm3u8';
+    const safeExt = normalizedExt && !isHlsOnly ? normalizedExt : null;
     return {
-      mp4: safeExt ? `${origin}/movie/${username}/${password}/${id}.${safeExt}` : `${origin}/movie/${username}/${password}/${id}.mp4`,
-      hls: `${origin}/movie/${username}/${password}/${id}.m3u8`,
+      mp4: isHlsOnly ? '' : safeExt ? `${playbackOrigin}/movie/${username}/${password}/${id}.${safeExt}` : `${playbackOrigin}/movie/${username}/${password}/${id}.mp4`,
+      hls: isHlsOnly ? `${playbackOrigin}/movie/${username}/${password}/${id}.m3u8` : '',
     };
-  }, [session?.streamBase, id, origin, ext]);
+  }, [session?.streamBase, id, playbackOrigin, ext]);
 
   useEffect(() => {
     if (!session?.streamBase) return;
+    let cancelled = false;
     (async () => {
       try {
         const url = `/api/xuione/vod/${id}?streamBase=${encodeURIComponent(session.streamBase)}`;
         const r = await fetch(url);
         const d = await readJsonSafe(r);
+        if (cancelled) return;
         if (r.ok && d.ok) {
           setMeta({
             id,
@@ -89,6 +140,9 @@ export default function WatchMovie() {
         }
       } catch {}
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [id, session?.streamBase]);
 
   return (
@@ -97,13 +151,13 @@ export default function WatchMovie() {
         <VideoPlayer
           mp4={mp4}
           hls={hls}
-          preferHls={true}
+          preferHls={false}
           meta={meta}
           mode="immersive"
           autoFullscreen={auto}
           autoPlayOnLoad={true}
           servers={servers}
-          activeOrigin={origin}
+          activeOrigin={playbackOrigin}
           onSelectServer={(o) => {
             setOrigin(o);
             setServerOrigin?.(o);

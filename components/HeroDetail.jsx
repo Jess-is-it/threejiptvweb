@@ -2,6 +2,18 @@
 'use client';
 import { useEffect, useState } from 'react';
 
+const SHELL_HEADER_OFFSET = 64;
+const SECTION_TOP_GAP = 24;
+
+function stripTrailingYearCopies(value, year) {
+  const title = String(value || '').trim();
+  const normalizedYear = String(year || '').trim();
+  if (!title || !normalizedYear) return title;
+  const escapedYear = normalizedYear.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(?:\\s*\\(${escapedYear}\\))+\\s*$`);
+  return title.replace(pattern, '').trim() || title;
+}
+
 export default function HeroDetail({
   item = {},
   onPlay,
@@ -10,6 +22,7 @@ export default function HeroDetail({
   buttons = null,
   height = 'min-h-[68vh] md:min-h-[72vh] lg:min-h-[74vh]',
   behindHeader = true,
+  showYearInTitle = true,
 }) {
   const {
     title = '',
@@ -22,6 +35,8 @@ export default function HeroDetail({
   } = item || {};
 
   const backdrop = backdropIn || image || '';
+  const baseTitle = stripTrailingYearCopies(title, year);
+  const displayTitle = showYearInTitle && year ? `${baseTitle} (${year})` : baseTitle;
 
   // NEW: measure header height so we can perfectly overlap
   const [headerH, setHeaderH] = useState(64);
@@ -40,7 +55,12 @@ export default function HeroDetail({
     };
   }, []);
 
-  const offsetStyle = behindHeader ? { marginTop: -headerH, paddingTop: headerH } : undefined;
+  const offsetStyle = behindHeader
+    ? {
+        marginTop: -(headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP),
+        paddingTop: headerH,
+      }
+    : undefined;
 
   return (
     <section
@@ -64,7 +84,7 @@ export default function HeroDetail({
       <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-8 sm:px-6 lg:px-10 md:pb-10">
         <div className="max-w-3xl rounded-2xl border border-white/10 bg-black/35 p-5 shadow-2xl backdrop-blur-md sm:p-6">
           <h1 className="mb-2 text-3xl font-extrabold leading-tight sm:text-4xl md:text-5xl">
-            {title}{year ? ` (${year})` : ''}
+            {displayTitle}
           </h1>
           <div className="mb-3 text-sm text-neutral-200">
             {genre ? <span className="mr-2">{genre}</span> : null}

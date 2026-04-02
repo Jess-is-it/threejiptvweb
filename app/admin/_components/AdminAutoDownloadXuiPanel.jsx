@@ -7,14 +7,14 @@ import EditModal, { EditIconButton } from './EditModal';
 import NotesButton from './NotesButton';
 
 function Field({ label, children, hint, note }) {
+  const infoText = [hint, note].map((item) => String(item || '').trim()).filter(Boolean).join(' • ');
   return (
     <div>
-      <div className="mb-1 flex items-end justify-between gap-3">
+      <div className="mb-1 flex items-center gap-2">
         <label className="inline-flex items-center gap-2 text-sm font-medium text-[var(--admin-text)]">
           <span>{label}</span>
-          {note ? <HelpTooltip text={note} /> : null}
+          {infoText ? <HelpTooltip text={infoText} /> : null}
         </label>
-        {hint ? <div className="text-[11px] text-[var(--admin-muted)]">{hint}</div> : null}
       </div>
       {children}
     </div>

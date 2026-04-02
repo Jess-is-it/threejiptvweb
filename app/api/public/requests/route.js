@@ -18,6 +18,7 @@ const xuiCatalogCache = new Map();
 
 function publicSettingsShape(settings) {
   return {
+    enabled: settings?.enabled !== false,
     dailyLimitDefault: Number(settings?.dailyLimitDefault || 3),
     seriesEpisodeLimitDefault: Number(settings?.seriesEpisodeLimitDefault || 8),
     defaultLandingCategory: String(settings?.defaultLandingCategory || 'popular'),
@@ -340,6 +341,11 @@ export async function POST(req) {
     const body = await req.json().catch(() => ({}));
     const action = String(body?.action || '').trim().toLowerCase();
     const username = String(body?.username || '').trim();
+    const settings = await getRequestSettings();
+
+    if (settings?.enabled === false) {
+      return NextResponse.json({ ok: false, error: 'Requests are currently disabled.' }, { status: 403 });
+    }
 
     if (action === 'submit') {
       if (!username) return NextResponse.json({ ok: false, error: 'Missing username' }, { status: 400 });

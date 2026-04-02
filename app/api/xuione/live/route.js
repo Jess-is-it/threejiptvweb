@@ -4,6 +4,20 @@ import { parseStreamBase, xtreamWithFallback } from '../_shared';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+function normalizeSourceList(value) {
+  const rows = Array.isArray(value) ? value : value ? [value] : [];
+  return rows
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (entry && typeof entry === 'object') {
+        return entry.url || entry.source || entry.stream_source || entry.direct_source || '';
+      }
+      return '';
+    })
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+}
+
 async function readStreamBase(req) {
   const url = new URL(req.url);
   const fromQuery = url.searchParams.get('streamBase');
@@ -54,12 +68,17 @@ async function handle(req) {
 
     const channels = (Array.isArray(liveRaw) ? liveRaw : []).map((ch) => {
       const id = ch?.stream_id ?? ch?.id;
+      const streamSources = normalizeSourceList(ch?.stream_source || ch?.streamSource);
       return {
         id,
         name: ch?.name || `CH ${id}`,
         logo: ch?.stream_icon || ch?.logo || '',
         number: ch?.num ?? ch?.number ?? null,
         category_id: ch?.category_id ?? ch?.categoryId ?? '',
+        ext: String(ch?.container_extension || ch?.containerExtension || '').trim(),
+        streamType: String(ch?.stream_type || ch?.streamType || '').trim(),
+        directSource: String(ch?.direct_source || ch?.directSource || '').trim(),
+        streamSources,
       };
     });
 

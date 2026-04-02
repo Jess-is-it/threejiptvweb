@@ -7,14 +7,14 @@ import EditModal, { EditIconButton } from './EditModal';
 import NotesButton from './NotesButton';
 
 function Field({ label, children, hint, note }) {
+  const infoText = [hint, note].map((item) => String(item || '').trim()).filter(Boolean).join(' • ');
   return (
     <div>
-      <div className="mb-1 flex items-end justify-between gap-3">
+      <div className="mb-1 flex items-center gap-2">
         <label className="inline-flex items-center gap-2 text-sm font-medium text-[var(--admin-text)]">
           <span>{label}</span>
-          {note ? <HelpTooltip text={note} /> : null}
+          {infoText ? <HelpTooltip text={infoText} /> : null}
         </label>
-        {hint ? <div className="text-[11px] text-[var(--admin-muted)]">{hint}</div> : null}
       </div>
       {children}
     </div>
@@ -33,6 +33,8 @@ function Input(props) {
   );
 }
 
+const VPN_TEST_PHASES = ['Checking Engine Host access', 'Checking VPN route rules', 'Checking WireGuard session', 'Validating VPN public IP'];
+
 function provisionPhaseForProgress(progress, mode = 'install') {
   if (progress < 20) return 'Connecting to Engine Host…';
   if (progress < 45) return mode === 'reconfigure' ? 'Validating existing qBittorrent setup…' : 'Checking system requirements…';
@@ -41,7 +43,7 @@ function provisionPhaseForProgress(progress, mode = 'install') {
   return 'Finalizing…';
 }
 
-export default function AdminAutoDownloadDownloadSettingsPanel() {
+export default function AdminAutoDownloadDownloadSettingsPanel({ showVpnSection = true } = {}) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
@@ -52,11 +54,13 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
   const [vpnApplying, setVpnApplying] = useState(false);
   const [vpnTesting, setVpnTesting] = useState(false);
   const [vpnRegionsBusy, setVpnRegionsBusy] = useState(false);
+  const [qbRevealBusy, setQbRevealBusy] = useState(false);
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
   const [editOpen, setEditOpen] = useState(false);
   const [optionsEditOpen, setOptionsEditOpen] = useState(false);
   const [vpnEditOpen, setVpnEditOpen] = useState(false);
+  const [qbPasswordVisible, setQbPasswordVisible] = useState(false);
   const [provisionProgress, setProvisionProgress] = useState(0);
   const [provisionPhase, setProvisionPhase] = useState('');
   const [provisionOutput, setProvisionOutput] = useState('');
@@ -68,9 +72,6 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
   const [connectionMode, setConnectionMode] = useState('ssh');
   const [autoDeleteCompletedTorrents, setAutoDeleteCompletedTorrents] = useState(true);
   const [autoDeleteCompletedDelayMinutes, setAutoDeleteCompletedDelayMinutes] = useState(30);
-  const [maxActiveDownloads, setMaxActiveDownloads] = useState(3);
-  const [maxActiveUploads, setMaxActiveUploads] = useState(3);
-  const [maxActiveTorrents, setMaxActiveTorrents] = useState(5);
   const [lanAddress, setLanAddress] = useState('0.0.0.0');
   const [authSubnetAllowlist, setAuthSubnetAllowlist] = useState('127.0.0.1/32');
   const [vpnEnabled, setVpnEnabled] = useState(false);
@@ -81,9 +82,39 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
   const [vpnUsername, setVpnUsername] = useState('');
   const [vpnPassword, setVpnPassword] = useState('');
   const [vpnRegions, setVpnRegions] = useState([]);
+  const [vpnTestRuntime, setVpnTestRuntime] = useState(null);
+  const [vpnTestPhaseIndex, setVpnTestPhaseIndex] = useState(0);
+  const [vpnTestModalOpen, setVpnTestModalOpen] = useState(false);
+  const [vpnTestResult, setVpnTestResult] = useState(null);
+  const [vpnTestError, setVpnTestError] = useState('');
 
   const [info, setInfo] = useState(null);
   const [vpnInfo, setVpnInfo] = useState(null);
+  const serviceUserDisplay = info?.serviceUser || 'qbvpn';
+  const vpnRuntimeChecks = useMemo(() => {
+    if (!vpnTestRuntime || typeof vpnTestRuntime !== 'object') return [];
+    return [
+      { key: 'iface', label: 'Interface up', ok: vpnTestRuntime.ifaceUp === true },
+      { key: 'rule', label: 'Policy route rule', ok: vpnTestRuntime.ruleOk === true },
+      { key: 'mark', label: 'Owner mark rule', ok: vpnTestRuntime.markOk === true },
+      {
+        key: 'kill',
+        label: 'Kill switch',
+        ok: vpnTestRuntime.killSwitchOk === true,
+        skipped: vpnInfo?.killSwitchEnabled === false,
+      },
+      { key: 'wg', label: 'WireGuard session', ok: vpnTestRuntime.wgOk === true },
+      { key: 'handshake', label: 'Recent handshake', ok: vpnTestRuntime.handshakeRecent === true },
+      { key: 'host', label: 'Host public IP detected', ok: Boolean(String(vpnTestRuntime.hostIp || '').trim()) },
+      {
+        key: 'vpnip',
+        label: 'VPN interface public IP',
+        ok:
+          Boolean(String(vpnTestRuntime.vpnIp || '').trim()) &&
+          String(vpnTestRuntime.vpnIp || '').trim() !== String(vpnTestRuntime.hostIp || '').trim(),
+      },
+    ];
+  }, [vpnInfo?.killSwitchEnabled, vpnTestRuntime]);
 
   const notes = [
     {
@@ -112,11 +143,8 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
 
   const optionsCanSave = useMemo(() => {
     const delayOk = Number.isFinite(Number(autoDeleteCompletedDelayMinutes)) && Number(autoDeleteCompletedDelayMinutes) >= 0;
-    const maxDlOk = Number(maxActiveDownloads) >= 1;
-    const maxUlOk = Number(maxActiveUploads) >= 1;
-    const maxTorOk = Number(maxActiveTorrents) >= 1;
-    return Boolean(delayOk && maxDlOk && maxUlOk && maxTorOk);
-  }, [autoDeleteCompletedDelayMinutes, maxActiveDownloads, maxActiveUploads, maxActiveTorrents]);
+    return Boolean(delayOk);
+  }, [autoDeleteCompletedDelayMinutes]);
 
   const vpnCanSave = useMemo(() => {
     if (!vpnEnabled) return true;
@@ -154,11 +182,10 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
       setEnabled(Boolean(qb.enabled));
       setPort(Number(qb.port || 8080));
       setConnectionMode(qb.connectionMode === 'lan' ? 'lan' : 'ssh');
+      setPassword('');
+      setQbPasswordVisible(false);
       setAutoDeleteCompletedTorrents(qb.autoDeleteCompletedTorrents !== false);
       setAutoDeleteCompletedDelayMinutes(Number(qb.autoDeleteCompletedDelayMinutes ?? 30));
-      setMaxActiveDownloads(Number(qb.maxActiveDownloads || 3));
-      setMaxActiveUploads(Number(qb.maxActiveUploads || 3));
-      setMaxActiveTorrents(Number(qb.maxActiveTorrents || 5));
       setLanAddress(String(qb?.lanBind?.address || '0.0.0.0'));
       setAuthSubnetAllowlist(String(qb?.lanBind?.authSubnetAllowlist || '127.0.0.1/32'));
       setInfo(qb);
@@ -224,6 +251,34 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
     }
   };
 
+  const revealSavedQbPassword = async () => {
+    if (qbPasswordVisible) {
+      setQbPasswordVisible(false);
+      return;
+    }
+    const adminPassword = window.prompt('Enter your admin password to show qBittorrent WebUI password:');
+    if (!adminPassword) return;
+    setQbRevealBusy(true);
+    setErr('');
+    setOk('');
+    try {
+      const r = await fetch('/api/admin/autodownload/download-settings/reveal-password', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ adminPassword }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to verify admin password.');
+      setPassword(String(j?.password || ''));
+      setQbPasswordVisible(true);
+      setOk('qBittorrent password is now visible in this form.');
+    } catch (e) {
+      setErr(e?.message || 'Failed to reveal qBittorrent password.');
+    } finally {
+      setQbRevealBusy(false);
+    }
+  };
+
   const saveOptions = async () => {
     setOptionsBusy(true);
     setErr('');
@@ -235,9 +290,6 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
         body: JSON.stringify({
           autoDeleteCompletedTorrents,
           autoDeleteCompletedDelayMinutes: Number(autoDeleteCompletedDelayMinutes || 0),
-          maxActiveDownloads: Number(maxActiveDownloads || 1),
-          maxActiveUploads: Number(maxActiveUploads || 1),
-          maxActiveTorrents: Number(maxActiveTorrents || 1),
         }),
       });
       const j = await r.json().catch(() => ({}));
@@ -277,7 +329,9 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to save VPN settings.');
       setVpnPassword('');
       setVpnUsername('');
-      setVpnInfo(j?.vpn || null);
+      const savedVpn = j?.vpn || null;
+      setVpnInfo(savedVpn);
+      setVpnEnabled(savedVpn?.enabled === true);
       setOk('VPN settings saved.');
       return true;
     } catch (e) {
@@ -288,15 +342,17 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
     }
   };
 
-  const applyVpn = async ({ disable = false } = {}) => {
-    if (disable) {
-      if (!confirm('Disable qBittorrent VPN routing now?')) return;
-    } else if (!confirm('Apply qBittorrent VPN routing now?')) {
-      return;
+  const applyVpn = async ({ disable = false, skipConfirm = false, setMessages = true } = {}) => {
+    if (!skipConfirm && disable) {
+      if (!confirm('Disable qBittorrent VPN routing now?')) return { ok: false, canceled: true };
+    } else if (!skipConfirm && !confirm('Apply qBittorrent VPN routing now?')) {
+      return { ok: false, canceled: true };
     }
     setVpnApplying(true);
-    setErr('');
-    setOk('');
+    if (setMessages) {
+      setErr('');
+      setOk('');
+    }
     try {
       const r = await fetch('/api/admin/autodownload/download-settings/vpn/apply', {
         method: 'POST',
@@ -308,14 +364,20 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
       const result = j?.result || {};
       setVpnInfo(result?.vpn || vpnInfo || null);
       setVpnEnabled(result?.vpn?.enabled === true);
-      setOk(
-        disable
-          ? result?.vpn?.lastAppliedSummary || 'VPN disabled.'
-          : result?.runtime?.summary || result?.vpn?.lastAppliedSummary || 'VPN applied.'
-      );
+      if (result?.runtime) setVpnTestRuntime(result.runtime);
+      if (setMessages) {
+        setOk(
+          disable
+            ? result?.vpn?.lastAppliedSummary || 'VPN disabled.'
+            : result?.runtime?.summary || result?.vpn?.lastAppliedSummary || 'VPN applied.'
+        );
+      }
       await load();
+      return { ok: true, result };
     } catch (e) {
-      setErr(e?.message || 'Failed to apply VPN settings.');
+      const message = e?.message || 'Failed to apply VPN settings.';
+      if (setMessages) setErr(message);
+      return { ok: false, error: message };
     } finally {
       setVpnApplying(false);
     }
@@ -323,22 +385,47 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
 
   const testVpn = async () => {
     setVpnTesting(true);
+    setVpnTestModalOpen(true);
+    setVpnTestResult(null);
+    setVpnTestError('');
+    setVpnTestRuntime(null);
     setErr('');
     setOk('');
+    setVpnTestPhaseIndex(0);
+    let phaseTimer = null;
     try {
+      phaseTimer = setInterval(() => {
+        setVpnTestPhaseIndex((prev) => (prev + 1) % VPN_TEST_PHASES.length);
+      }, 900);
+      if (vpnEnabled) {
+        const applyResult = await applyVpn({ disable: false, skipConfirm: true, setMessages: false });
+        if (!applyResult?.ok) throw new Error(applyResult?.error || 'Failed to apply VPN settings.');
+      }
       const r = await fetch('/api/admin/autodownload/download-settings/vpn/test', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ includePublicIp: true }),
+        body: JSON.stringify({ includePublicIp: true, validateCredentials: true }),
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j?.ok) throw new Error(j?.error || j?.result?.summary || 'VPN test failed.');
-      setVpnInfo(j?.result?.vpn || null);
-      setOk(j?.result?.summary || 'VPN check passed.');
+      const result = j?.result || {};
+      if (result?.runtime) setVpnTestRuntime(result.runtime);
+      else setVpnTestRuntime(null);
+      if (result?.vpn) setVpnInfo(result.vpn);
+      const passed = Boolean(r.ok && j?.ok);
+      setVpnTestResult({
+        ok: passed,
+        summary: result?.summary || (passed ? 'VPN check passed.' : j?.error || 'VPN test failed.'),
+        runtime: result?.runtime || null,
+      });
+      if (!passed) throw new Error(j?.error || result?.summary || 'VPN test failed.');
+      setOk(result?.summary || 'VPN check passed.');
       await load();
     } catch (e) {
-      setErr(e?.message || 'VPN test failed.');
+      const message = e?.message || 'VPN test failed.';
+      setVpnTestError(message);
+      setErr(message);
     } finally {
+      if (phaseTimer) clearInterval(phaseTimer);
       setVpnTesting(false);
     }
   };
@@ -440,7 +527,7 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
 
   const saveDisabled = loading || busy || !canSave;
   const optionsSaveDisabled = loading || optionsBusy || !optionsCanSave;
-  const vpnSaveDisabled = loading || vpnBusy || !vpnCanSave;
+  const vpnSaveDisabled = loading || vpnBusy || vpnApplying || !vpnCanSave;
 
   return (
     <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5 shadow-sm">
@@ -535,6 +622,22 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
             <div className="text-xs text-[var(--admin-muted)]">Credentials</div>
             <div className="mt-1 text-sm font-semibold">{info?.hasCredentials ? 'Saved (hidden)' : password ? 'Entered (not saved)' : 'Not set'}</div>
             <div className="mt-1 text-xs text-[var(--admin-muted)]">Username: {username || '—'}</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">Service user: {serviceUserDisplay}</div>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => revealSavedQbPassword()}
+                disabled={loading || qbRevealBusy || (!qbPasswordVisible && !info?.hasCredentials)}
+                className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-2.5 py-1.5 text-xs hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {qbRevealBusy ? 'Checking…' : qbPasswordVisible ? 'Hide Password' : 'Show Password'}
+              </button>
+              {qbPasswordVisible ? (
+                <code className="max-w-[180px] truncate rounded bg-black/5 px-2 py-1 text-[11px] text-[var(--admin-text)] data-[theme=dark]:bg-white/10">
+                  {password || '—'}
+                </code>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -572,10 +675,9 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
             <div className="mt-1 text-xs text-[var(--admin-muted)]">Delay: {Number(autoDeleteCompletedDelayMinutes || 0)} minute(s)</div>
           </div>
           <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-            <div className="text-xs text-[var(--admin-muted)]">Maximum active</div>
-            <div className="mt-1 text-sm font-semibold">Downloads: {Number(maxActiveDownloads || 0)}</div>
-            <div className="mt-1 text-xs text-[var(--admin-muted)]">Uploads: {Number(maxActiveUploads || 0)}</div>
-            <div className="mt-1 text-xs text-[var(--admin-muted)]">Torrents: {Number(maxActiveTorrents || 0)}</div>
+            <div className="text-xs text-[var(--admin-muted)]">Queue management</div>
+            <div className="mt-1 text-sm font-semibold">Managed in qBittorrent WebUI</div>
+            <div className="mt-1 text-xs text-[var(--admin-muted)]">Use qB Options directly if you want to change active downloads/uploads/torrents.</div>
           </div>
           <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
             <div className="text-xs text-[var(--admin-muted)]">Last options apply</div>
@@ -589,12 +691,13 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
         </div>
       </div>
 
-      <div className="mt-5 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+      {showVpnSection ? (
+        <div className="mt-5 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="text-sm font-semibold">VPN Options (qB-only)</div>
             <div className="mt-1 text-xs text-[var(--admin-muted)]">
-              Routes only qBittorrent service traffic (Linux user <code>xui</code>) through VPN. Web/app traffic stays on normal network.
+              Routes only qBittorrent service traffic (dedicated Linux user <code>{serviceUserDisplay}</code>) through VPN. Web/app traffic stays on normal network.
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -605,17 +708,9 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
             >
               {vpnTesting ? 'Testing VPN…' : 'Test VPN'}
             </button>
-            <button
-              onClick={() => applyVpn({ disable: vpnEnabled !== true })}
-              disabled={loading || vpnApplying}
-              className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
-            >
-              {vpnApplying ? 'Applying…' : 'Apply Change'}
-            </button>
             <EditIconButton onClick={() => setVpnEditOpen(true)} />
           </div>
         </div>
-
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
             <div className="text-xs text-[var(--admin-muted)]">Status</div>
@@ -639,7 +734,31 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
             </div>
           </div>
         </div>
-      </div>
+        {vpnTestRuntime ? (
+          <div className="mt-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+            <div className="text-xs font-semibold text-[var(--admin-muted)]">Last Test Breakdown</div>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              {vpnRuntimeChecks.map((item) => (
+                <div key={item.key} className="flex items-center justify-between rounded-md border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-2 py-1.5 text-xs">
+                  <span className="text-[var(--admin-text)]">{item.label}</span>
+                  {item.skipped ? (
+                    <span className="rounded-full bg-slate-500/15 px-2 py-0.5 font-semibold text-slate-600 dark:text-slate-300">Skipped</span>
+                  ) : item.ok ? (
+                    <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">✓ Pass</span>
+                  ) : (
+                    <span className="rounded-full bg-red-500/15 px-2 py-0.5 font-semibold text-red-700 dark:text-red-300">✕ Fail</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 text-xs text-[var(--admin-muted)]">
+              Host IP: <span className="font-mono text-[var(--admin-text)]">{vpnTestRuntime.hostIp || '—'}</span> · VPN IP:{' '}
+              <span className="font-mono text-[var(--admin-text)]">{vpnTestRuntime.vpnIp || '—'}</span>
+            </div>
+          </div>
+        ) : null}
+        </div>
+      ) : null}
 
       <div className="mt-5 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4 text-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -692,6 +811,106 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
         </div>
       </div>
 
+      {showVpnSection && vpnTestModalOpen ? (
+        <div className="fixed inset-0 z-[95]">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/60"
+            aria-label="Close VPN test modal"
+            onClick={() => {
+              if (vpnTesting) return;
+              setVpnTestModalOpen(false);
+            }}
+          />
+          <div className="absolute left-1/2 top-1/2 w-[min(920px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] shadow-xl">
+            <div className="flex items-center justify-between border-b border-[var(--admin-border)] p-5">
+              <div>
+                <div className="text-lg font-semibold text-[var(--admin-text)]">VPN Test Result</div>
+                <div className="mt-1 text-sm text-[var(--admin-muted)]">Runtime checks for qB-only VPN routing.</div>
+              </div>
+              <button
+                type="button"
+                disabled={vpnTesting}
+                onClick={() => setVpnTestModalOpen(false)}
+                className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-50"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-[70vh] overflow-auto p-5">
+              {vpnTesting ? (
+                <div className="mb-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm text-[var(--admin-text)]">
+                  Running checks: <span className="font-semibold">{VPN_TEST_PHASES[vpnTestPhaseIndex]}</span>
+                </div>
+              ) : null}
+
+              {vpnTestError ? (
+                <div className="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">{vpnTestError}</div>
+              ) : null}
+
+              {vpnTestResult ? (
+                <div className="mb-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className={vpnTestResult.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}>
+                      {vpnTestResult.ok ? '✓' : '✕'}
+                    </span>
+                    <span className="font-semibold text-[var(--admin-text)]">{vpnTestResult.summary || 'VPN test completed.'}</span>
+                  </div>
+                  {!vpnEnabled ? (
+                    <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                      VPN is currently disabled. Enable it in VPN settings and save to run full tunnel checks.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {vpnRuntimeChecks.length ? (
+                <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-3">
+                  <div className="text-xs font-semibold text-[var(--admin-muted)]">Checks</div>
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    {vpnRuntimeChecks.map((item) => (
+                      <div key={item.key} className="flex items-center justify-between rounded-md border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2 py-1.5 text-xs">
+                        <span className="text-[var(--admin-text)]">{item.label}</span>
+                        {item.skipped ? (
+                          <span className="rounded-full bg-slate-500/15 px-2 py-0.5 font-semibold text-slate-600 dark:text-slate-300">Skipped</span>
+                        ) : item.ok ? (
+                          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">✓ Pass</span>
+                        ) : (
+                          <span className="rounded-full bg-red-500/15 px-2 py-0.5 font-semibold text-red-700 dark:text-red-300">✕ Fail</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-2 text-xs text-[var(--admin-muted)]">
+                    Host IP: <span className="font-mono text-[var(--admin-text)]">{vpnTestRuntime?.hostIp || '—'}</span> · VPN IP:{' '}
+                    <span className="font-mono text-[var(--admin-text)]">{vpnTestRuntime?.vpnIp || '—'}</span>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--admin-border)] p-4">
+              <button
+                type="button"
+                onClick={() => setVpnTestModalOpen(false)}
+                disabled={vpnTesting}
+                className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-50"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => testVpn()}
+                disabled={vpnTesting}
+                className="rounded-lg px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+                style={{ backgroundColor: 'var(--brand)' }}
+              >
+                {vpnTesting ? 'Testing…' : 'Run Test Again'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <EditModal
         open={editOpen}
         title="Edit qBittorrent Settings"
@@ -702,6 +921,7 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
           setEditOpen(false);
           await load();
           setPassword('');
+          setQbPasswordVisible(false);
         }}
         onSave={async () => {
           const okSaved = await saveConnection();
@@ -746,13 +966,23 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
           </Field>
 
           <Field label="WebUI Password" hint="Not displayed after save" note="Password for qBittorrent WebUI. Stored encrypted at rest.">
-            <Input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={info?.hasCredentials ? '(already saved)' : '••••••••'}
-              type="password"
-              autoComplete="new-password"
-            />
+            <div className="flex items-center gap-2">
+              <Input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={info?.hasCredentials ? '(already saved)' : '••••••••'}
+                type={qbPasswordVisible ? 'text' : 'password'}
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                onClick={() => revealSavedQbPassword()}
+                disabled={loading || qbRevealBusy || (!qbPasswordVisible && !info?.hasCredentials)}
+                className="shrink-0 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {qbRevealBusy ? 'Checking…' : qbPasswordVisible ? 'Hide' : 'Show'}
+              </button>
+            </div>
           </Field>
         </div>
 
@@ -793,7 +1023,7 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
       <EditModal
         open={optionsEditOpen}
         title="Edit qBittorrent Options"
-        description="Control torrent lifecycle and qBittorrent queue limits."
+        description="Control torrent lifecycle behavior managed by this app."
         error={err}
         success={ok}
         onCancel={async () => {
@@ -833,37 +1063,17 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
               onChange={(e) => setAutoDeleteCompletedDelayMinutes(Number(e.target.value || 0))}
             />
           </Field>
-          <Field label="Maximum Active Downloads" note="qBittorrent queue limit for active downloading torrents.">
-            <Input
-              type="number"
-              min={1}
-              max={999}
-              value={maxActiveDownloads}
-              onChange={(e) => setMaxActiveDownloads(Number(e.target.value || 1))}
-            />
-          </Field>
-          <Field label="Maximum Active Uploads" note="qBittorrent queue limit for active uploading torrents.">
-            <Input
-              type="number"
-              min={1}
-              max={999}
-              value={maxActiveUploads}
-              onChange={(e) => setMaxActiveUploads(Number(e.target.value || 1))}
-            />
-          </Field>
-          <Field label="Maximum Active Torrents" note="qBittorrent global queue limit for active torrents.">
-            <Input
-              type="number"
-              min={1}
-              max={2000}
-              value={maxActiveTorrents}
-              onChange={(e) => setMaxActiveTorrents(Number(e.target.value || 1))}
-            />
-          </Field>
+        </div>
+        <div className="mt-4 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4 text-sm">
+          <div className="font-semibold">Queue limits</div>
+          <div className="mt-1 text-xs text-[var(--admin-muted)]">
+            Maximum active downloads/uploads/torrents are no longer managed here. Edit them directly in qBittorrent WebUI if needed.
+          </div>
         </div>
       </EditModal>
 
-      <EditModal
+      {showVpnSection ? (
+        <EditModal
         open={vpnEditOpen}
         title="Edit qBittorrent VPN Options"
         description="Configure optional qB-only VPN routing using Private Internet Access (PIA)."
@@ -949,12 +1159,12 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
           <Field
             label="PIA Username"
             hint={vpnInfo?.hasCredentials ? `Saved (${vpnInfo?.usernamePreview || 'hidden'})` : 'Required'}
-            note="PIA account username. Stored encrypted at rest."
+            note="Use your PIA VPN username from PIA Client Control Panel (not your email). Stored encrypted at rest."
           >
             <Input
               value={vpnUsername}
               onChange={(e) => setVpnUsername(e.target.value)}
-              placeholder={vpnInfo?.hasCredentials ? '(leave blank to keep current)' : 'PIA username'}
+              placeholder={vpnInfo?.hasCredentials ? '(leave blank to keep current)' : 'PIA username (e.g. p1234567)'}
             />
           </Field>
 
@@ -988,10 +1198,11 @@ export default function AdminAutoDownloadDownloadSettingsPanel() {
         </div>
 
         <div className="mt-4 rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4 text-xs text-[var(--admin-muted)]">
-          Save VPN settings first, then use <span className="font-semibold text-[var(--admin-text)]">Apply VPN</span> and{' '}
-          <span className="font-semibold text-[var(--admin-text)]">Test VPN</span> on the main card.
+          Saving this modal only stores settings. Use <span className="font-semibold text-[var(--admin-text)]">Test VPN</span> on the main card
+          to validate credentials and run/apply runtime checks.
         </div>
-      </EditModal>
+        </EditModal>
+      ) : null}
     </div>
   );
 }

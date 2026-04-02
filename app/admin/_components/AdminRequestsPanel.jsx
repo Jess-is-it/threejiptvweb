@@ -92,6 +92,7 @@ export default function AdminRequestsPanel() {
   const [tab, setTab] = useState('active');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [err, setErr] = useState('');
   const [okMsg, setOkMsg] = useState('');
   const [items, setItems] = useState([]);
@@ -104,6 +105,7 @@ export default function AdminRequestsPanel() {
     total: 0,
   });
   const [statusTags, setStatusTags] = useState({});
+  const [requestEnabled, setRequestEnabled] = useState(true);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkStatus, setBulkStatus] = useState('approved');
 
@@ -120,6 +122,7 @@ export default function AdminRequestsPanel() {
       setItems(Array.isArray(j?.items) ? j.items : []);
       setCounts(j?.counts || {});
       setStatusTags(j?.settings?.statusTags || {});
+      setRequestEnabled(j?.settings?.enabled !== false);
       setSelectedIds([]);
     } catch (e) {
       setErr(e?.message || 'Failed to load requests.');
@@ -129,6 +132,31 @@ export default function AdminRequestsPanel() {
       setLoading(false);
     }
   }, [tab]);
+
+  const saveRequestEnabled = async (nextEnabled) => {
+    setSettingsBusy(true);
+    setErr('');
+    setOkMsg('');
+    try {
+      const r = await fetch('/api/admin/request-settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            enabled: nextEnabled,
+          },
+        }),
+      });
+      const j = await readJsonSafe(r);
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to save request setting.');
+      setRequestEnabled(j?.settings?.enabled !== false);
+      setOkMsg(`Public request feature ${j?.settings?.enabled === false ? 'disabled' : 'enabled'}.`);
+    } catch (e) {
+      setErr(e?.message || 'Failed to save request setting.');
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
 
   useEffect(() => {
     load();
@@ -306,6 +334,35 @@ export default function AdminRequestsPanel() {
             <div className="text-lg font-semibold">{stat.value}</div>
           </button>
         ))}
+      </div>
+
+      <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Public Request Access</div>
+            <div className="mt-1 text-sm text-[var(--admin-muted)]">
+              Show or hide request actions on the public site. When disabled, the public request page is also blocked.
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={settingsBusy}
+            onClick={() => saveRequestEnabled(!requestEnabled)}
+            className={
+              'inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition disabled:opacity-60 ' +
+              (requestEnabled
+                ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100'
+                : 'border-neutral-700 bg-neutral-800/50 text-neutral-200')
+            }
+          >
+            <span
+              className={
+                'h-2.5 w-2.5 rounded-full ' + (requestEnabled ? 'bg-emerald-300' : 'bg-neutral-500')
+              }
+            />
+            {settingsBusy ? 'Saving…' : requestEnabled ? 'Enabled' : 'Disabled'}
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">

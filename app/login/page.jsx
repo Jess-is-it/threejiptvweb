@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useSession } from '../../components/SessionProvider';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
+import { prefetchMovieCatalog } from '../../lib/publicCatalogCache';
 
 export default function LoginPage() {
   const { session, ready, login } = useSession();
@@ -13,7 +14,11 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!ready) return;
-    if (session?.user) router.replace('/');
+    if (!session?.user) return;
+    if (session?.streamBase) {
+      void prefetchMovieCatalog(session.streamBase).catch(() => {});
+    }
+    router.replace('/movies');
   }, [ready, session, router]);
 
   const [username, setUsername] = useState('');
@@ -35,9 +40,12 @@ export default function LoginPage() {
     setErr('');
     setLoading(true);
     try {
-      const { ok, error } = await login({ username, password, remember });
+      const { ok, error, streamBase } = await login({ username, password, remember });
       if (!ok) throw new Error(error || 'Login failed.');
-      router.replace('/');
+      if (streamBase) {
+        void prefetchMovieCatalog(streamBase).catch(() => {});
+      }
+      router.replace('/movies');
     } catch (e) {
       setErr(e.message || 'Login failed.');
     } finally {
