@@ -11,6 +11,7 @@
 # next.js
 /.next/
 /out/
+/.next-runtime/
 
 # production
 /build
@@ -41,3 +42,6 @@ yarn-error.log*
 
 # Admin portal local data (dev only)
 /data/.admin/
+
+# Local artwork cache (runtime)
+/data/.image-cache/

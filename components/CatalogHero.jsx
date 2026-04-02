@@ -12,6 +12,28 @@ const SECTION_TOP_GAP = 24;
 const HERO_METADATA_MIN_CANDIDATES = 12;
 const HERO_METADATA_MAX_CANDIDATES = 30;
 const HERO_METADATA_MULTIPLIER = 4;
+const HERO_STORAGE_KEY_PREFIX = '3jtv.heroSlides.v1.';
+
+function readStoredHeroSlides(pageKey) {
+  try {
+    if (typeof window === 'undefined') return [];
+    const raw = window.localStorage.getItem(`${HERO_STORAGE_KEY_PREFIX}${pageKey}`);
+    if (!raw) return [];
+    const json = JSON.parse(raw);
+    return Array.isArray(json) ? json.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredHeroSlides(pageKey, slides) {
+  try {
+    if (typeof window === 'undefined') return;
+    const key = `${HERO_STORAGE_KEY_PREFIX}${pageKey}`;
+    const payload = Array.isArray(slides) ? slides.slice(0, 36) : [];
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {}
+}
 
 function normalizeHeroKind(value, pageKey) {
   const raw = String(value || '').trim().toLowerCase();
@@ -234,6 +256,11 @@ export default function CatalogHero({
   }, [rules, normalizedSources]);
 
   const [detailsMap, setDetailsMap] = useState({});
+  const [storedSlides, setStoredSlides] = useState(() => readStoredHeroSlides(pageKey));
+
+  useEffect(() => {
+    setStoredSlides(readStoredHeroSlides(pageKey));
+  }, [pageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -253,7 +280,7 @@ export default function CatalogHero({
             if (value) search.set(key, value);
           });
 
-          const response = await fetch(`/api/tmdb/details?${search.toString()}`, { cache: 'no-store' });
+          const response = await fetch(`/api/tmdb/details?${search.toString()}`);
           if (!response.ok) {
             return { key: item.heroKey, data: null };
           }
@@ -321,6 +348,20 @@ export default function CatalogHero({
     return out;
   }, [rules, normalizedSources, detailsMap]);
 
+  const desiredHeroCount = useMemo(() => {
+    return rules.reduce((sum, rule) => sum + Math.max(0, Number(rule?.count || 0) || 0), 0);
+  }, [rules]);
+
+  useEffect(() => {
+    if (!heroSlides.length) return;
+    // Only persist once the hero has reached its expected size, so we don't overwrite a
+    // previously complete list with a partial "worthToWait-only" list during refresh.
+    if (desiredHeroCount > 0 && heroSlides.length < desiredHeroCount) return;
+    writeStoredHeroSlides(pageKey, heroSlides);
+  }, [heroSlides, pageKey, desiredHeroCount]);
+
+  const slidesToRender = heroSlides.length ? heroSlides : storedSlides;
+
   const handlePrimaryAction = (item) => {
     if (!item) return;
 
@@ -364,13 +405,13 @@ export default function CatalogHero({
     if (href) window.location.href = href;
   };
 
-  if (!heroSlides.length) {
+  if (!slidesToRender.length) {
     return loading ? <HeroSkeleton headerH={headerH} /> : null;
   }
 
   return (
     <HeroCarousel
-      items={heroSlides}
+      items={slidesToRender}
       initialDetailsMap={detailsMap}
       onPlay={handlePrimaryAction}
       onDetails={handleDetails}

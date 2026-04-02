@@ -32,13 +32,19 @@ function tmdbFull(path) {
   return `https://image.tmdb.org/t/p/w1280${raw.startsWith('/') ? raw : `/${raw}`}`;
 }
 
-// prefer a backdrop-looking source; never posters
-function immediateSrc(item) {
-  const p =
-    item?.backdrop_path ||
-    item?.backdrop ||
-    ((typeof item?.image === 'string' && item.image.startsWith('/')) ? item.image : '');
-  return tmdbFull(p);
+function immediateBackdropSrc(item) {
+  const candidate = tmdbFull(item?.backdropImage || item?.backdrop_path || item?.backdrop || '');
+  if (!candidate) return '';
+
+  // Some sources accidentally store poster artwork in "backdrop" fields.
+  // If it matches the known poster field, treat it as unusable and wait for TMDB backdrop.
+  const poster = tmdbFull(item?.image || item?.poster || item?.poster_path || '');
+  if (poster && candidate === poster) return '';
+  return candidate;
+}
+
+function immediatePosterSrc(item) {
+  return tmdbFull(item?.image || item?.poster || item?.poster_path || '');
 }
 
 // remove "(YYYY)" or "[...]" suffixes in titles
@@ -137,7 +143,7 @@ export default function HeroCarousel({
   // Map of item.id -> image url (starts with any immediate src, then upgrades via TMDB)
   const [resolvedSrc, setResolvedSrc] = useState(() => {
     const init = {};
-    for (const it of slides) init[slideKey(it)] = immediateSrc(it) || null;
+    for (const it of slides) init[slideKey(it)] = immediateBackdropSrc(it) || null;
     return init;
   });
 
@@ -199,7 +205,7 @@ export default function HeroCarousel({
       const next = { ...prev };
       for (const it of slides) {
         const key = slideKey(it);
-        if (!next[key]) next[key] = immediateSrc(it) || null;
+        if (!next[key]) next[key] = immediateBackdropSrc(it) || null;
       }
       return next;
     });
@@ -216,12 +222,20 @@ export default function HeroCarousel({
       const next = { ...prev };
       for (const slide of slides) {
         const key = slideKey(slide);
-        if (next[key]) continue;
         const details = detailsMap[key] || {};
-        const fallbackSrc = tmdbFull(details?.backdropPath || details?.posterPath || '') || immediateSrc(slide);
-        if (!fallbackSrc) continue;
-        next[key] = fallbackSrc;
-        changed = true;
+        const bestBackdrop = tmdbFull(details?.backdropPath || '');
+        if (bestBackdrop && next[key] !== bestBackdrop) {
+          next[key] = bestBackdrop;
+          changed = true;
+          continue;
+        }
+
+        if (next[key]) continue;
+        const fallbackSrc = immediateBackdropSrc(slide) || bestBackdrop;
+        if (fallbackSrc) {
+          next[key] = fallbackSrc;
+          changed = true;
+        }
       }
       return changed ? next : prev;
     });
@@ -234,11 +248,18 @@ export default function HeroCarousel({
       const jobs = slides.map(async (it) => {
         const key = slideKey(it);
         if (Object.prototype.hasOwnProperty.call(detailsMap, key)) return;
-        const title = encodeURIComponent(stripYear(it.title || ''));
-        const year = encodeURIComponent(it.year || '');
-        const kind = encodeURIComponent(it.kind || '');
         try {
-          const r = await fetch(`/api/tmdb/details?title=${title}&year=${year}&kind=${kind}`, { cache: 'no-store' });
+          const tmdbId = Number(it?.tmdbId || 0);
+          const kind = String(it?.kind || '').trim().toLowerCase();
+          const mediaType = kind === 'series' || kind === 'tv' ? 'tv' : 'movie';
+          const url =
+            Number.isFinite(tmdbId) && tmdbId > 0
+              ? `/api/tmdb/details?id=${encodeURIComponent(String(tmdbId))}&mediaType=${encodeURIComponent(mediaType)}`
+              : `/api/tmdb/details?title=${encodeURIComponent(stripYear(it.title || ''))}&year=${encodeURIComponent(
+                  it.year || ''
+                )}&kind=${encodeURIComponent(kind || '')}`;
+
+          const r = await fetch(url);
           if (!r.ok) {
             if (!cancelled) setDetailsMap((m) => ({ ...m, [key]: null }));
             return;
@@ -259,6 +280,8 @@ export default function HeroCarousel({
                 popularity: data.popularity ?? null,
                 voteCount: data.voteCount ?? null,
                 releaseDate: data.releaseDate || '',
+                posterPath: data.posterPath || '',
+                backdropPath: data.backdropPath || '',
               },
             }));
           }
@@ -365,9 +388,11 @@ export default function HeroCarousel({
   const activeKey = slideKey(active);
   const d = detailsMap[activeKey] || {};
   const src =
+    tmdbFull(d?.backdropPath || '') ||
     resolvedSrc[activeKey] ||
-    tmdbFull(d?.backdropPath || d?.posterPath || '') ||
-    immediateSrc(active) ||
+    immediateBackdropSrc(active) ||
+    tmdbFull(d?.posterPath || '') ||
+    immediatePosterSrc(active) ||
     '/placeholders/poster-fallback.jpg';
   const title = stripYear(active.title || '');
   const rating = (d.rating ?? active.rating) || null;
