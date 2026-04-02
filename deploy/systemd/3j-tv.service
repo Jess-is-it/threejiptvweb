@@ -10,6 +10,7 @@ Group=threejiptvweb
 WorkingDirectory=/home/threejiptvweb/3j-tv
 
 Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=4096
 Environment=NEXT_DIST_DIR=.next-runtime
 Environment=PORT=3000
 Environment=HOME=/home/threejiptvweb
