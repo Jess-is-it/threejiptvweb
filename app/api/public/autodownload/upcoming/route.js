@@ -6,22 +6,35 @@ import {
   subscribeUpcomingReminder,
 } from '../../../../../lib/server/autodownload/releaseService';
 import { warmCatalogImageCache } from '../../../../../lib/server/publicCatalogArtwork';
+import { loadPublicCatalogData } from '../../../../../lib/server/publicCatalogDataCache';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+const UPCOMING_TTL_MS = 60 * 1000;
 
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
     const username = String(searchParams.get('username') || '').trim();
     const state = String(searchParams.get('state') || 'upcoming').trim().toLowerCase();
+    const mediaType = String(searchParams.get('mediaType') || searchParams.get('type') || 'all').trim().toLowerCase();
     const limit = Math.max(1, Math.min(200, Number(searchParams.get('limit') || 40) || 40));
-    const items =
-      state === 'released'
-        ? await listReleasedItems({ limit })
-        : await listUpcomingItems({ username, limit });
-    void warmCatalogImageCache(items, { posterCount: 6, backdropCount: 2, concurrency: 2 }).catch(() => {});
-    return NextResponse.json({ ok: true, items }, { status: 200 });
+    const payload = await loadPublicCatalogData(
+      `public-upcoming:${state}:${mediaType}:${limit}:${username}`,
+      async () => {
+        const items =
+          state === 'released'
+            ? await listReleasedItems({ limit, mediaType })
+            : await listUpcomingItems({ username, limit, mediaType });
+        void warmCatalogImageCache(items, { posterCount: 12, backdropCount: 3, concurrency: 2 }).catch(() => {});
+        return { ok: true, items };
+      },
+      { ttlMs: UPCOMING_TTL_MS }
+    );
+    return NextResponse.json(payload, {
+      status: 200,
+      headers: { 'Cache-Control': 'no-store, max-age=0, must-revalidate' },
+    });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e?.message || 'Failed to load upcoming titles' }, { status: 500 });
   }

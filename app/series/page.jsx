@@ -5,8 +5,14 @@ import { useSession } from '../../components/SessionProvider';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
 import Row from '../../components/Row';
 import CatalogHero from '../../components/CatalogHero';
-import { readJsonSafe } from '../../lib/readJsonSafe';
-import { prefetchSeriesCatalog, readSeriesCatalog } from '../../lib/publicCatalogCache';
+import {
+  prefetchLeavingSoonCatalog,
+  prefetchSeriesCatalog,
+  prefetchUpcomingCatalog,
+  readLeavingSoonCatalog,
+  readSeriesCatalog,
+  readUpcomingCatalog,
+} from '../../lib/publicCatalogCache';
 import {
   catalogItemMatchesGenre,
   getCatalogSettings,
@@ -21,6 +27,8 @@ export default function SeriesPage() {
   const [all, setAll] = useState([]);
   const [worthToWait, setWorthToWait] = useState([]);
   const [leavingSoon, setLeavingSoon] = useState([]);
+  const [worthToWaitLoading, setWorthToWaitLoading] = useState(true);
+  const [leavingSoonLoading, setLeavingSoonLoading] = useState(true);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -54,28 +62,40 @@ export default function SeriesPage() {
 
   useEffect(() => {
     let alive = true;
+    const upcomingCached = readUpcomingCatalog({ username, mediaType: 'series', limit: 120 });
+    const leavingCached = readLeavingSoonCatalog({ mediaType: 'series', limit: 120 });
+
+    if (upcomingCached?.ok && Array.isArray(upcomingCached.items)) {
+      setWorthToWait(upcomingCached.items);
+      setWorthToWaitLoading(false);
+    } else {
+      setWorthToWaitLoading(true);
+    }
+
+    if (leavingCached?.ok && Array.isArray(leavingCached.items)) {
+      setLeavingSoon(leavingCached.items);
+      setLeavingSoonLoading(false);
+    } else {
+      setLeavingSoonLoading(true);
+    }
+
     (async () => {
       try {
-        const sp = new URLSearchParams();
-        if (username) sp.set('username', username);
-        sp.set('limit', '120');
-        const leavingSp = new URLSearchParams();
-        leavingSp.set('mediaType', 'series');
-        leavingSp.set('limit', '120');
-        const [r, leavingResp] = await Promise.all([
-          fetch(`/api/public/autodownload/upcoming?${sp.toString()}`, { cache: 'no-store' }),
-          fetch(`/api/public/autodownload/leaving-soon?${leavingSp.toString()}`, { cache: 'no-store' }),
+        const [upcomingRes, leavingRes] = await Promise.all([
+          prefetchUpcomingCatalog({ username, mediaType: 'series', limit: 120 }),
+          prefetchLeavingSoonCatalog({ mediaType: 'series', limit: 120 }),
         ]);
-        const d = await readJsonSafe(r);
-        const leavingJson = await readJsonSafe(leavingResp);
         if (!alive) return;
-        if (!r.ok || !d?.ok) throw new Error(d?.error || 'Failed to load upcoming queue');
-        const items = (Array.isArray(d?.items) ? d.items : []).filter((x) => String(x?.mediaType || '').toLowerCase() === 'tv');
-        setWorthToWait(items);
-        setLeavingSoon(leavingResp.ok && leavingJson?.ok && Array.isArray(leavingJson.items) ? leavingJson.items : []);
+        setWorthToWait(Array.isArray(upcomingRes?.items) ? upcomingRes.items : []);
+        setLeavingSoon(Array.isArray(leavingRes?.items) ? leavingRes.items : []);
       } catch {
         if (alive) setWorthToWait([]);
         if (alive) setLeavingSoon([]);
+      } finally {
+        if (alive) {
+          setWorthToWaitLoading(false);
+          setLeavingSoonLoading(false);
+        }
       }
     })();
     return () => {
@@ -150,10 +170,10 @@ export default function SeriesPage() {
             return <Row key={token} title={catalog.labels.seriesPage.recentlyAdded} items={recent} loading={loading} kind="series" />;
           }
           if (row.key === 'leavingSoon') {
-            return <Row key={token} title={catalog.labels.seriesPage.leavingSoon} items={leavingSoon} loading={loading} kind="series" />;
+            return <Row key={token} title={catalog.labels.seriesPage.leavingSoon} items={leavingSoon} loading={loading || leavingSoonLoading} kind="series" priority={true} />;
           }
           if (row.key === 'worthToWait') {
-            return <Row key={token} title={catalog.labels.seriesPage.worthToWait} items={worthToWait} loading={loading} kind="series" />;
+            return <Row key={token} title={catalog.labels.seriesPage.worthToWait} items={worthToWait} loading={loading || worthToWaitLoading} kind="series" priority={true} />;
           }
 
           return null;

@@ -6,7 +6,6 @@ import Row from '../../components/Row';
 import { useSession } from '../../components/SessionProvider';
 import CatalogHero from '../../components/CatalogHero';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
-import { readJsonSafe } from '../../lib/readJsonSafe';
 import {
   catalogItemMatchesGenre,
   getCatalogSettings,
@@ -15,7 +14,15 @@ import {
 } from '../../lib/catalogSettings';
 import HoverMovieCard from '../../components/HoverMovieCard';
 import { clearMovieReturnState, readMovieReturnState } from '../../lib/moviePlaySeed';
-import { prefetchMovieCatalog, readMovieCatalog } from '../../lib/publicCatalogCache';
+import {
+  prefetchLeavingSoonCatalog,
+  prefetchMovieCatalog,
+  prefetchUpcomingCatalog,
+  readLeavingSoonCatalog,
+  readMovieCatalog,
+  readUpcomingCatalog,
+} from '../../lib/publicCatalogCache';
+import { getCardPosterFallbackSrc, getCardPosterSrc } from '../../lib/catalogPoster';
 
 const ALL_MOVIES_VISIBILITY_TOP_OFFSET = 120;
 const ALL_MOVIES_VISIBILITY_BOTTOM_OFFSET = 120;
@@ -54,6 +61,8 @@ export default function MoviesPage() {
   const [all, setAll] = useState([]);
   const [worthToWait, setWorthToWait] = useState([]);
   const [leavingSoon, setLeavingSoon] = useState([]);
+  const [worthToWaitLoading, setWorthToWaitLoading] = useState(true);
+  const [leavingSoonLoading, setLeavingSoonLoading] = useState(true);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [showHeroJump, setShowHeroJump] = useState(false);
@@ -62,6 +71,7 @@ export default function MoviesPage() {
   const [allMoviesRenderedCount, setAllMoviesRenderedCount] = useState(0);
   const allMoviesSectionRef = useRef(null);
   const allMoviesLoadMoreRef = useRef(null);
+  const prefetchedAllMoviePosterSrcsRef = useRef(new Set());
   const restoreAppliedRef = useRef(false);
 
   useEffect(() => {
@@ -125,28 +135,40 @@ export default function MoviesPage() {
 
   useEffect(() => {
     let alive = true;
+    const upcomingCached = readUpcomingCatalog({ username, mediaType: 'movie', limit: 120 });
+    const leavingCached = readLeavingSoonCatalog({ mediaType: 'movie', limit: 120 });
+
+    if (upcomingCached?.ok && Array.isArray(upcomingCached.items)) {
+      setWorthToWait(upcomingCached.items);
+      setWorthToWaitLoading(false);
+    } else {
+      setWorthToWaitLoading(true);
+    }
+
+    if (leavingCached?.ok && Array.isArray(leavingCached.items)) {
+      setLeavingSoon(leavingCached.items);
+      setLeavingSoonLoading(false);
+    } else {
+      setLeavingSoonLoading(true);
+    }
+
     (async () => {
       try {
-        const sp = new URLSearchParams();
-        if (username) sp.set('username', username);
-        sp.set('limit', '120');
-        const leavingSp = new URLSearchParams();
-        leavingSp.set('mediaType', 'movie');
-        leavingSp.set('limit', '120');
-        const [r, leavingResp] = await Promise.all([
-          fetch(`/api/public/autodownload/upcoming?${sp.toString()}`, { cache: 'no-store' }),
-          fetch(`/api/public/autodownload/leaving-soon?${leavingSp.toString()}`, { cache: 'no-store' }),
+        const [upcomingRes, leavingRes] = await Promise.all([
+          prefetchUpcomingCatalog({ username, mediaType: 'movie', limit: 120 }),
+          prefetchLeavingSoonCatalog({ mediaType: 'movie', limit: 120 }),
         ]);
-        const d = await readJsonSafe(r);
-        const leavingJson = await readJsonSafe(leavingResp);
         if (!alive) return;
-        if (!r.ok || !d?.ok) throw new Error(d?.error || 'Failed to load upcoming queue');
-        const items = (Array.isArray(d?.items) ? d.items : []).filter((x) => String(x?.mediaType || '').toLowerCase() === 'movie');
-        setWorthToWait(items);
-        setLeavingSoon(leavingResp.ok && leavingJson?.ok && Array.isArray(leavingJson.items) ? leavingJson.items : []);
+        setWorthToWait(Array.isArray(upcomingRes?.items) ? upcomingRes.items : []);
+        setLeavingSoon(Array.isArray(leavingRes?.items) ? leavingRes.items : []);
       } catch {
         if (alive) setWorthToWait([]);
         if (alive) setLeavingSoon([]);
+      } finally {
+        if (alive) {
+          setWorthToWaitLoading(false);
+          setLeavingSoonLoading(false);
+        }
       }
     })();
     return () => {
@@ -260,6 +282,36 @@ export default function MoviesPage() {
   );
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!all.length || !allMoviesColumns) return;
+
+    const nextItems = all.slice(
+      allMoviesRenderedCount,
+      Math.min(all.length, allMoviesRenderedCount + allMoviesColumns * 2)
+    );
+    const prefetched = prefetchedAllMoviePosterSrcsRef.current;
+    const preloadedImages = [];
+
+    for (const item of nextItems) {
+      const source = getCardPosterSrc(item) || getCardPosterFallbackSrc(item);
+      const src = String(source || '').trim();
+      if (!src || prefetched.has(src)) continue;
+      prefetched.add(src);
+      const img = new window.Image();
+      img.decoding = 'async';
+      img.src = src;
+      preloadedImages.push(img);
+    }
+
+    return () => {
+      for (const img of preloadedImages) {
+        img.onload = null;
+        img.onerror = null;
+      }
+    };
+  }, [all, allMoviesColumns, allMoviesRenderedCount]);
+
+  useEffect(() => {
     if (!restoreState || restoreAppliedRef.current || loading) return;
     if (!all.length) return;
 
@@ -367,13 +419,13 @@ export default function MoviesPage() {
             return <Row key={token} title={catalog.labels.moviesPage.recentlyAdded} items={byAdded} loading={loading} kind="movie" />;
           }
           if (row.key === 'leavingSoon') {
-            return <Row key={token} title={catalog.labels.moviesPage.leavingSoon} items={leavingSoon} loading={loading} kind="movie" />;
+            return <Row key={token} title={catalog.labels.moviesPage.leavingSoon} items={leavingSoon} loading={loading || leavingSoonLoading} kind="movie" priority={true} />;
           }
           if (row.key === 'recommended') {
             return <Row key={token} title={catalog.labels.moviesPage.recommended} items={recommended} loading={loading} kind="movie" />;
           }
           if (row.key === 'worthToWait') {
-            return <Row key={token} title={catalog.labels.moviesPage.worthToWait} items={worthToWait} loading={loading} kind="movie" />;
+            return <Row key={token} title={catalog.labels.moviesPage.worthToWait} items={worthToWait} loading={loading || worthToWaitLoading} kind="movie" priority={true} />;
           }
           if (row.key === 'allMovies') {
             return (
@@ -399,7 +451,7 @@ export default function MoviesPage() {
                         <HoverMovieCard
                           key={m.id}
                           item={m}
-                          eagerImage={index < allMoviesColumns * 2}
+                          eagerImage={index < allMoviesColumns * 4}
                           playContext={{
                             source: 'moviesAll',
                             visibleCount: allMoviesRenderedCount,

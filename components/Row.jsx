@@ -10,7 +10,14 @@ const INITIAL_RENDER_COUNT = 12;
 const RENDER_CHUNK_SIZE = 12;
 const RENDER_AHEAD_MULTIPLIER = 1.25;
 
-export default function Row({ title, items = [], loading = false, skeletonCount = 12, kind = 'movie' }) {
+export default function Row({
+  title,
+  items = [],
+  loading = false,
+  skeletonCount = 12,
+  kind = 'movie',
+  priority = false,
+}) {
   const scroller = useRef(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -94,7 +101,7 @@ export default function Row({ title, items = [], loading = false, skeletonCount 
   return (
     <section
       className="group relative my-6"
-      style={{ contentVisibility: 'auto', containIntrinsicSize: '340px' }}
+      style={priority ? undefined : { contentVisibility: 'auto', containIntrinsicSize: '340px' }}
     >
       {title && <h3 className="mb-3 text-lg font-semibold">{title}</h3>}
 
@@ -120,7 +127,7 @@ export default function Row({ title, items = [], loading = false, skeletonCount 
                 const rowKind = String(kind || '').toLowerCase();
                 const itemKind = String(x?.kind || '').toLowerCase();
                 const treatAsMovie = rowKind === 'movie' || (rowKind === 'mixed' && itemKind === 'movie');
-                const eagerPoster = index < 8;
+                const eagerPoster = priority ? index < 12 : index < 8;
 
                 return treatAsMovie ? (
                   <HoverMovieCard
