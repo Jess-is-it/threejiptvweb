@@ -19,8 +19,10 @@ export async function POST(req, ctx) {
   } catch {}
 
   try {
+    const type = String(body?.type || 'movie').toLowerCase() === 'series' ? 'series' : 'movie';
     const result = await validateDownloadSourceProviderDomains({
       providerId,
+      type,
       domain: body?.domain || '',
       query: body?.query || '',
       correlationId: body?.correlationId || '',

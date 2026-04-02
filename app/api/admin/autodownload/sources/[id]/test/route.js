@@ -19,8 +19,10 @@ export async function POST(req, ctx) {
   } catch {}
 
   try {
+    const type = String(body?.type || 'movie').toLowerCase() === 'series' ? 'series' : 'movie';
     const result = await testDownloadSourceProvider({
       providerId,
+      type,
       query: body?.query || '',
       force: Boolean(body?.force),
       onlyDomain: body?.onlyDomain || '',

@@ -185,6 +185,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
     setLoadingLogs(true);
     try {
       const q = new URLSearchParams({
+        type: mediaType,
         provider: providerFilter,
         domain: domainFilter,
         range,
@@ -202,7 +203,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
     } finally {
       setLoadingLogs(false);
     }
-  }, [providerFilter, domainFilter, range, statusFilter, errorFilter, tab]);
+  }, [mediaType, providerFilter, domainFilter, range, statusFilter, errorFilter, tab]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -286,7 +287,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
       const r = await fetch(`/api/admin/autodownload/sources/${encodeURIComponent(providerId)}/test`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ force, onlyDomain }),
+        body: JSON.stringify({ force, onlyDomain, type: mediaType }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Provider test failed.');
@@ -329,7 +330,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
       const r = await fetch(`/api/admin/autodownload/sources/${encodeURIComponent(providerId)}/validate`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ domain }),
+        body: JSON.stringify({ domain, type: mediaType }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Validation failed.');
@@ -355,7 +356,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
     setErr('');
     setOk('');
     try {
-      const q = new URLSearchParams({ provider: providerFilter || 'all' });
+      const q = new URLSearchParams({ provider: providerFilter || 'all', type: mediaType });
       const r = await fetch(`/api/admin/autodownload/sources/logs?${q.toString()}`, { method: 'DELETE' });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to clear logs.');
