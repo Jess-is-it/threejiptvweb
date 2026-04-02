@@ -35,29 +35,10 @@ function tmdbFull(path) {
 // prefer a backdrop-looking source; never posters
 function immediateSrc(item) {
   const p =
-    item?.backdropImage ||
     item?.backdrop_path ||
-    item?.backdrop;
+    item?.backdrop ||
+    ((typeof item?.image === 'string' && item.image.startsWith('/')) ? item.image : '');
   return tmdbFull(p);
-}
-
-function detailsQuery(item, kind) {
-  const params = new URLSearchParams();
-  const tmdbId = Number(item?.tmdbId || 0);
-  const mediaType = String(item?.mediaType || (kind === 'series' || kind === 'tv' ? 'tv' : 'movie')).trim().toLowerCase();
-
-  if (Number.isFinite(tmdbId) && tmdbId > 0) {
-    params.set('id', String(tmdbId));
-    params.set('mediaType', mediaType === 'tv' ? 'tv' : 'movie');
-    return params.toString();
-  }
-
-  const title = String(stripYear(item?.title || '')).trim();
-  if (!title) return '';
-  params.set('title', title);
-  if (item?.year) params.set('year', String(item.year));
-  params.set('kind', String(kind || '').trim() || 'movie');
-  return params.toString();
 }
 
 // remove "(YYYY)" or "[...]" suffixes in titles
@@ -226,16 +207,7 @@ export default function HeroCarousel({
 
   useEffect(() => {
     if (!initialDetailsMap || typeof initialDetailsMap !== 'object') return;
-    setDetailsMap((prev) => {
-      const next = { ...prev };
-      for (const [key, value] of Object.entries(initialDetailsMap)) {
-        next[key] = {
-          ...(prev?.[key] && typeof prev[key] === 'object' ? prev[key] : {}),
-          ...(value && typeof value === 'object' ? value : {}),
-        };
-      }
-      return next;
-    });
+    setDetailsMap((prev) => ({ ...initialDetailsMap, ...prev }));
   }, [initialDetailsMap]);
 
   useEffect(() => {
@@ -246,7 +218,7 @@ export default function HeroCarousel({
         const key = slideKey(slide);
         if (next[key]) continue;
         const details = detailsMap[key] || {};
-        const fallbackSrc = tmdbFull(details?.backdropPath || '') || immediateSrc(slide);
+        const fallbackSrc = tmdbFull(details?.backdropPath || details?.posterPath || '') || immediateSrc(slide);
         if (!fallbackSrc) continue;
         next[key] = fallbackSrc;
         changed = true;
@@ -262,10 +234,11 @@ export default function HeroCarousel({
       const jobs = slides.map(async (it) => {
         const key = slideKey(it);
         if (Object.prototype.hasOwnProperty.call(detailsMap, key)) return;
-        const query = detailsQuery(it, it?.kind || '');
-        if (!query) return;
+        const title = encodeURIComponent(stripYear(it.title || ''));
+        const year = encodeURIComponent(it.year || '');
+        const kind = encodeURIComponent(it.kind || '');
         try {
-          const r = await fetch(`/api/tmdb/details?${query}`, { cache: 'no-store' });
+          const r = await fetch(`/api/tmdb/details?title=${title}&year=${year}&kind=${kind}`, { cache: 'no-store' });
           if (!r.ok) {
             if (!cancelled) setDetailsMap((m) => ({ ...m, [key]: null }));
             return;
@@ -279,7 +252,6 @@ export default function HeroCarousel({
             setDetailsMap((m) => ({
               ...m,
               [key]: {
-                ...(m?.[key] && typeof m[key] === 'object' ? m[key] : {}),
                 overview: data.overview || '',
                 rating: data.rating ?? null,
                 genres: Array.isArray(data.genres) ? data.genres : [],
@@ -287,8 +259,6 @@ export default function HeroCarousel({
                 popularity: data.popularity ?? null,
                 voteCount: data.voteCount ?? null,
                 releaseDate: data.releaseDate || '',
-                posterPath: data.posterPath || '',
-                backdropPath: data.backdropPath || '',
               },
             }));
           }
@@ -396,11 +366,8 @@ export default function HeroCarousel({
   const d = detailsMap[activeKey] || {};
   const src =
     resolvedSrc[activeKey] ||
-    tmdbFull(d?.backdropPath || '') ||
-    immediateSrc(active);
-  const placeholderSrc =
-    tmdbFull(d?.posterPath || active?.posterPath || '') ||
-    String(active?.image || '').trim() ||
+    tmdbFull(d?.backdropPath || d?.posterPath || '') ||
+    immediateSrc(active) ||
     '/placeholders/poster-fallback.jpg';
   const title = stripYear(active.title || '');
   const rating = (d.rating ?? active.rating) || null;
@@ -445,9 +412,9 @@ export default function HeroCarousel({
       {/* background */}
       <div className="absolute inset-0">
         {src ? (
-          <TmdbBackdrop path={src} placeholderPath={placeholderSrc} alt={active.title} />
+          <TmdbBackdrop path={src} alt={active.title} />
         ) : (
-          <TmdbBackdrop path={placeholderSrc} placeholderPath={placeholderSrc} alt={active.title} />
+          <div className="absolute inset-0 bg-neutral-900" />
         )}
 
         {/* TOP gradient under the header so nav stays readable */}
