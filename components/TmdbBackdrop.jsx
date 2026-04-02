@@ -1,7 +1,8 @@
 // components/TmdbBackdrop.jsx
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { getOptimizedArtworkSrc, isKnownLocalAssetPath, normalizeTmdbImage } from '../lib/catalogImage';
 
 /**
  * Lightweight backdrop renderer.
@@ -10,19 +11,16 @@ import { useState } from 'react';
  */
 export default function TmdbBackdrop({ path, alt = '' }) {
   const [loaded, setLoaded] = useState(false);
-
-  const raw = String(path || '').trim();
-  const src =
-    raw.startsWith('http')
-      ? raw
-      : raw.startsWith('/api/') ||
-        raw.startsWith('/placeholders/') ||
-        raw.startsWith('/images/') ||
-        raw.startsWith('/brand/')
-      ? raw
-      : raw
-      ? `https://image.tmdb.org/t/p/original${raw.startsWith('/') ? raw : `/${raw}`}`
-      : '';
+  const src = useMemo(() => {
+    const raw = String(path || '').trim();
+    if (!raw) return '';
+    if (isKnownLocalAssetPath(raw)) return raw;
+    if (raw.startsWith('http')) {
+      return getOptimizedArtworkSrc(normalizeTmdbImage(raw, 'w1280'), { kind: 'backdrop' }) || raw;
+    }
+    const tmdbSrc = normalizeTmdbImage(raw, 'w1280');
+    return getOptimizedArtworkSrc(tmdbSrc, { kind: 'backdrop' }) || tmdbSrc;
+  }, [path]);
 
   return (
     <div className="absolute inset-0">

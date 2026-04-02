@@ -11,6 +11,12 @@ const nextConfig = {
         // reduces flaky "build worker exited" failures during static generation.
         cpus: 1
     },
+    images: {
+        formats: ['image/avif', 'image/webp'],
+        minimumCacheTTL: 60 * 60 * 24 * 30,
+        deviceSizes: [640, 768, 828, 1024, 1280, 1536, 1920],
+        imageSizes: [160, 210, 342, 500]
+    },
     async headers() {
         // Prevent browsers/proxies from caching HTML for admin pages.
         // Cached HTML can reference old hashed chunk filenames after redeploy/restart,

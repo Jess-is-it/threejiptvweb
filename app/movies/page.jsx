@@ -19,10 +19,9 @@ import { prefetchMovieCatalog, readMovieCatalog } from '../../lib/publicCatalogC
 
 const ALL_MOVIES_VISIBILITY_TOP_OFFSET = 120;
 const ALL_MOVIES_VISIBILITY_BOTTOM_OFFSET = 120;
-const ALL_MOVIES_DEFER_ROOT_MARGIN = '1200px 0px';
-const ALL_MOVIES_GRID_GAP_PX = 12;
-const ALL_MOVIES_OVERSCAN_ROWS = 3;
-const DEFAULT_ALL_MOVIES_ROW_HEIGHT = 320;
+const ALL_MOVIES_LOAD_MORE_ROOT_MARGIN = '1600px 0px';
+const ALL_MOVIES_INITIAL_ROWS = 4;
+const ALL_MOVIES_BATCH_ROWS = 4;
 
 function getAllMoviesGridColumns(viewportWidth = 0) {
   const width = Number(viewportWidth || 0);
@@ -32,10 +31,12 @@ function getAllMoviesGridColumns(viewportWidth = 0) {
   return 2;
 }
 
-function defaultAllMoviesWindow(itemCount = 0, columns = 6) {
-  const initialColumns = Math.max(1, Number(columns || 0) || 1);
-  const initialEnd = Math.min(itemCount, initialColumns * 4);
-  return { startIndex: 0, endIndex: initialEnd };
+function allMoviesBatchSize(columns = 6, rows = ALL_MOVIES_BATCH_ROWS) {
+  return Math.max(1, Number(columns || 0) || 1) * Math.max(1, Number(rows || 0) || 1);
+}
+
+function initialAllMoviesCount(itemCount = 0, columns = 6) {
+  return Math.min(itemCount, allMoviesBatchSize(columns, ALL_MOVIES_INITIAL_ROWS));
 }
 
 function normalizeMovieItems(items = []) {
@@ -57,15 +58,10 @@ export default function MoviesPage() {
   const [loading, setLoading] = useState(true);
   const [showHeroJump, setShowHeroJump] = useState(false);
   const [restoreState, setRestoreState] = useState(null);
-  const [allMoviesReady, setAllMoviesReady] = useState(false);
-  const [allMoviesGridMetrics, setAllMoviesGridMetrics] = useState({
-    columns: 6,
-    rowHeight: DEFAULT_ALL_MOVIES_ROW_HEIGHT,
-  });
-  const [allMoviesWindow, setAllMoviesWindow] = useState(() => defaultAllMoviesWindow(0, 6));
+  const [allMoviesColumns, setAllMoviesColumns] = useState(6);
+  const [allMoviesRenderedCount, setAllMoviesRenderedCount] = useState(0);
   const allMoviesSectionRef = useRef(null);
-  const allMoviesMountRef = useRef(null);
-  const allMoviesGridRef = useRef(null);
+  const allMoviesLoadMoreRef = useRef(null);
   const restoreAppliedRef = useRef(false);
 
   useEffect(() => {
@@ -76,7 +72,6 @@ export default function MoviesPage() {
     const nextRestoreState = readMovieReturnState();
     if (!nextRestoreState || nextRestoreState.href !== currentHref) return;
     setRestoreState(nextRestoreState);
-    setAllMoviesReady(true);
   }, []);
 
   useEffect(() => {
@@ -160,107 +155,53 @@ export default function MoviesPage() {
   }, [username]);
 
   useEffect(() => {
-    if (allMoviesReady || restoreState) return;
-    const mountEl = allMoviesMountRef.current;
-    if (!mountEl) return;
+    if (loading) return;
+    const updateColumns = () => {
+      const nextColumns = getAllMoviesGridColumns(window.innerWidth || 0);
+      setAllMoviesColumns((current) => (current === nextColumns ? current : nextColumns));
+    };
+
+    updateColumns();
+    window.addEventListener('resize', updateColumns);
+    return () => {
+      window.removeEventListener('resize', updateColumns);
+    };
+  }, [loading]);
+
+  useEffect(() => {
+    if (loading || !all.length) return;
+
+    const baseCount = initialAllMoviesCount(all.length, allMoviesColumns);
+    setAllMoviesRenderedCount((current) => {
+      const targetIndex = Math.max(0, Number(restoreState?.allMoviesIndex || 0) || 0);
+      const restoreCount = restoreState
+        ? Math.min(all.length, Math.max(baseCount, targetIndex + allMoviesBatchSize(allMoviesColumns, 2)))
+        : baseCount;
+      const nextCount = Math.max(current, restoreCount);
+      return nextCount === current ? current : nextCount;
+    });
+  }, [all.length, allMoviesColumns, loading, restoreState]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (allMoviesRenderedCount >= all.length) return;
+    const loadMoreEl = allMoviesLoadMoreRef.current;
+    if (!loadMoreEl) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting) {
-          setAllMoviesReady(true);
-        }
+        if (!entries[0]?.isIntersecting) return;
+        setAllMoviesRenderedCount((current) => {
+          if (current >= all.length) return current;
+          return Math.min(all.length, current + allMoviesBatchSize(allMoviesColumns, ALL_MOVIES_BATCH_ROWS));
+        });
       },
-      { rootMargin: ALL_MOVIES_DEFER_ROOT_MARGIN }
+      { rootMargin: ALL_MOVIES_LOAD_MORE_ROOT_MARGIN }
     );
-    observer.observe(mountEl);
+
+    observer.observe(loadMoreEl);
     return () => observer.disconnect();
-  }, [allMoviesReady, restoreState]);
-
-  useEffect(() => {
-    if (!allMoviesReady || loading) return;
-    const gridEl = allMoviesGridRef.current;
-    if (!gridEl) return;
-
-    const updateGridMetrics = () => {
-      const nextColumns = getAllMoviesGridColumns(window.innerWidth || 0);
-      const width = gridEl.clientWidth || 0;
-      const cardWidth =
-        width > 0
-          ? Math.max(120, (width - ALL_MOVIES_GRID_GAP_PX * Math.max(0, nextColumns - 1)) / nextColumns)
-          : 180;
-      const nextRowHeight = Math.max(
-        DEFAULT_ALL_MOVIES_ROW_HEIGHT,
-        Math.ceil(cardWidth * 1.5 + ALL_MOVIES_GRID_GAP_PX)
-      );
-
-      setAllMoviesGridMetrics((current) => {
-        if (current.columns === nextColumns && current.rowHeight === nextRowHeight) return current;
-        return {
-          columns: nextColumns,
-          rowHeight: nextRowHeight,
-        };
-      });
-    };
-
-    updateGridMetrics();
-
-    let resizeObserver = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => updateGridMetrics());
-      resizeObserver.observe(gridEl);
-    }
-
-    window.addEventListener('resize', updateGridMetrics);
-    return () => {
-      window.removeEventListener('resize', updateGridMetrics);
-      resizeObserver?.disconnect();
-    };
-  }, [allMoviesReady, loading]);
-
-  useEffect(() => {
-    if (!allMoviesReady || loading || !all.length) return;
-
-    const updateVisibleWindow = () => {
-      const gridEl = allMoviesGridRef.current;
-      if (!gridEl) return;
-
-      const columns = Math.max(1, Number(allMoviesGridMetrics.columns || 0) || 1);
-      const rowHeight = Math.max(
-        DEFAULT_ALL_MOVIES_ROW_HEIGHT,
-        Number(allMoviesGridMetrics.rowHeight || 0) || DEFAULT_ALL_MOVIES_ROW_HEIGHT
-      );
-      const totalRows = Math.max(1, Math.ceil(all.length / columns));
-      const gridRect = gridEl.getBoundingClientRect();
-      const gridTop = window.scrollY + gridRect.top;
-      const viewportTop = window.scrollY;
-      const viewportBottom = viewportTop + (window.innerHeight || document.documentElement.clientHeight || 0);
-      const viewportStartRow = Math.floor((viewportTop - gridTop) / rowHeight);
-      const viewportEndRow = Math.ceil((viewportBottom - gridTop) / rowHeight);
-      const startRow = Math.max(0, viewportStartRow - ALL_MOVIES_OVERSCAN_ROWS);
-      const endRow = Math.min(totalRows, viewportEndRow + ALL_MOVIES_OVERSCAN_ROWS);
-      const nextStartIndex = Math.min(all.length, startRow * columns);
-      const nextEndIndex = Math.min(
-        all.length,
-        Math.max(nextStartIndex + columns * 2, endRow * columns)
-      );
-
-      setAllMoviesWindow((current) => {
-        if (current.startIndex === nextStartIndex && current.endIndex === nextEndIndex) return current;
-        return {
-          startIndex: nextStartIndex,
-          endIndex: nextEndIndex,
-        };
-      });
-    };
-
-    updateVisibleWindow();
-    window.addEventListener('scroll', updateVisibleWindow, { passive: true });
-    window.addEventListener('resize', updateVisibleWindow);
-    return () => {
-      window.removeEventListener('scroll', updateVisibleWindow);
-      window.removeEventListener('resize', updateVisibleWindow);
-    };
-  }, [all.length, allMoviesGridMetrics.columns, allMoviesGridMetrics.rowHeight, allMoviesReady, loading]);
+  }, [all.length, allMoviesColumns, allMoviesRenderedCount, loading]);
 
   const catalog = useMemo(() => getCatalogSettings(settings || {}), [settings]);
   const byRating = useMemo(() => [...all].sort((a, b) => (b.rating || 0) - (a.rating || 0)), [all]);
@@ -313,40 +254,27 @@ export default function MoviesPage() {
     }
     return out;
   }, [all, movieLayoutRows, catalog.categories.movieGenreRows.displayCount]);
-  const allMoviesColumns = Math.max(1, Number(allMoviesGridMetrics.columns || 0) || 1);
-  const allMoviesRowHeight = Math.max(
-    DEFAULT_ALL_MOVIES_ROW_HEIGHT,
-    Number(allMoviesGridMetrics.rowHeight || 0) || DEFAULT_ALL_MOVIES_ROW_HEIGHT
-  );
-  const allMoviesTotalRows = Math.max(0, Math.ceil(all.length / allMoviesColumns));
-  const allMoviesStartRow = Math.floor(allMoviesWindow.startIndex / allMoviesColumns);
-  const allMoviesEndRow = Math.ceil(allMoviesWindow.endIndex / allMoviesColumns);
-  const allMoviesTopPadding = allMoviesStartRow * allMoviesRowHeight;
-  const allMoviesBottomPadding = Math.max(0, (allMoviesTotalRows - allMoviesEndRow) * allMoviesRowHeight);
   const visibleItems = useMemo(
-    () => all.slice(allMoviesWindow.startIndex, allMoviesWindow.endIndex),
-    [all, allMoviesWindow.endIndex, allMoviesWindow.startIndex]
+    () => all.slice(0, allMoviesRenderedCount),
+    [all, allMoviesRenderedCount]
   );
 
   useEffect(() => {
-    if (!restoreState || restoreAppliedRef.current || loading || !allMoviesReady) return;
+    if (!restoreState || restoreAppliedRef.current || loading) return;
     if (!all.length) return;
 
     const targetScrollY = Math.max(0, Number(restoreState?.scrollY || 0) || 0);
     const targetIndex = Math.max(0, Number(restoreState?.allMoviesIndex || 0) || 0);
 
     const attemptRestore = () => {
-      const columns = Math.max(1, Number(allMoviesGridMetrics.columns || 0) || 1);
-      const targetRow = Math.floor(targetIndex / columns);
-      const nextStartIndex = Math.max(0, (targetRow - ALL_MOVIES_OVERSCAN_ROWS) * columns);
-      const nextEndIndex = Math.min(
+      const minimumCount = Math.min(
         all.length,
-        Math.max(nextStartIndex + columns * 4, (targetRow + ALL_MOVIES_OVERSCAN_ROWS + 2) * columns)
+        Math.max(
+          initialAllMoviesCount(all.length, allMoviesColumns),
+          targetIndex + allMoviesBatchSize(allMoviesColumns, 2)
+        )
       );
-      setAllMoviesWindow((current) => {
-        if (current.startIndex === nextStartIndex && current.endIndex === nextEndIndex) return current;
-        return { startIndex: nextStartIndex, endIndex: nextEndIndex };
-      });
+      setAllMoviesRenderedCount((current) => (current >= minimumCount ? current : minimumCount));
 
       const maxScroll = Math.max(
         0,
@@ -371,7 +299,7 @@ export default function MoviesPage() {
       window.cancelAnimationFrame(raf1);
       if (raf2) window.cancelAnimationFrame(raf2);
     };
-  }, [all.length, allMoviesGridMetrics.columns, allMoviesReady, loading, restoreState]);
+  }, [all.length, allMoviesColumns, loading, restoreState]);
 
   useEffect(() => {
     const updateAllMoviesVisibility = () => {
@@ -398,7 +326,7 @@ export default function MoviesPage() {
       window.removeEventListener('scroll', updateAllMoviesVisibility);
       window.removeEventListener('resize', updateAllMoviesVisibility);
     };
-  }, [loading, all.length, movieLayoutRows]);
+  }, [loading, all.length, allMoviesRenderedCount, movieLayoutRows]);
 
   const scrollToHero = useCallback(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -453,13 +381,10 @@ export default function MoviesPage() {
                 ref={allMoviesSectionRef}
                 key={token}
                 className="mt-8"
-                style={{ contentVisibility: 'auto', containIntrinsicSize: '1600px' }}
               >
                 <h3 className="mb-4 text-lg font-semibold">{catalog.labels.moviesPage.allMovies}</h3>
 
-                {!allMoviesReady && !restoreState ? (
-                  <div ref={allMoviesMountRef} className="h-px w-full" aria-hidden="true" />
-                ) : loading ? (
+                {loading ? (
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                     {Array.from({ length: 24 }, (_, i) => (
                       <div key={`sk-${i}`} className="aspect-[2/3] overflow-hidden rounded-lg bg-neutral-800/70 animate-pulse">
@@ -468,31 +393,25 @@ export default function MoviesPage() {
                     ))}
                   </div>
                 ) : (
-                  <div
-                    ref={allMoviesGridRef}
-                    style={{
-                      paddingTop: `${allMoviesTopPadding}px`,
-                      paddingBottom: `${allMoviesBottomPadding}px`,
-                    }}
-                  >
+                  <>
                     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-                      {visibleItems.map((m, index) => {
-                        const allMoviesIndex = allMoviesWindow.startIndex + index;
-                        return (
+                      {visibleItems.map((m, index) => (
                         <HoverMovieCard
                           key={m.id}
                           item={m}
                           eagerImage={index < allMoviesColumns * 2}
                           playContext={{
                             source: 'moviesAll',
-                            visibleCount: allMoviesWindow.endIndex,
-                            allMoviesIndex,
+                            visibleCount: allMoviesRenderedCount,
+                            allMoviesIndex: index,
                           }}
                         />
-                        );
-                      })}
+                      ))}
                     </div>
-                  </div>
+                    {allMoviesRenderedCount < all.length ? (
+                      <div ref={allMoviesLoadMoreRef} className="h-px w-full" aria-hidden="true" />
+                    ) : null}
+                  </>
                 )}
               </section>
             );

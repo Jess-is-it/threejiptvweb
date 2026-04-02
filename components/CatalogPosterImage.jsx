@@ -7,6 +7,11 @@ import {
   POSTER_FALLBACK_SRC,
 } from '../lib/catalogPoster';
 
+const loadedPosterSrcs = globalThis.__threejLoadedPosterSrcs || new Set();
+if (!globalThis.__threejLoadedPosterSrcs) {
+  globalThis.__threejLoadedPosterSrcs = loadedPosterSrcs;
+}
+
 export default function CatalogPosterImage({
   item,
   alt = '',
@@ -22,8 +27,12 @@ export default function CatalogPosterImage({
     () => getCardPosterFallbackSrc(item),
     [item]
   );
+  const imgRef = useRef(null);
   const [src, setSrc] = useState(defer ? '' : (primarySrc || POSTER_FALLBACK_SRC));
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(() => {
+    const initialSrc = defer ? '' : (primarySrc || POSTER_FALLBACK_SRC);
+    return initialSrc ? loadedPosterSrcs.has(initialSrc) : false;
+  });
   const fallbackStepRef = useRef(0);
 
   const fallbacks = useMemo(() => {
@@ -38,9 +47,19 @@ export default function CatalogPosterImage({
 
   useEffect(() => {
     fallbackStepRef.current = 0;
-    setLoaded(false);
-    setSrc(defer ? '' : (primarySrc || POSTER_FALLBACK_SRC));
+    const nextSrc = defer ? '' : (primarySrc || POSTER_FALLBACK_SRC);
+    setLoaded(nextSrc ? loadedPosterSrcs.has(nextSrc) : false);
+    setSrc(nextSrc);
   }, [primarySrc, fallbackSrc, defer]);
+
+  useEffect(() => {
+    const el = imgRef.current;
+    if (!el || !src || loaded) return;
+    if (el.complete && el.naturalWidth > 0) {
+      loadedPosterSrcs.add(src);
+      setLoaded(true);
+    }
+  }, [loaded, src]);
 
   return (
     <div className="relative h-full w-full">
@@ -52,13 +71,17 @@ export default function CatalogPosterImage({
       />
       {src ? (
         <img
+          ref={imgRef}
           src={src}
           alt={alt}
           className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
           loading={eager ? 'eager' : 'lazy'}
           fetchPriority={eager ? 'high' : 'auto'}
           decoding="async"
-          onLoad={() => setLoaded(true)}
+          onLoad={() => {
+            loadedPosterSrcs.add(src);
+            setLoaded(true);
+          }}
           onError={() => {
             const nextSrc = fallbacks[fallbackStepRef.current];
             if (!nextSrc || nextSrc === src) return;

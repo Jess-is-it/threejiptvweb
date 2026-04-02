@@ -1,16 +1,17 @@
 import { NextResponse } from 'next/server';
 import { buildXuioneCatalogAssetSources, parseStreamBase, xtreamWithFallback } from '../_shared';
 import {
-  hydrateCatalogItemsWithTmdb,
+  applyCachedCatalogArtwork,
   parseTmdbId,
   warmCatalogArtwork,
+  warmCatalogImageCache,
 } from '../../../../lib/server/publicCatalogArtwork';
 import { loadPublicCatalogData } from '../../../../lib/server/publicCatalogDataCache';
 
 export const dynamic = 'force-dynamic';
 const SERIES_CATALOG_TTL_MS = 60 * 1000;
-const SERIES_INITIAL_ARTWORK_RESOLVED = 24;
-const SERIES_INITIAL_ARTWORK_SEARCH = 4;
+const SERIES_BACKGROUND_ARTWORK_RESOLVED = 18;
+const SERIES_BACKGROUND_ARTWORK_SEARCH = 3;
 
 function normalizeAddedMs(...values) {
   for (const value of values) {
@@ -84,12 +85,17 @@ export async function GET(req) {
             href: id ? `/series/${id}` : '#',
           };
         });
-        const hydrated = await hydrateCatalogItemsWithTmdb(items, {
-          kind: 'series',
-          maxResolved: SERIES_INITIAL_ARTWORK_RESOLVED,
-          maxSearch: SERIES_INITIAL_ARTWORK_SEARCH,
-        });
-        void warmCatalogArtwork(items, { kind: 'series', maxResolved: 36, maxSearch: 6 }).catch(() => {});
+        const hydrated = applyCachedCatalogArtwork(items, { kind: 'series' });
+        void (async () => {
+          await warmCatalogArtwork(items, {
+            kind: 'series',
+            maxResolved: SERIES_BACKGROUND_ARTWORK_RESOLVED,
+            maxSearch: SERIES_BACKGROUND_ARTWORK_SEARCH,
+            concurrency: 3,
+          }).catch(() => {});
+          const warmed = applyCachedCatalogArtwork(items, { kind: 'series' });
+          await warmCatalogImageCache(warmed, { posterCount: 18, backdropCount: 4, concurrency: 3 }).catch(() => {});
+        })();
         return { ok: true, items: hydrated };
       },
       { ttlMs: SERIES_CATALOG_TTL_MS }

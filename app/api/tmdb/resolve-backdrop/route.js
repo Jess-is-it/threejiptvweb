@@ -3,8 +3,20 @@ import { NextResponse } from 'next/server';
 import { getSecret } from '../../../../lib/server/secrets';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 1000;
 
 export const runtime = 'nodejs';
+
+const responseCache = globalThis.__threejResolveBackdropCache || new Map();
+if (!globalThis.__threejResolveBackdropCache) {
+  globalThis.__threejResolveBackdropCache = responseCache;
+}
+
+const inflight = globalThis.__threejResolveBackdropInflight || new Map();
+if (!globalThis.__threejResolveBackdropInflight) {
+  globalThis.__threejResolveBackdropInflight = inflight;
+}
 
 function cleanTitle(raw = '') {
   // remove trailing (YYYY) and trim
@@ -26,6 +38,39 @@ async function j(url) {
   return r.json();
 }
 
+function cacheKey({ title = '', year = '', kind = '', id = '' } = {}) {
+  return JSON.stringify({
+    title: cleanTitle(title),
+    year: String(year || '').trim(),
+    kind: String(kind || 'movie').trim().toLowerCase(),
+    id: String(id || '').trim(),
+  });
+}
+
+function trimCache(cache) {
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+}
+
+function readFresh(key) {
+  const entry = responseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - Number(entry.at || 0) >= CACHE_TTL_MS) {
+    responseCache.delete(key);
+    return null;
+  }
+  return entry.value ?? null;
+}
+
+function writeFresh(key, value) {
+  responseCache.set(key, { at: Date.now(), value });
+  trimCache(responseCache);
+  return value;
+}
+
 export async function GET(req) {
   try {
     const url = new URL(req.url);
@@ -34,53 +79,62 @@ export async function GET(req) {
     const kindParam = (url.searchParams.get('kind') || 'movie').toLowerCase(); // "movie" | "series"
     const idParam = url.searchParams.get('id') || '';
     const apiKey = (await getSecret('tmdbApiKey')) || process.env.TMDB_API_KEY;
+    const key = cacheKey({ title: titleParam, year: yearParam, kind: kindParam, id: idParam });
+
+    const cached = readFresh(key);
+    if (cached) return NextResponse.json(cached, { status: 200 });
 
     if (!apiKey) {
       return NextResponse.json({ ok: false, error: 'TMDB_API_KEY missing' }, { status: 500 });
     }
 
-    const type = kindParam === 'series' ? 'tv' : 'movie';
-    let tmdbId = idParam || null;
+    const loader = inflight.get(key) || (async () => {
+      try {
+        const type = kindParam === 'series' ? 'tv' : 'movie';
+        let tmdbId = idParam || null;
 
-    // 1) If no id, search using normalized title + year
-    if (!tmdbId) {
-      const title = cleanTitle(titleParam);
-      const sp = new URLSearchParams({ query: title, include_adult: 'false', api_key: apiKey });
-      if (yearParam) {
-        if (type === 'movie') sp.set('year', yearParam);
-        else sp.set('first_air_date_year', yearParam);
+        if (!tmdbId) {
+          const title = cleanTitle(titleParam);
+          const sp = new URLSearchParams({ query: title, include_adult: 'false', api_key: apiKey });
+          if (yearParam) {
+            if (type === 'movie') sp.set('year', yearParam);
+            else sp.set('first_air_date_year', yearParam);
+          }
+          let sr = await j(`${TMDB_BASE}/search/${type}?${sp.toString()}`);
+          let hit = Array.isArray(sr?.results) && sr.results.length ? sr.results[0] : null;
+
+          if (!hit) {
+            const sp2 = new URLSearchParams({ query: title, include_adult: 'false', api_key: apiKey });
+            sr = await j(`${TMDB_BASE}/search/${type}?${sp2.toString()}`);
+            hit = Array.isArray(sr?.results) && sr.results.length ? sr.results[0] : null;
+          }
+
+          if (!hit && titleParam && titleParam !== title) {
+            const sp3 = new URLSearchParams({ query: titleParam, include_adult: 'false', api_key: apiKey });
+            sr = await j(`${TMDB_BASE}/search/${type}?${sp3.toString()}`);
+            hit = Array.isArray(sr?.results) && sr.results.length ? sr.results[0] : null;
+          }
+
+          tmdbId = hit?.id || null;
+        }
+
+        if (!tmdbId) {
+          return writeFresh(key, { ok: true, path: null, id: null });
+        }
+
+        const imgs = await j(
+          `${TMDB_BASE}/${type}/${tmdbId}/images?include_image_language=null,en&api_key=${apiKey}`
+        );
+        const path = pickBestBackdrop(imgs?.backdrops);
+        return writeFresh(key, { ok: true, path, id: tmdbId });
+      } finally {
+        inflight.delete(key);
       }
-      let sr = await j(`${TMDB_BASE}/search/${type}?${sp.toString()}`);
-      let hit = Array.isArray(sr?.results) && sr.results.length ? sr.results[0] : null;
+    })();
 
-      // 2) If not found, try without year
-      if (!hit) {
-        const sp2 = new URLSearchParams({ query: title, include_adult: 'false', api_key: apiKey });
-        sr = await j(`${TMDB_BASE}/search/${type}?${sp2.toString()}`);
-        hit = Array.isArray(sr?.results) && sr.results.length ? sr.results[0] : null;
-      }
-
-      // 3) If still not found, try the raw (unsanitized) title
-      if (!hit && titleParam && titleParam !== title) {
-        const sp3 = new URLSearchParams({ query: titleParam, include_adult: 'false', api_key: apiKey });
-        sr = await j(`${TMDB_BASE}/search/${type}?${sp3.toString()}`);
-        hit = Array.isArray(sr?.results) && sr.results.length ? sr.results[0] : null;
-      }
-
-      tmdbId = hit?.id || null;
-    }
-
-    if (!tmdbId) {
-      console.log('[tmdb] resolve-backdrop: not found', { title: titleParam, year: yearParam, type });
-      return NextResponse.json({ ok: true, path: null, id: null }, { status: 200 });
-    }
-
-    const imgs = await j(
-      `${TMDB_BASE}/${type}/${tmdbId}/images?include_image_language=null,en&api_key=${apiKey}`
-    );
-    const path = pickBestBackdrop(imgs?.backdrops);
-    console.log('[tmdb] resolve-backdrop OK', { title: titleParam, id: tmdbId, path });
-    return NextResponse.json({ ok: true, path, id: tmdbId }, { status: 200 });
+    inflight.set(key, loader);
+    const payload = await loader;
+    return NextResponse.json(payload, { status: 200 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
   }

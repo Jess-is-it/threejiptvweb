@@ -5,6 +5,7 @@ import {
   listReleasedItems,
   subscribeUpcomingReminder,
 } from '../../../../../lib/server/autodownload/releaseService';
+import { warmCatalogImageCache } from '../../../../../lib/server/publicCatalogArtwork';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,7 @@ export async function GET(req) {
       state === 'released'
         ? await listReleasedItems({ limit })
         : await listUpcomingItems({ username, limit });
+    void warmCatalogImageCache(items, { posterCount: 6, backdropCount: 2, concurrency: 2 }).catch(() => {});
     return NextResponse.json({ ok: true, items }, { status: 200 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e?.message || 'Failed to load upcoming titles' }, { status: 500 });

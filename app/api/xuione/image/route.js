@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
 import {
-  allowInsecureTlsFor,
-  insecureDispatcher,
   resolveXuioneAssetUrl,
 } from '../_shared';
+import { ensureArtworkCached } from '../../../../lib/server/artworkCache';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -12,23 +11,21 @@ function fallbackResponse(req) {
   return NextResponse.redirect(new URL('/placeholders/poster-fallback.jpg', req.url), { status: 307 });
 }
 
-function buildUpstreamHeaders(server = '') {
-  const headers = {
-    accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-    'accept-language': 'en-US,en;q=0.8',
-    'user-agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
-  };
+function buildResponse({ buffer, meta, cacheState = 'miss' } = {}) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return null;
 
-  try {
-    const origin = server ? new URL(server).origin : '';
-    if (origin) {
-      headers.referer = origin;
-      headers.origin = origin;
-    }
-  } catch {}
+  const headers = new Headers();
+  if (meta?.contentType) headers.set('Content-Type', String(meta.contentType));
+  if (meta?.contentLength) headers.set('Content-Length', String(meta.contentLength));
+  if (meta?.etag) headers.set('ETag', String(meta.etag));
+  if (meta?.lastModified) headers.set('Last-Modified', String(meta.lastModified));
+  headers.set('Cache-Control', 'public, max-age=2592000, s-maxage=2592000, stale-while-revalidate=31536000');
+  headers.set('X-3J-Artwork-Cache', String(cacheState || 'miss'));
 
-  return headers;
+  return new NextResponse(buffer, {
+    status: 200,
+    headers,
+  });
 }
 
 export async function GET(req) {
@@ -39,33 +36,13 @@ export async function GET(req) {
   if (!src) return fallbackResponse(req);
 
   try {
-    const insecureTls = await allowInsecureTlsFor(src);
-    const upstream = await fetch(src, {
-      cache: 'force-cache',
-      redirect: 'follow',
-      ...(insecureTls ? { dispatcher: insecureDispatcher } : {}),
-      headers: buildUpstreamHeaders(server),
+    const cached = await ensureArtworkCached({
+      source: rawSrc || src,
+      server,
     });
-
-    if (!upstream.ok || !upstream.body) return fallbackResponse(req);
-
-    const contentType = String(upstream.headers.get('content-type') || '').trim();
-    if (contentType && !/^image\//i.test(contentType)) return fallbackResponse(req);
-
-    const headers = new Headers();
-    if (contentType) headers.set('Content-Type', contentType);
-    const contentLength = upstream.headers.get('content-length');
-    if (contentLength) headers.set('Content-Length', contentLength);
-    const etag = upstream.headers.get('etag');
-    if (etag) headers.set('ETag', etag);
-    const lastModified = upstream.headers.get('last-modified');
-    if (lastModified) headers.set('Last-Modified', lastModified);
-    headers.set('Cache-Control', 'public, max-age=21600, s-maxage=21600, stale-while-revalidate=86400');
-
-    return new NextResponse(upstream.body, {
-      status: 200,
-      headers,
-    });
+    const response = buildResponse(cached);
+    if (response) return response;
+    return fallbackResponse(req);
   } catch {
     return fallbackResponse(req);
   }

@@ -4,8 +4,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Play, Plus, Info } from 'lucide-react';
 import TmdbBackdrop from './TmdbBackdrop';
-import { chooseBestBackdrop } from '../lib/tmdb';
-import { useSession } from './SessionProvider';
 import { readJsonSafe } from '../lib/readJsonSafe';
 import { msUntilRelease } from '../lib/releaseTime';
 
@@ -126,7 +124,6 @@ export default function HeroCarousel({
   onDetails,
   initialDetailsMap = {},
 }) {
-  const { session } = useSession();
   const slides = useMemo(() => items.filter(Boolean), [items]);
   const defaultAutoplayMs = useMemo(() => normalizeAutoplayMs(autoplayMs), [autoplayMs]);
 
@@ -229,25 +226,6 @@ export default function HeroCarousel({
       return changed ? next : prev;
     });
   }, [detailsMap, slides]);
-
-  // Try to upgrade to TMDB backdrop for each slide
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const jobs = slides.map(async (it) => {
-        try {
-          const path = await chooseBestBackdrop(session?.streamBase, it);
-          if (!cancelled && path) {
-            setResolvedSrc((p) => ({ ...p, [slideKey(it)]: tmdbFull(path) }));
-          }
-        } catch {
-          /* ignore */
-        }
-      });
-      await Promise.allSettled(jobs);
-    })();
-    return () => { cancelled = true; };
-  }, [slides, session?.streamBase]);
 
   // Fetch TMDB details (overview, genres, runtime, rating)
   useEffect(() => {
@@ -385,12 +363,12 @@ export default function HeroCarousel({
 
   const active = slides[index];
   const activeKey = slideKey(active);
+  const d = detailsMap[activeKey] || {};
   const src =
     resolvedSrc[activeKey] ||
     tmdbFull(d?.backdropPath || d?.posterPath || '') ||
     immediateSrc(active) ||
     '/placeholders/poster-fallback.jpg';
-  const d = detailsMap[activeKey] || {};
   const title = stripYear(active.title || '');
   const rating = (d.rating ?? active.rating) || null;
   const ratingText = rating ? (Math.round(rating * 10) / 10).toFixed(1) : null;

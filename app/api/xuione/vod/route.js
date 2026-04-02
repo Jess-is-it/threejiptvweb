@@ -1,16 +1,17 @@
 import { NextResponse } from 'next/server';
 import { buildXuioneCatalogAssetSources, parseStreamBase, xtreamWithFallback } from '../_shared';
 import {
-  hydrateCatalogItemsWithTmdb,
+  applyCachedCatalogArtwork,
   parseTmdbId,
   warmCatalogArtwork,
+  warmCatalogImageCache,
 } from '../../../../lib/server/publicCatalogArtwork';
 import { loadPublicCatalogData } from '../../../../lib/server/publicCatalogDataCache';
 
 export const dynamic = 'force-dynamic';
 const MOVIE_CATALOG_TTL_MS = 60 * 1000;
-const MOVIE_INITIAL_ARTWORK_RESOLVED = 32;
-const MOVIE_INITIAL_ARTWORK_SEARCH = 6;
+const MOVIE_BACKGROUND_ARTWORK_RESOLVED = 24;
+const MOVIE_BACKGROUND_ARTWORK_SEARCH = 4;
 
 function parseMovieProperties(raw) {
   if (!raw) return null;
@@ -93,12 +94,17 @@ export async function GET(req) {
             href: id ? `/movies/${id}` : '#',
           };
         });
-        const hydrated = await hydrateCatalogItemsWithTmdb(items, {
-          kind: 'movie',
-          maxResolved: MOVIE_INITIAL_ARTWORK_RESOLVED,
-          maxSearch: MOVIE_INITIAL_ARTWORK_SEARCH,
-        });
-        void warmCatalogArtwork(items, { kind: 'movie', maxResolved: 48, maxSearch: 8 }).catch(() => {});
+        const hydrated = applyCachedCatalogArtwork(items, { kind: 'movie' });
+        void (async () => {
+          await warmCatalogArtwork(items, {
+            kind: 'movie',
+            maxResolved: MOVIE_BACKGROUND_ARTWORK_RESOLVED,
+            maxSearch: MOVIE_BACKGROUND_ARTWORK_SEARCH,
+            concurrency: 3,
+          }).catch(() => {});
+          const warmed = applyCachedCatalogArtwork(items, { kind: 'movie' });
+          await warmCatalogImageCache(warmed, { posterCount: 24, backdropCount: 6, concurrency: 3 }).catch(() => {});
+        })();
         return { ok: true, items: hydrated };
       },
       { ttlMs: MOVIE_CATALOG_TTL_MS }
