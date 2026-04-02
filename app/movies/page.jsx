@@ -62,7 +62,7 @@ function normalizeMovieItems(items = []) {
   return (Array.isArray(items) ? items : []).map((movie) => ({
     ...movie,
     href: `/movies/${movie.id}`,
-    backdrop: movie.backdropImage || movie.backdrop || movie.image,
+    backdrop: movie.backdropImage || movie.backdrop || '',
   }));
 }
 
@@ -335,7 +335,7 @@ export default function MoviesPage() {
     pushUniqueSources(
       sources,
       seen,
-      candidates.map((item) => item?.backdropImage || item?.backdrop || item?.image || ''),
+      candidates.map((item) => item?.backdropImage || item?.backdrop || ''),
       3
     );
     return sources;

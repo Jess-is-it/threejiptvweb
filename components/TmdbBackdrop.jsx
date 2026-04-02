@@ -7,9 +7,9 @@ import { getOptimizedArtworkSrc, isKnownLocalAssetPath, normalizeTmdbImage } fro
 /**
  * Lightweight backdrop renderer.
  * Accepts either a full URL (http…) or a TMDB path (/xyz.jpg).
- * Uses object-cover and a subtle zoom to keep faces framed.
+ * Always renders as wide backdrop artwork.
  */
-export default function TmdbBackdrop({ path, alt = '', preferContain = false }) {
+export default function TmdbBackdrop({ path, alt = '' }) {
   const [loaded, setLoaded] = useState(false);
   const src = useMemo(() => {
     const raw = String(path || '').trim();
@@ -23,39 +23,21 @@ export default function TmdbBackdrop({ path, alt = '', preferContain = false }) 
   }, [path]);
 
   return (
-    <div className="absolute inset-0 overflow-hidden">
+    <div className="absolute inset-0">
       {src ? (
-        <>
-          {preferContain ? (
-            <img
-              src={src}
-              alt=""
-              aria-hidden="true"
-              loading="eager"
-              fetchPriority="high"
-              decoding="async"
-              className={`absolute inset-0 h-full w-full scale-110 object-cover blur-2xl transition-opacity duration-300 ${
-                loaded ? 'opacity-45' : 'opacity-0'
-              }`}
-              style={{ objectPosition: '50% 18%' }}
-              draggable={false}
-            />
-          ) : null}
-
-          <img
-            src={src}
-            alt={alt}
-            loading="eager"
-            fetchPriority="high"
-            decoding="async"
-            onLoad={() => setLoaded(true)}
-            className={`absolute inset-0 h-full w-full transition-opacity duration-300 ${
-              loaded ? 'opacity-100' : 'opacity-0'
-            } ${preferContain ? 'object-contain' : 'object-cover'}`}
-            style={{ objectPosition: preferContain ? '50% 10%' : '50% 22%' }}
-            draggable={false}
-          />
-        </>
+        <img
+          src={src}
+          alt={alt}
+          loading="eager"
+          fetchPriority="high"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          className={`h-full w-full object-cover transition-opacity duration-300 ${
+            loaded ? 'opacity-100' : 'opacity-0'
+          }`}
+          style={{ objectPosition: '50% 20%' }}
+          draggable={false}
+        />
       ) : (
         <div className="h-full w-full bg-neutral-900" />
       )}

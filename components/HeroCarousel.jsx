@@ -35,9 +35,9 @@ function tmdbFull(path) {
 // prefer a backdrop-looking source; never posters
 function immediateSrc(item) {
   const p =
+    item?.backdropImage ||
     item?.backdrop_path ||
-    item?.backdrop ||
-    ((typeof item?.image === 'string' && item.image.startsWith('/')) ? item.image : '');
+    item?.backdrop;
   return tmdbFull(p);
 }
 
@@ -207,7 +207,16 @@ export default function HeroCarousel({
 
   useEffect(() => {
     if (!initialDetailsMap || typeof initialDetailsMap !== 'object') return;
-    setDetailsMap((prev) => ({ ...initialDetailsMap, ...prev }));
+    setDetailsMap((prev) => {
+      const next = { ...prev };
+      for (const [key, value] of Object.entries(initialDetailsMap)) {
+        next[key] = {
+          ...(prev?.[key] && typeof prev[key] === 'object' ? prev[key] : {}),
+          ...(value && typeof value === 'object' ? value : {}),
+        };
+      }
+      return next;
+    });
   }, [initialDetailsMap]);
 
   useEffect(() => {
@@ -218,7 +227,7 @@ export default function HeroCarousel({
         const key = slideKey(slide);
         if (next[key]) continue;
         const details = detailsMap[key] || {};
-        const fallbackSrc = tmdbFull(details?.backdropPath || details?.posterPath || '') || immediateSrc(slide);
+        const fallbackSrc = tmdbFull(details?.backdropPath || '') || immediateSrc(slide);
         if (!fallbackSrc) continue;
         next[key] = fallbackSrc;
         changed = true;
@@ -252,6 +261,7 @@ export default function HeroCarousel({
             setDetailsMap((m) => ({
               ...m,
               [key]: {
+                ...(m?.[key] && typeof m[key] === 'object' ? m[key] : {}),
                 overview: data.overview || '',
                 rating: data.rating ?? null,
                 genres: Array.isArray(data.genres) ? data.genres : [],
@@ -259,6 +269,8 @@ export default function HeroCarousel({
                 popularity: data.popularity ?? null,
                 voteCount: data.voteCount ?? null,
                 releaseDate: data.releaseDate || '',
+                posterPath: data.posterPath || '',
+                backdropPath: data.backdropPath || '',
               },
             }));
           }
@@ -364,13 +376,10 @@ export default function HeroCarousel({
   const active = slides[index];
   const activeKey = slideKey(active);
   const d = detailsMap[activeKey] || {};
-  const hasWideBackdrop = Boolean(d?.backdropPath || active?.backdrop_path || active?.backdropImage);
-  const shouldContainBackdrop = !hasWideBackdrop && Boolean(d?.posterPath || active?.posterPath || active?.image);
   const src =
     resolvedSrc[activeKey] ||
-    tmdbFull(d?.backdropPath || d?.posterPath || '') ||
-    immediateSrc(active) ||
-    '/placeholders/poster-fallback.jpg';
+    tmdbFull(d?.backdropPath || '') ||
+    immediateSrc(active);
   const title = stripYear(active.title || '');
   const rating = (d.rating ?? active.rating) || null;
   const ratingText = rating ? (Math.round(rating * 10) / 10).toFixed(1) : null;
@@ -414,7 +423,7 @@ export default function HeroCarousel({
       {/* background */}
       <div className="absolute inset-0">
         {src ? (
-          <TmdbBackdrop path={src} alt={active.title} preferContain={shouldContainBackdrop} />
+          <TmdbBackdrop path={src} alt={active.title} />
         ) : (
           <div className="absolute inset-0 bg-neutral-900" />
         )}

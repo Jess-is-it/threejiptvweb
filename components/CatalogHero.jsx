@@ -69,7 +69,7 @@ function normalizeHeroItem(item, pageKey, sourceKey = '') {
     heroKey: getHeroItemKey(item, pageKey),
     kind,
     image: item?.image || '',
-    backdrop: item?.backdropImage || item?.backdrop || item?.image || '',
+    backdrop: item?.backdropImage || item?.backdrop || '',
     plot: item?.plot || item?.overview || '',
     genre:
       item?.genre ||
@@ -87,6 +87,18 @@ function normalizeHeroItem(item, pageKey, sourceKey = '') {
           ? `/movies/${playbackId}`
           : ''),
   };
+}
+
+function hasHeroBackdropArtwork(item, details = {}) {
+  return Boolean(
+    String(
+      details?.backdropPath ||
+        item?.backdropImage ||
+        item?.backdrop_path ||
+        item?.backdrop ||
+        ''
+    ).trim()
+  );
 }
 
 function detailsFetchParams(item, pageKey) {
@@ -134,6 +146,12 @@ function sortItemsForRule(items, rule, detailsMap) {
   return [...items].sort((left, right) => {
     const leftDetails = detailsMap[left.heroKey] || {};
     const rightDetails = detailsMap[right.heroKey] || {};
+    const leftHasBackdrop = hasHeroBackdropArtwork(left, leftDetails);
+    const rightHasBackdrop = hasHeroBackdropArtwork(right, rightDetails);
+
+    if (leftHasBackdrop !== rightHasBackdrop) {
+      return Number(rightHasBackdrop) - Number(leftHasBackdrop);
+    }
 
     if (sortMode === 'tmdbPopularity') {
       const popularityDiff = Number(rightDetails?.popularity || 0) - Number(leftDetails?.popularity || 0);
