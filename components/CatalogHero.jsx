@@ -237,7 +237,7 @@ export default function CatalogHero({
     const seen = new Set();
 
     for (const rule of rules) {
-      if (!rule || String(rule?.sort || 'latest') === 'latest') continue;
+      if (!rule) continue;
       const sourceKey = String(rule?.source || '').trim();
       const items = Array.isArray(normalizedSources[sourceKey]) ? normalizedSources[sourceKey] : [];
       const windowSize = metadataWindowSize(rule?.count);

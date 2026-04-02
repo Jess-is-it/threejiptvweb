@@ -41,6 +41,25 @@ function immediateSrc(item) {
   return tmdbFull(p);
 }
 
+function detailsQuery(item, kind) {
+  const params = new URLSearchParams();
+  const tmdbId = Number(item?.tmdbId || 0);
+  const mediaType = String(item?.mediaType || (kind === 'series' || kind === 'tv' ? 'tv' : 'movie')).trim().toLowerCase();
+
+  if (Number.isFinite(tmdbId) && tmdbId > 0) {
+    params.set('id', String(tmdbId));
+    params.set('mediaType', mediaType === 'tv' ? 'tv' : 'movie');
+    return params.toString();
+  }
+
+  const title = String(stripYear(item?.title || '')).trim();
+  if (!title) return '';
+  params.set('title', title);
+  if (item?.year) params.set('year', String(item.year));
+  params.set('kind', String(kind || '').trim() || 'movie');
+  return params.toString();
+}
+
 // remove "(YYYY)" or "[...]" suffixes in titles
 const stripYear = (s = '') => s.replace(/\s*\(\d{4}\)\s*$/, '').replace(/\s*\[[^\]]+\]\s*$/, '').trim();
 
@@ -243,11 +262,10 @@ export default function HeroCarousel({
       const jobs = slides.map(async (it) => {
         const key = slideKey(it);
         if (Object.prototype.hasOwnProperty.call(detailsMap, key)) return;
-        const title = encodeURIComponent(stripYear(it.title || ''));
-        const year = encodeURIComponent(it.year || '');
-        const kind = encodeURIComponent(it.kind || '');
+        const query = detailsQuery(it, it?.kind || '');
+        if (!query) return;
         try {
-          const r = await fetch(`/api/tmdb/details?title=${title}&year=${year}&kind=${kind}`, { cache: 'no-store' });
+          const r = await fetch(`/api/tmdb/details?${query}`, { cache: 'no-store' });
           if (!r.ok) {
             if (!cancelled) setDetailsMap((m) => ({ ...m, [key]: null }));
             return;
@@ -380,6 +398,10 @@ export default function HeroCarousel({
     resolvedSrc[activeKey] ||
     tmdbFull(d?.backdropPath || '') ||
     immediateSrc(active);
+  const placeholderSrc =
+    tmdbFull(d?.posterPath || active?.posterPath || '') ||
+    String(active?.image || '').trim() ||
+    '/placeholders/poster-fallback.jpg';
   const title = stripYear(active.title || '');
   const rating = (d.rating ?? active.rating) || null;
   const ratingText = rating ? (Math.round(rating * 10) / 10).toFixed(1) : null;
@@ -423,9 +445,9 @@ export default function HeroCarousel({
       {/* background */}
       <div className="absolute inset-0">
         {src ? (
-          <TmdbBackdrop path={src} alt={active.title} />
+          <TmdbBackdrop path={src} placeholderPath={placeholderSrc} alt={active.title} />
         ) : (
-          <div className="absolute inset-0 bg-neutral-900" />
+          <TmdbBackdrop path={placeholderSrc} placeholderPath={placeholderSrc} alt={active.title} />
         )}
 
         {/* TOP gradient under the header so nav stays readable */}

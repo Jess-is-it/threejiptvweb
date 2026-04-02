@@ -31,8 +31,8 @@ const ALL_MOVIES_LOAD_MORE_ROOT_MARGIN = '2600px 0px';
 const ALL_MOVIES_INITIAL_ROWS = 4;
 const ALL_MOVIES_BATCH_ROWS = 6;
 const ALL_MOVIES_EAGER_ROWS = 6;
-const ALL_MOVIES_PRELOAD_AHEAD_ROWS = 10;
-const ALL_MOVIES_BACKGROUND_PRELOAD_ROWS = 16;
+const ALL_MOVIES_PRELOAD_AHEAD_ROWS = 8;
+const ALL_MOVIES_BACKGROUND_PRELOAD_ROWS = 8;
 const INITIAL_SCREEN_ASSET_TIMEOUT_MS = 6500;
 const INITIAL_SCREEN_MIN_READY_ASSETS = 10;
 const MOVIES_INITIAL_LOADER_MESSAGES = [
@@ -317,14 +317,14 @@ export default function MoviesPage() {
   const initialLoaderPosterItems = useMemo(() => {
     const items = [];
     const seen = new Set();
-    const allMoviesInitialCount = Math.max(24, allMoviesColumns * 6);
+    const allMoviesInitialCount = Math.max(36, allMoviesColumns * 8);
 
     pushUniqueItems(items, seen, topMovies, 6);
-    pushUniqueItems(items, seen, byAdded, 12);
-    pushUniqueItems(items, seen, recommended, 18);
-    pushUniqueItems(items, seen, worthToWait, 22);
-    pushUniqueItems(items, seen, leavingSoon, 24);
+    pushUniqueItems(items, seen, byAdded, 10);
+    pushUniqueItems(items, seen, recommended, 14);
     pushUniqueItems(items, seen, all, allMoviesInitialCount);
+    pushUniqueItems(items, seen, worthToWait, allMoviesInitialCount + 4);
+    pushUniqueItems(items, seen, leavingSoon, allMoviesInitialCount + 8);
 
     return items;
   }, [all, allMoviesColumns, byAdded, leavingSoon, recommended, topMovies, worthToWait]);
@@ -458,12 +458,13 @@ export default function MoviesPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (loading || !all.length || !allMoviesColumns) return;
+    if (loading || !initialScreenAssetsReady || !all.length || !allMoviesColumns) return;
+    if (!showHeroJump) return;
 
     const prefetched = prefetchedAllMoviePosterSrcsRef.current;
     const backgroundCandidates = all.slice(
-      0,
-      Math.min(all.length, Math.max(allMoviesRenderedCount, allMoviesColumns * ALL_MOVIES_BACKGROUND_PRELOAD_ROWS))
+      allMoviesRenderedCount,
+      Math.min(all.length, allMoviesRenderedCount + allMoviesColumns * ALL_MOVIES_BACKGROUND_PRELOAD_ROWS)
     );
     const pendingSources = [];
 
@@ -480,7 +481,7 @@ export default function MoviesPage() {
     let timer = 0;
     let idleId = 0;
     let cursor = 0;
-    const chunkSize = Math.max(6, allMoviesColumns * 2);
+    const chunkSize = Math.max(4, allMoviesColumns);
 
     const pump = () => {
       if (cancelled) return;
@@ -500,7 +501,7 @@ export default function MoviesPage() {
       }
     };
 
-    timer = window.setTimeout(pump, 180);
+    timer = window.setTimeout(pump, 120);
 
     return () => {
       cancelled = true;
@@ -509,7 +510,7 @@ export default function MoviesPage() {
         window.cancelIdleCallback(idleId);
       }
     };
-  }, [all, allMoviesColumns, allMoviesRenderedCount, loading]);
+  }, [all, allMoviesColumns, allMoviesRenderedCount, initialScreenAssetsReady, loading, showHeroJump]);
 
   useEffect(() => {
     if (!restoreState || restoreAppliedRef.current || loading) return;
