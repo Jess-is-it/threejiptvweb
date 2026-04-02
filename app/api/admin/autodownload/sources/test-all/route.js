@@ -16,7 +16,8 @@ export async function POST(req) {
   } catch {}
 
   try {
-    const result = await testAllDownloadSources({ force: Boolean(body?.force) });
+    const type = String(body?.type || 'movie').toLowerCase() === 'series' ? 'series' : 'movie';
+    const result = await testAllDownloadSources({ force: Boolean(body?.force), type });
     return NextResponse.json({ ok: true, ...result }, { status: 200 });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e?.message || 'Test all failed.' }, { status: 400 });

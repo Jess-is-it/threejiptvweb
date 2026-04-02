@@ -61,12 +61,16 @@ const autodownloadSettingsItems = [
   { href: '/admin/autodownload/engine', label: 'Engine Host', icon: Server },
   { href: '/admin/autodownload/storage', label: 'Storage & Mount', icon: HardDrive },
   { href: '/admin/autodownload/settings', label: 'AutoDownload Settings', icon: Settings2 },
-  { href: '/admin/autodownload/sources', label: 'Download Sources', icon: Globe },
   { href: '/admin/autodownload/qbittorrent', label: 'qBittorrent', icon: Download },
   { href: '/admin/autodownload/vpn', label: 'VPN Routing', icon: Shield },
   { href: '/admin/autodownload/processing-log', label: 'Processing Log', icon: FileText },
   { href: '/admin/autodownload/xui', label: 'XUI Integration', icon: LinkIcon },
   { href: '/admin/autodownload/scan-log', label: 'Scan Log', icon: Search },
+];
+
+const autodownloadSourcesItems = [
+  { href: '/admin/autodownload/sources/movies', label: 'Movies', icon: Film, aliases: ['/admin/autodownload/sources'] },
+  { href: '/admin/autodownload/sources/series', label: 'Series', icon: Tv },
 ];
 
 function Nav({ href, icon: Icon, children, onClick }) {
@@ -122,9 +126,15 @@ export default function AdminShell({ admin, children }) {
   );
   const autodownloadAutoDeleteActive = autoDeleteSettingsActive || autoDeleteLogsActive;
   const autodownloadActive = pathname.startsWith('/admin/autodownload') && !autodownloadAutoDeleteActive;
-  const autodownloadSettingsActive = autodownloadSettingsItems.some(
-    (it) => pathname === it.href || pathname.startsWith(`${it.href}/`)
+  const autodownloadSourcesActive = autodownloadSourcesItems.some(
+    (it) =>
+      pathname === it.href ||
+      pathname.startsWith(`${it.href}/`) ||
+      (Array.isArray(it.aliases) ? it.aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`)) : false)
   );
+  const autodownloadSettingsActive =
+    autodownloadSettingsItems.some((it) => pathname === it.href || pathname.startsWith(`${it.href}/`)) ||
+    autodownloadSourcesActive;
   const autodownloadSelectionActive = autodownloadSelectionItems.some(
     (it) =>
       pathname === it.href ||
@@ -133,6 +143,7 @@ export default function AdminShell({ admin, children }) {
   );
   const [autodownloadOpen, setAutodownloadOpen] = useState(autodownloadActive);
   const [autodownloadSettingsOpen, setAutodownloadSettingsOpen] = useState(autodownloadSettingsActive);
+  const [autodownloadSourcesOpen, setAutodownloadSourcesOpen] = useState(autodownloadSourcesActive);
   const [autodownloadSelectionOpen, setAutodownloadSelectionOpen] = useState(autodownloadSelectionActive);
   const [autoDeleteOpen, setAutoDeleteOpen] = useState(autodownloadAutoDeleteActive);
   const [autoDeleteLogsOpen, setAutoDeleteLogsOpen] = useState(autoDeleteLogsActive);
@@ -158,6 +169,10 @@ export default function AdminShell({ admin, children }) {
   useEffect(() => {
     if (autodownloadSettingsActive) setAutodownloadSettingsOpen(true);
   }, [autodownloadSettingsActive]);
+
+  useEffect(() => {
+    if (autodownloadSourcesActive) setAutodownloadSourcesOpen(true);
+  }, [autodownloadSourcesActive]);
 
   useEffect(() => {
     if (autodownloadSelectionActive) setAutodownloadSelectionOpen(true);
@@ -551,6 +566,74 @@ export default function AdminShell({ admin, children }) {
                               </Link>
                             );
                           })}
+
+                          <div className="space-y-1">
+                            <button
+                              type="button"
+                              onClick={() => setAutodownloadSourcesOpen((v) => !v)}
+                              aria-expanded={autodownloadSourcesOpen}
+                              aria-controls="autodownload-sources-subnav"
+                              className={cx(
+                                'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium transition',
+                                autodownloadSourcesActive
+                                  ? 'bg-primary/15 text-primary ring-1 ring-primary/35'
+                                  : 'text-[var(--admin-muted)] hover:bg-[var(--admin-hover-bg)] hover:text-[var(--admin-text)]'
+                              )}
+                            >
+                              <span className="flex items-center gap-2">
+                                <Globe
+                                  size={16}
+                                  className={autodownloadSourcesActive ? 'text-primary' : 'text-[var(--admin-muted)]'}
+                                />
+                                Download Sources
+                              </span>
+                              {autodownloadSourcesOpen ? (
+                                <ChevronDown
+                                  size={16}
+                                  className={autodownloadSourcesActive ? 'text-primary' : 'text-[var(--admin-muted)]'}
+                                />
+                              ) : (
+                                <ChevronRight
+                                  size={16}
+                                  className={autodownloadSourcesActive ? 'text-primary' : 'text-[var(--admin-muted)]'}
+                                />
+                              )}
+                            </button>
+
+                            {autodownloadSourcesOpen ? (
+                              <div id="autodownload-sources-subnav" className="space-y-1 pl-5">
+                                {autodownloadSourcesItems.map((it) => {
+                                  const active =
+                                    pathname === it.href ||
+                                    pathname.startsWith(`${it.href}/`) ||
+                                    (Array.isArray(it.aliases) ? it.aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`)) : false);
+                                  const Icon = it.icon;
+                                  return (
+                                    <Link
+                                      key={it.href}
+                                      href={it.href}
+                                      onClick={() => setSidebarOpen(false)}
+                                      className={cx(
+                                        'group flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium no-underline transition-colors hover:no-underline hover:opacity-100',
+                                        active
+                                          ? 'bg-primary/15 text-primary ring-1 ring-primary/35'
+                                          : 'text-[var(--admin-muted)] hover:bg-[var(--admin-hover-bg)] hover:text-[var(--admin-text)]'
+                                      )}
+                                    >
+                                      <Icon
+                                        size={16}
+                                        className={cx(
+                                          'shrink-0',
+                                          active ? 'text-primary' : 'text-[var(--admin-muted)] group-hover:text-[var(--admin-text)]'
+                                        )}
+                                      />
+                                      <span>{it.label}</span>
+                                    </Link>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                       ) : null}
                     </div>

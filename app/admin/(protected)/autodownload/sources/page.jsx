@@ -1,13 +1,8 @@
-'use client';
-
-import AdminAutoDownloadSourcesPanel from '../../../_components/AdminAutoDownloadSourcesPanel';
+import { redirect } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
 
-export default function AdminDownloadSourcesPage() {
-  return (
-    <div>
-      <AdminAutoDownloadSourcesPanel />
-    </div>
-  );
+export default function AdminDownloadSourcesIndexPage() {
+  redirect('/admin/autodownload/sources/movies');
 }
+

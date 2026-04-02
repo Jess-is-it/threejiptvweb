@@ -129,7 +129,8 @@ function LogDetailsModal({ row, onClose }) {
   );
 }
 
-export default function AdminAutoDownloadSourcesPanel() {
+export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
+  const mediaType = String(type || 'movie').toLowerCase() === 'series' ? 'series' : 'movie';
   const [providers, setProviders] = useState([]);
   const [summary, setSummary] = useState({});
   const [logs, setLogs] = useState([]);
@@ -171,13 +172,14 @@ export default function AdminAutoDownloadSourcesPanel() {
   }, [providersSorted]);
 
   const loadSources = useCallback(async () => {
-    const r = await fetch('/api/admin/autodownload/sources', { cache: 'no-store' });
+    const q = new URLSearchParams({ type: mediaType });
+    const r = await fetch(`/api/admin/autodownload/sources?${q.toString()}`, { cache: 'no-store' });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to load sources.');
     setProviders(Array.isArray(j.providers) ? j.providers : []);
     setSummary(j.summary || {});
     return j;
-  }, []);
+  }, [mediaType]);
 
   const loadLogs = useCallback(async () => {
     setLoadingLogs(true);
@@ -230,7 +232,7 @@ export default function AdminAutoDownloadSourcesPanel() {
       const r = await fetch('/api/admin/autodownload/sources', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ providerId, patch }),
+        body: JSON.stringify({ providerId, patch, type: mediaType }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Update failed.');
@@ -262,7 +264,7 @@ export default function AdminAutoDownloadSourcesPanel() {
       const r = await fetch('/api/admin/autodownload/sources', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ order: sorted.map((x) => x.id) }),
+        body: JSON.stringify({ order: sorted.map((x) => x.id), type: mediaType }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Reorder failed.');
@@ -303,7 +305,11 @@ export default function AdminAutoDownloadSourcesPanel() {
     setErr('');
     setOk('');
     try {
-      const r = await fetch('/api/admin/autodownload/sources/test-all', { method: 'POST' });
+      const r = await fetch('/api/admin/autodownload/sources/test-all', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: mediaType }),
+      });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Test all failed.');
       await Promise.all([loadSources(), loadLogs()]);
@@ -451,7 +457,7 @@ export default function AdminAutoDownloadSourcesPanel() {
     <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-lg font-semibold">Download Sources</div>
+          <div className="text-lg font-semibold">{mediaType === 'series' ? 'Series Download Sources' : 'Movie Download Sources'}</div>
           <div className="mt-1 text-sm text-[var(--admin-muted)]">
             Provider health, test controls, backoff policies, and recent provider activity.
           </div>
