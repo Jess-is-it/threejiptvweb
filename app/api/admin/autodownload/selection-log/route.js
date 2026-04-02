@@ -161,10 +161,88 @@ function buildRecoveredSelectionLog(logId, type, rows = []) {
   };
 }
 
+function dedupeSelectionLogsById(db) {
+  db.selectionLogs = Array.isArray(db.selectionLogs) ? db.selectionLogs : [];
+  if (db.selectionLogs.length < 2) return { changed: false, removed: 0 };
+
+  const byId = new Map();
+  const order = [];
+
+  const preferTrigger = (value) => {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    if (s.toLowerCase() === 'recovered_reference') return '';
+    return s;
+  };
+
+  for (const row of db.selectionLogs) {
+    const id = String(row?.id || '').trim();
+    if (!id) {
+      order.push(row);
+      continue;
+    }
+    if (!byId.has(id)) {
+      byId.set(id, row);
+      continue;
+    }
+
+    const existing = byId.get(id) || {};
+    const incoming = row || {};
+    const triggerReason =
+      preferTrigger(incoming?.triggerReason) ||
+      preferTrigger(existing?.triggerReason) ||
+      String(incoming?.triggerReason || existing?.triggerReason || '').trim() ||
+      null;
+
+    const merged = {
+      ...existing,
+      ...incoming,
+      triggerReason,
+      runAt: Math.min(numericTimestamp(existing?.runAt) || Infinity, numericTimestamp(incoming?.runAt) || Infinity),
+      updatedAt: Math.max(numericTimestamp(existing?.updatedAt), numericTimestamp(incoming?.updatedAt)),
+      totalSelected: Math.max(0, Number(existing?.totalSelected || 0) || 0, Number(incoming?.totalSelected || 0) || 0),
+      skippedDuplicatesCount: Math.max(0, Number(existing?.skippedDuplicatesCount || 0) || 0, Number(incoming?.skippedDuplicatesCount || 0) || 0),
+      skippedNoSourceCount: Math.max(0, Number(existing?.skippedNoSourceCount || 0) || 0, Number(incoming?.skippedNoSourceCount || 0) || 0),
+      skippedStorageLimitCount: Math.max(0, Number(existing?.skippedStorageLimitCount || 0) || 0, Number(incoming?.skippedStorageLimitCount || 0) || 0),
+    };
+
+    const existingItems = Array.isArray(existing?.selectedItems) ? existing.selectedItems : [];
+    const incomingItems = Array.isArray(incoming?.selectedItems) ? incoming.selectedItems : [];
+    merged.selectedItems = incomingItems.length >= existingItems.length ? incomingItems : existingItems;
+
+    if (!Number.isFinite(merged.runAt) || merged.runAt === Infinity) merged.runAt = numericTimestamp(incoming?.runAt) || numericTimestamp(existing?.runAt) || Date.now();
+
+    byId.set(id, merged);
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const row of db.selectionLogs) {
+    const id = String(row?.id || '').trim();
+    if (!id) {
+      deduped.push(row);
+      continue;
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    deduped.push(byId.get(id) || row);
+  }
+
+  const removed = Math.max(0, db.selectionLogs.length - deduped.length);
+  if (!removed) return { changed: false, removed: 0 };
+  db.selectionLogs = deduped;
+  return { changed: true, removed };
+}
+
 async function backfillReferencedSelectionLogs(db) {
   db.selectionLogs = Array.isArray(db.selectionLogs) ? db.selectionLogs : [];
   db.downloadsMovies = Array.isArray(db.downloadsMovies) ? db.downloadsMovies : [];
   db.downloadsSeries = Array.isArray(db.downloadsSeries) ? db.downloadsSeries : [];
+
+  const dedupe = dedupeSelectionLogsById(db);
+  if (dedupe.changed) {
+    await saveAdminDb(db);
+  }
 
   const knownIds = new Set(db.selectionLogs.map((row) => String(row?.id || '').trim()).filter(Boolean));
   const recovered = [];
