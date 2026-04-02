@@ -5,6 +5,7 @@ import Protected from '../../components/Protected';
 import Row from '../../components/Row';
 import { useSession } from '../../components/SessionProvider';
 import CatalogHero from '../../components/CatalogHero';
+import MoviesInitialLoader from '../../components/MoviesInitialLoader';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
 import {
   catalogItemMatchesGenre,
@@ -29,6 +30,14 @@ const ALL_MOVIES_VISIBILITY_BOTTOM_OFFSET = 120;
 const ALL_MOVIES_LOAD_MORE_ROOT_MARGIN = '1600px 0px';
 const ALL_MOVIES_INITIAL_ROWS = 4;
 const ALL_MOVIES_BATCH_ROWS = 4;
+const INITIAL_SCREEN_ASSET_TIMEOUT_MS = 6500;
+const INITIAL_SCREEN_MIN_READY_ASSETS = 10;
+const MOVIES_INITIAL_LOADER_MESSAGES = [
+  'Checking database for the latest movies...',
+  'Matching fresh artwork with your library...',
+  'Loading the first movie cards into view...',
+  'Warming up All Movies for smoother scrolling...',
+];
 
 function getAllMoviesGridColumns(viewportWidth = 0) {
   const width = Number(viewportWidth || 0);
@@ -54,6 +63,27 @@ function normalizeMovieItems(items = []) {
   }));
 }
 
+function pushUniqueItems(target, seen, items, limit) {
+  if (!Array.isArray(items) || limit <= 0) return;
+  for (const item of items) {
+    if (!item || target.length >= limit) break;
+    const key = String(item?.id || item?.tmdbId || item?.href || item?.title || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    target.push(item);
+  }
+}
+
+function pushUniqueSources(target, seen, values, limit = Infinity) {
+  for (const value of values) {
+    if (target.length >= limit) break;
+    const src = String(value || '').trim();
+    if (!src || seen.has(src)) continue;
+    seen.add(src);
+    target.push(src);
+  }
+}
+
 export default function MoviesPage() {
   const { session } = useSession();
   const { settings } = usePublicSettings();
@@ -65,6 +95,7 @@ export default function MoviesPage() {
   const [leavingSoonLoading, setLeavingSoonLoading] = useState(true);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  const [initialScreenAssetsReady, setInitialScreenAssetsReady] = useState(false);
   const [showHeroJump, setShowHeroJump] = useState(false);
   const [restoreState, setRestoreState] = useState(null);
   const [allMoviesColumns, setAllMoviesColumns] = useState(6);
@@ -280,6 +311,117 @@ export default function MoviesPage() {
     () => all.slice(0, allMoviesRenderedCount),
     [all, allMoviesRenderedCount]
   );
+  const initialLoaderPosterItems = useMemo(() => {
+    const items = [];
+    const seen = new Set();
+    const allMoviesInitialCount = Math.max(18, allMoviesColumns * 4);
+
+    pushUniqueItems(items, seen, topMovies, 6);
+    pushUniqueItems(items, seen, byAdded, 12);
+    pushUniqueItems(items, seen, recommended, 18);
+    pushUniqueItems(items, seen, worthToWait, 22);
+    pushUniqueItems(items, seen, leavingSoon, 24);
+    pushUniqueItems(items, seen, all, allMoviesInitialCount);
+
+    return items;
+  }, [all, allMoviesColumns, byAdded, leavingSoon, recommended, topMovies, worthToWait]);
+  const initialLoaderBackdropSources = useMemo(() => {
+    const sources = [];
+    const seen = new Set();
+    const candidates = [topMovies[0], byAdded[0], recommended[0], worthToWait[0], leavingSoon[0]];
+    pushUniqueSources(
+      sources,
+      seen,
+      candidates.map((item) => item?.backdropImage || item?.backdrop || item?.image || ''),
+      3
+    );
+    return sources;
+  }, [byAdded, leavingSoon, recommended, topMovies, worthToWait]);
+  const showInitialMoviesLoader =
+    loading ||
+    worthToWaitLoading ||
+    leavingSoonLoading ||
+    !initialScreenAssetsReady;
+
+  useEffect(() => {
+    if (loading) {
+      setInitialScreenAssetsReady(false);
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (loading || worthToWaitLoading || leavingSoonLoading) return;
+    if (initialScreenAssetsReady) return;
+    if (typeof window === 'undefined') return;
+
+    const sources = [];
+    const seen = new Set();
+    pushUniqueSources(sources, seen, initialLoaderBackdropSources, 3);
+    pushUniqueSources(
+      sources,
+      seen,
+      initialLoaderPosterItems.map((item) => getCardPosterSrc(item) || getCardPosterFallbackSrc(item)),
+      24
+    );
+
+    if (!sources.length) {
+      setInitialScreenAssetsReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    let settled = 0;
+    let done = false;
+    const targetReadyCount = Math.min(
+      sources.length,
+      Math.max(INITIAL_SCREEN_MIN_READY_ASSETS, allMoviesColumns * 3)
+    );
+    const images = [];
+
+    const finish = () => {
+      if (cancelled || done) return;
+      done = true;
+      setInitialScreenAssetsReady(true);
+    };
+
+    const markSettled = () => {
+      if (cancelled || done) return;
+      settled += 1;
+      if (settled >= targetReadyCount) finish();
+    };
+
+    const timeout = window.setTimeout(finish, INITIAL_SCREEN_ASSET_TIMEOUT_MS);
+
+    for (const src of sources) {
+      const img = new window.Image();
+      img.decoding = 'async';
+      img.loading = 'eager';
+      img.onload = markSettled;
+      img.onerror = markSettled;
+      img.src = src;
+      if (img.complete) {
+        window.setTimeout(markSettled, 0);
+      }
+      images.push(img);
+    }
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+      for (const img of images) {
+        img.onload = null;
+        img.onerror = null;
+      }
+    };
+  }, [
+    allMoviesColumns,
+    initialLoaderBackdropSources,
+    initialLoaderPosterItems,
+    initialScreenAssetsReady,
+    leavingSoonLoading,
+    loading,
+    worthToWaitLoading,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -386,6 +528,11 @@ export default function MoviesPage() {
 
   return (
     <Protected>
+      <MoviesInitialLoader
+        show={showInitialMoviesLoader}
+        messages={MOVIES_INITIAL_LOADER_MESSAGES}
+      />
+
       <section className="py-6 px-4 sm:px-6 lg:px-10">
         {err ? <p className="mb-4 text-sm text-red-400">{err}</p> : null}
 
