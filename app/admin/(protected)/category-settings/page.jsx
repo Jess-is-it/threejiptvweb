@@ -1,5 +1,5 @@
-import { redirect } from 'next/navigation';
+import AdminCategorySettingsPanel from '../../_components/AdminCategorySettingsPanel';
 
 export default function AdminCategorySettingsPage() {
-  redirect('/admin/settings');
+  return <AdminCategorySettingsPanel />;
 }

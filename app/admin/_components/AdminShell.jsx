@@ -96,6 +96,7 @@ function pageTitle(pathname) {
   if (pathname === '/admin') return 'Dashboard';
   if (pathname.startsWith('/admin/autodownload/autodelete') || pathname.startsWith('/admin/autodownload/deletion-log')) return 'AutoDelete';
   if (pathname.startsWith('/admin/autodownload')) return 'AutoDownload';
+  if (pathname.startsWith('/admin/category-settings')) return 'Category Settings';
   if (pathname.startsWith('/admin/settings')) return 'Settings';
   if (pathname.startsWith('/admin/secrets')) return 'Secrets';
   if (pathname.startsWith('/admin/admins')) return 'Admins';
@@ -692,6 +693,9 @@ export default function AdminShell({ admin, children }) {
               </Nav>
               <Nav href="/admin/request-settings" icon={Settings2} onClick={() => setSidebarOpen(false)}>
                 Request Settings
+              </Nav>
+              <Nav href="/admin/category-settings" icon={Settings2} onClick={() => setSidebarOpen(false)}>
+                Category Settings
               </Nav>
             </div>
           </nav>

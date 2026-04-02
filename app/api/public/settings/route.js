@@ -8,18 +8,13 @@ export const runtime = 'nodejs';
 
 export async function GET() {
   const [settings, requestSettings] = await Promise.all([getPublicSettings(), getRequestSettings()]);
-  const publicSettings = settings && typeof settings === 'object' ? { ...settings } : {};
-
-  // Temporarily disable category-settings-driven public catalog behavior.
-  delete publicSettings.catalog;
-
   return NextResponse.json(
     {
       ok: true,
       settings: {
-        ...publicSettings,
+        ...settings,
         requests: {
-          ...(publicSettings?.requests && typeof publicSettings.requests === 'object' ? publicSettings.requests : {}),
+          ...(settings?.requests && typeof settings.requests === 'object' ? settings.requests : {}),
           enabled: requestSettings?.enabled !== false,
         },
       },
