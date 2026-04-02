@@ -27,9 +27,12 @@ import { getCardPosterFallbackSrc, getCardPosterSrc } from '../../lib/catalogPos
 
 const ALL_MOVIES_VISIBILITY_TOP_OFFSET = 120;
 const ALL_MOVIES_VISIBILITY_BOTTOM_OFFSET = 120;
-const ALL_MOVIES_LOAD_MORE_ROOT_MARGIN = '1600px 0px';
+const ALL_MOVIES_LOAD_MORE_ROOT_MARGIN = '2600px 0px';
 const ALL_MOVIES_INITIAL_ROWS = 4;
-const ALL_MOVIES_BATCH_ROWS = 4;
+const ALL_MOVIES_BATCH_ROWS = 6;
+const ALL_MOVIES_EAGER_ROWS = 6;
+const ALL_MOVIES_PRELOAD_AHEAD_ROWS = 10;
+const ALL_MOVIES_BACKGROUND_PRELOAD_ROWS = 16;
 const INITIAL_SCREEN_ASSET_TIMEOUT_MS = 6500;
 const INITIAL_SCREEN_MIN_READY_ASSETS = 10;
 const MOVIES_INITIAL_LOADER_MESSAGES = [
@@ -314,7 +317,7 @@ export default function MoviesPage() {
   const initialLoaderPosterItems = useMemo(() => {
     const items = [];
     const seen = new Set();
-    const allMoviesInitialCount = Math.max(18, allMoviesColumns * 4);
+    const allMoviesInitialCount = Math.max(24, allMoviesColumns * 6);
 
     pushUniqueItems(items, seen, topMovies, 6);
     pushUniqueItems(items, seen, byAdded, 12);
@@ -429,7 +432,7 @@ export default function MoviesPage() {
 
     const nextItems = all.slice(
       allMoviesRenderedCount,
-      Math.min(all.length, allMoviesRenderedCount + allMoviesColumns * 2)
+      Math.min(all.length, allMoviesRenderedCount + allMoviesColumns * ALL_MOVIES_PRELOAD_AHEAD_ROWS)
     );
     const prefetched = prefetchedAllMoviePosterSrcsRef.current;
     const preloadedImages = [];
@@ -452,6 +455,61 @@ export default function MoviesPage() {
       }
     };
   }, [all, allMoviesColumns, allMoviesRenderedCount]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (loading || !all.length || !allMoviesColumns) return;
+
+    const prefetched = prefetchedAllMoviePosterSrcsRef.current;
+    const backgroundCandidates = all.slice(
+      0,
+      Math.min(all.length, Math.max(allMoviesRenderedCount, allMoviesColumns * ALL_MOVIES_BACKGROUND_PRELOAD_ROWS))
+    );
+    const pendingSources = [];
+
+    for (const item of backgroundCandidates) {
+      const src = String(getCardPosterSrc(item) || getCardPosterFallbackSrc(item) || '').trim();
+      if (!src || prefetched.has(src)) continue;
+      prefetched.add(src);
+      pendingSources.push(src);
+    }
+
+    if (!pendingSources.length) return;
+
+    let cancelled = false;
+    let timer = 0;
+    let idleId = 0;
+    let cursor = 0;
+    const chunkSize = Math.max(6, allMoviesColumns * 2);
+
+    const pump = () => {
+      if (cancelled) return;
+      for (let index = 0; index < chunkSize && cursor < pendingSources.length; index += 1, cursor += 1) {
+        const img = new window.Image();
+        img.decoding = 'async';
+        img.src = pendingSources[cursor];
+      }
+      if (cursor >= pendingSources.length || cancelled) return;
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(() => {
+          idleId = 0;
+          pump();
+        }, { timeout: 1200 });
+      } else {
+        timer = window.setTimeout(pump, 250);
+      }
+    };
+
+    timer = window.setTimeout(pump, 180);
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+      if (idleId && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId);
+      }
+    };
+  }, [all, allMoviesColumns, allMoviesRenderedCount, loading]);
 
   useEffect(() => {
     if (!restoreState || restoreAppliedRef.current || loading) return;
@@ -598,7 +656,7 @@ export default function MoviesPage() {
                         <HoverMovieCard
                           key={m.id}
                           item={m}
-                          eagerImage={index < allMoviesColumns * 4}
+                          eagerImage={index < allMoviesColumns * ALL_MOVIES_EAGER_ROWS}
                           playContext={{
                             source: 'moviesAll',
                             visibleCount: allMoviesRenderedCount,

@@ -364,6 +364,8 @@ export default function HeroCarousel({
   const active = slides[index];
   const activeKey = slideKey(active);
   const d = detailsMap[activeKey] || {};
+  const hasWideBackdrop = Boolean(d?.backdropPath || active?.backdrop_path || active?.backdropImage);
+  const shouldContainBackdrop = !hasWideBackdrop && Boolean(d?.posterPath || active?.posterPath || active?.image);
   const src =
     resolvedSrc[activeKey] ||
     tmdbFull(d?.backdropPath || d?.posterPath || '') ||
@@ -412,7 +414,7 @@ export default function HeroCarousel({
       {/* background */}
       <div className="absolute inset-0">
         {src ? (
-          <TmdbBackdrop path={src} alt={active.title} />
+          <TmdbBackdrop path={src} alt={active.title} preferContain={shouldContainBackdrop} />
         ) : (
           <div className="absolute inset-0 bg-neutral-900" />
         )}
