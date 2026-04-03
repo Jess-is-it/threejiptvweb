@@ -77,11 +77,12 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
 
   const [maxMovieGb, setMaxMovieGb] = useState('2.5');
   const [maxEpisodeGb, setMaxEpisodeGb] = useState('');
+  const [maxSeasonTotalGb, setMaxSeasonTotalGb] = useState('');
   const [minMovieSeeders, setMinMovieSeeders] = useState('1');
   const [minSeriesSeeders, setMinSeriesSeeders] = useState('1');
   const [strictSeriesReplacement, setStrictSeriesReplacement] = useState(true);
   const [deletePartialSeriesOnReplacementFailure, setDeletePartialSeriesOnReplacementFailure] = useState(true);
-  const [bootstrapMissingSeriesToS01E01, setBootstrapMissingSeriesToS01E01] = useState(true);
+  const [bootstrapMissingSeriesToSeason1, setBootstrapMissingSeriesToSeason1] = useState(true);
   const [recentMonthsRange, setRecentMonthsRange] = useState(String(strategyDefaults.recentMonthsRange));
   const [classicYearStart, setClassicYearStart] = useState(String(strategyDefaults.classicYearStart));
   const [classicYearEnd, setClassicYearEnd] = useState(String(strategyDefaults.classicYearEnd));
@@ -105,11 +106,15 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
           : settings?.seriesSelectionStrategy || STRATEGY_DEFAULTS.series;
       setMaxMovieGb(String(settings?.sizeLimits?.maxMovieGb ?? 2.5));
       setMaxEpisodeGb(normalizeSeriesEpisodeSize(settings?.sizeLimits?.maxEpisodeGb));
+      setMaxSeasonTotalGb(normalizeSeriesEpisodeSize(settings?.sizeLimits?.maxSeasonTotalGb));
       setMinMovieSeeders(String(Math.max(0, Number(settings?.sourceFilters?.minMovieSeeders ?? 1) || 0)));
       setMinSeriesSeeders(String(Math.max(0, Number(settings?.sourceFilters?.minSeriesSeeders ?? 1) || 0)));
       setStrictSeriesReplacement(settings?.timeoutChecker?.strictSeriesReplacement !== false);
       setDeletePartialSeriesOnReplacementFailure(settings?.timeoutChecker?.deletePartialSeriesOnReplacementFailure !== false);
-      setBootstrapMissingSeriesToS01E01(settings?.selection?.seriesBootstrapMissingToS01E01 !== false);
+      setBootstrapMissingSeriesToSeason1(
+        (settings?.selection?.seriesBootstrapMissingToSeason1 ??
+          settings?.selection?.seriesBootstrapMissingToS01E01) !== false
+      );
       setRecentMonthsRange(String(strategy?.recentMonthsRange ?? strategyDefaults.recentMonthsRange));
       setClassicYearStart(String(strategy?.classicYearStart ?? strategyDefaults.classicYearStart));
       setClassicYearEnd(String(strategy?.classicYearEnd ?? strategyDefaults.classicYearEnd));
@@ -146,9 +151,15 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
     } else {
       const parsedMinSeriesSeeders = Number(minSeriesSeeders);
       const rawMaxEpisodeGb = String(maxEpisodeGb || '').trim();
+      const rawMaxSeasonTotalGb = String(maxSeasonTotalGb || '').trim();
       if (rawMaxEpisodeGb) {
         const parsedMaxEpisodeGb = Number(rawMaxEpisodeGb);
         if (!Number.isFinite(parsedMaxEpisodeGb) || parsedMaxEpisodeGb <= 0) nextErrors.push('Max episode size must be greater than 0 when set.');
+      }
+      if (rawMaxSeasonTotalGb) {
+        const parsedMaxSeasonTotalGb = Number(rawMaxSeasonTotalGb);
+        if (!Number.isFinite(parsedMaxSeasonTotalGb) || parsedMaxSeasonTotalGb <= 0)
+          nextErrors.push('Max season total size must be greater than 0 when set.');
       }
       if (!Number.isFinite(parsedMinSeriesSeeders) || parsedMinSeriesSeeders < 0) nextErrors.push('Min series seeders must be 0 or greater.');
     }
@@ -193,6 +204,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
     classicYearEnd,
     classicYearStart,
     maxEpisodeGb,
+    maxSeasonTotalGb,
     maxMovieGb,
     minMovieSeeders,
     minSeriesSeeders,
@@ -235,6 +247,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
               type: 'series',
               sizeLimits: {
                 maxEpisodeGb: String(maxEpisodeGb || '').trim() ? Number(maxEpisodeGb) : null,
+                maxSeasonTotalGb: String(maxSeasonTotalGb || '').trim() ? Number(maxSeasonTotalGb) : null,
               },
               sourceFilters: {
                 minSeriesSeeders: Math.max(0, Math.floor(Number(minSeriesSeeders) || 0)),
@@ -244,7 +257,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
                 deletePartialSeriesOnReplacementFailure,
               },
               selection: {
-                seriesBootstrapMissingToS01E01: Boolean(bootstrapMissingSeriesToS01E01),
+                seriesBootstrapMissingToSeason1: Boolean(bootstrapMissingSeriesToSeason1),
               },
               selectionStrategy,
             };
@@ -345,6 +358,17 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
                     disabled={loading}
                   />
                 </Field>
+                <Field label="Max season total size (GB)" hint="Optional. Enforced when downloading a full season (pack or all episodes).">
+                  <Input
+                    type="number"
+                    min={0.1}
+                    step="0.1"
+                    value={maxSeasonTotalGb}
+                    onChange={(event) => setMaxSeasonTotalGb(event.target.value)}
+                    placeholder="(optional)"
+                    disabled={loading}
+                  />
+                </Field>
                 <Field label="Min series seeders">
                   <Input
                     type="number"
@@ -378,17 +402,17 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
                   </label>
                 </Field>
                 <Field
-                  label="Bootstrap missing series with S01E01 only"
-                  hint="If a series folder does not exist in the NAS library, only allow Season 1 Episode 1 torrents. Prevents random mid-season episodes for shows not yet in the library."
+                  label="Bootstrap missing series with Season 1 only"
+                  hint="If a series folder does not exist in the NAS library, download Season 1 only (prefer a season pack; otherwise all episodes). Prevents random mid-season episodes for shows not yet in the library."
                 >
                   <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
                     <input
                       type="checkbox"
-                      checked={bootstrapMissingSeriesToS01E01}
-                      onChange={(event) => setBootstrapMissingSeriesToS01E01(event.target.checked)}
+                      checked={bootstrapMissingSeriesToSeason1}
+                      onChange={(event) => setBootstrapMissingSeriesToSeason1(event.target.checked)}
                       disabled={loading}
                     />
-                    <span>{bootstrapMissingSeriesToS01E01 ? 'Enabled' : 'Disabled'}</span>
+                    <span>{bootstrapMissingSeriesToSeason1 ? 'Enabled' : 'Disabled'}</span>
                   </label>
                 </Field>
               </>

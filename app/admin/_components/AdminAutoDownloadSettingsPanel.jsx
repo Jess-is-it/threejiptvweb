@@ -193,6 +193,7 @@ export default function AdminAutoDownloadSettingsPanel() {
   const [storageLimitGb, setStorageLimitGb] = useState(0);
   const [maxMovieGb, setMaxMovieGb] = useState(2.5);
   const [maxEpisodeGb, setMaxEpisodeGb] = useState('');
+  const [maxSeasonTotalGb, setMaxSeasonTotalGb] = useState('');
   const [minMovieSeeders, setMinMovieSeeders] = useState(1);
   const [minSeriesSeeders, setMinSeriesSeeders] = useState(1);
 
@@ -240,6 +241,9 @@ export default function AdminAutoDownloadSettingsPanel() {
       setStorageLimitGb(Math.round(resolvedLimitGb * 1000) / 1000);
       setMaxMovieGb(Number(s?.sizeLimits?.maxMovieGb ?? 2.5) || 2.5);
       setMaxEpisodeGb(s?.sizeLimits?.maxEpisodeGb === null || s?.sizeLimits?.maxEpisodeGb === undefined ? '' : String(s.sizeLimits.maxEpisodeGb));
+      setMaxSeasonTotalGb(
+        s?.sizeLimits?.maxSeasonTotalGb === null || s?.sizeLimits?.maxSeasonTotalGb === undefined ? '' : String(s.sizeLimits.maxSeasonTotalGb)
+      );
       setMinMovieSeeders(Math.max(0, Number(s?.sourceFilters?.minMovieSeeders ?? 1) || 0));
       setMinSeriesSeeders(Math.max(0, Number(s?.sourceFilters?.minSeriesSeeders ?? 1) || 0));
 
@@ -287,6 +291,10 @@ export default function AdminAutoDownloadSettingsPanel() {
     if (!Number.isFinite(sl) || sl <= 0) errors.push('Storage limit must be greater than 0 GB.');
     const mm = Number(maxMovieGb);
     if (!Number.isFinite(mm) || mm <= 0) errors.push('Max movie size must be > 0.');
+    if (maxSeasonTotalGb.trim()) {
+      const ms = Number(maxSeasonTotalGb);
+      if (!Number.isFinite(ms) || ms <= 0) errors.push('Max season total size must be > 0 when set.');
+    }
     if (!Number.isFinite(Number(minMovieSeeders)) || Number(minMovieSeeders) < 0) errors.push('Min movie seeders must be >= 0.');
     if (!Number.isFinite(Number(minSeriesSeeders)) || Number(minSeriesSeeders) < 0) errors.push('Min series seeders must be >= 0.');
     if (!String(movieFolderTemplate || '').trim()) errors.push('Movie folder template is required.');
@@ -337,6 +345,7 @@ export default function AdminAutoDownloadSettingsPanel() {
     releaseDelayDays,
     videoExtsText,
     subExtsText,
+    maxSeasonTotalGb,
   ]);
 
   const canSave = validationErrors.length === 0;
@@ -365,6 +374,7 @@ export default function AdminAutoDownloadSettingsPanel() {
         sizeLimits: {
           maxMovieGb: Number(maxMovieGb),
           maxEpisodeGb: maxEpisodeGb.trim() ? Number(maxEpisodeGb) : null,
+          maxSeasonTotalGb: maxSeasonTotalGb.trim() ? Number(maxSeasonTotalGb) : null,
         },
         sourceFilters: {
           minMovieSeeders: Math.max(0, Math.floor(Number(minMovieSeeders) || 0)),

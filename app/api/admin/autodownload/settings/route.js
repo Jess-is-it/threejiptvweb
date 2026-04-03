@@ -313,6 +313,11 @@ export async function PUT(req) {
   const maxEpisodeGbRaw = String(body?.sizeLimits?.maxEpisodeGb ?? '').trim();
   const maxEpisodeGb =
     maxEpisodeGbRaw === '' || maxEpisodeGbRaw === 'null' ? null : clampNum(maxEpisodeGbRaw, { min: 0.05, max: 500, fallback: null });
+  const maxSeasonTotalGbRaw = String(body?.sizeLimits?.maxSeasonTotalGb ?? '').trim();
+  const maxSeasonTotalGb =
+    maxSeasonTotalGbRaw === '' || maxSeasonTotalGbRaw === 'null'
+      ? null
+      : clampNum(maxSeasonTotalGbRaw, { min: 0.1, max: 5000, fallback: null });
   const minMovieSeeders = clampNum(body?.sourceFilters?.minMovieSeeders, { min: 0, max: 100000, fallback: 1 });
   const minSeriesSeeders = clampNum(body?.sourceFilters?.minSeriesSeeders, { min: 0, max: 100000, fallback: 1 });
 
@@ -465,7 +470,7 @@ export async function PUT(req) {
       maxSeriesPerBatch,
       pauseSelectionWhileActive,
     },
-    sizeLimits: { maxMovieGb, maxEpisodeGb },
+    sizeLimits: { maxMovieGb, maxEpisodeGb, maxSeasonTotalGb },
     sourceFilters: { minMovieSeeders, minSeriesSeeders },
     timeoutChecker: {
       enabled: timeoutEnabled,
@@ -552,6 +557,11 @@ export async function PATCH(req) {
       maxEpisodeGbRaw === '' || maxEpisodeGbRaw === 'null'
         ? null
         : clampNum(maxEpisodeGbRaw, { min: 0.05, max: 500, fallback: null });
+    const maxSeasonTotalGbRaw = String(body?.sizeLimits?.maxSeasonTotalGb ?? '').trim();
+    const maxSeasonTotalGb =
+      maxSeasonTotalGbRaw === '' || maxSeasonTotalGbRaw === 'null'
+        ? null
+        : clampNum(maxSeasonTotalGbRaw, { min: 0.1, max: 5000, fallback: null });
     const minSeriesSeeders = clampNum(body?.sourceFilters?.minSeriesSeeders, { min: 0, max: 100000, fallback: null });
     const seriesSel = validateSelectionStrategy(body?.selectionStrategy ?? body?.seriesSelectionStrategy ?? existingSettings?.seriesSelectionStrategy ?? {}, {
       label: 'Series strategy',
@@ -568,9 +578,12 @@ export async function PATCH(req) {
     if (maxEpisodeGbRaw && (!Number.isFinite(maxEpisodeGb) || maxEpisodeGb <= 0)) {
       errors.push('Max episode size must be greater than 0 when set.');
     }
+    if (maxSeasonTotalGbRaw && (!Number.isFinite(maxSeasonTotalGb) || maxSeasonTotalGb <= 0)) {
+      errors.push('Max season total size must be greater than 0 when set.');
+    }
     if (!Number.isFinite(minSeriesSeeders) || minSeriesSeeders < 0) errors.push('Min series seeders must be 0 or greater.');
     errors.push(...seriesSel.errors);
-    patch.sizeLimits = { maxEpisodeGb };
+    patch.sizeLimits = { maxEpisodeGb, maxSeasonTotalGb };
     patch.sourceFilters = { minSeriesSeeders };
     patch.timeoutChecker = {
       strictSeriesReplacement: body?.timeoutChecker?.strictSeriesReplacement !== false,
@@ -578,10 +591,13 @@ export async function PATCH(req) {
     };
     patch.seriesSelectionStrategy = seriesSel.value;
     const existingSelection = existingSettings?.selection && typeof existingSettings.selection === 'object' ? existingSettings.selection : {};
-    const bootstrap = body?.selection?.seriesBootstrapMissingToS01E01;
+    const bootstrap = body?.selection?.seriesBootstrapMissingToSeason1 ?? body?.selection?.seriesBootstrapMissingToS01E01;
     patch.selection = {
       ...existingSelection,
-      seriesBootstrapMissingToS01E01: bootstrap === undefined || bootstrap === null ? existingSelection.seriesBootstrapMissingToS01E01 !== false : Boolean(bootstrap),
+      seriesBootstrapMissingToSeason1:
+        bootstrap === undefined || bootstrap === null
+          ? (existingSelection.seriesBootstrapMissingToSeason1 ?? existingSelection.seriesBootstrapMissingToS01E01) !== false
+          : Boolean(bootstrap),
     };
   }
 
