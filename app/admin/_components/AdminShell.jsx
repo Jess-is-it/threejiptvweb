@@ -69,7 +69,7 @@ const autodownloadSettingsItems = [
 ];
 
 const autodownloadSourcesItems = [
-  { href: '/admin/autodownload/sources/movies', label: 'Movies', icon: Film, aliases: ['/admin/autodownload/sources'] },
+  { href: '/admin/autodownload/sources/movies', label: 'Movies', icon: Film },
   { href: '/admin/autodownload/sources/series', label: 'Series', icon: Tv },
 ];
 
@@ -126,12 +126,8 @@ export default function AdminShell({ admin, children }) {
   );
   const autodownloadAutoDeleteActive = autoDeleteSettingsActive || autoDeleteLogsActive;
   const autodownloadActive = pathname.startsWith('/admin/autodownload') && !autodownloadAutoDeleteActive;
-  const autodownloadSourcesActive = autodownloadSourcesItems.some(
-    (it) =>
-      pathname === it.href ||
-      pathname.startsWith(`${it.href}/`) ||
-      (Array.isArray(it.aliases) ? it.aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`)) : false)
-  );
+  const autodownloadSourcesActive =
+    pathname === '/admin/autodownload/sources' || pathname.startsWith('/admin/autodownload/sources/');
   const autodownloadSettingsActive =
     autodownloadSettingsItems.some((it) => pathname === it.href || pathname.startsWith(`${it.href}/`)) ||
     autodownloadSourcesActive;
@@ -605,8 +601,7 @@ export default function AdminShell({ admin, children }) {
                                 {autodownloadSourcesItems.map((it) => {
                                   const active =
                                     pathname === it.href ||
-                                    pathname.startsWith(`${it.href}/`) ||
-                                    (Array.isArray(it.aliases) ? it.aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`)) : false);
+                                    pathname.startsWith(`${it.href}/`);
                                   const Icon = it.icon;
                                   return (
                                     <Link
