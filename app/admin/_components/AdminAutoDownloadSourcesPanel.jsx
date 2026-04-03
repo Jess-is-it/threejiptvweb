@@ -395,6 +395,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
       ytsApiBasePath: String(provider?.config?.apiBasePath || '/api/v2/'),
       ytsEndpoint: String(provider?.config?.endpoint || 'list_movies.json'),
       tpbSearchPathTemplate: String(provider?.config?.searchPathTemplate || '/search/{query}/1/99/201'),
+      eztvEndpoint: String(provider?.config?.endpoint || '/api/get-torrents'),
     });
     setEditOpen(true);
   };
@@ -418,10 +419,19 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
               apiBasePath: String(editForm.ytsApiBasePath || '/api/v2/'),
               endpoint: String(editForm.ytsEndpoint || ''),
             }
-          : {
-              domains: normalizeDomainsText(editForm.domainsText).split(/\r?\n/).filter(Boolean),
-              searchPathTemplate: String(editForm.tpbSearchPathTemplate || '/search/{query}/1/99/201'),
-            },
+          : provider.key === 'tpb'
+            ? {
+                domains: normalizeDomainsText(editForm.domainsText).split(/\r?\n/).filter(Boolean),
+                searchPathTemplate: String(editForm.tpbSearchPathTemplate || '/search/{query}/1/99/201'),
+              }
+            : provider.key === 'eztv'
+              ? {
+                  domains: normalizeDomainsText(editForm.domainsText).split(/\r?\n/).filter(Boolean),
+                  endpoint: String(editForm.eztvEndpoint || '/api/get-torrents'),
+                }
+              : {
+                  domains: normalizeDomainsText(editForm.domainsText).split(/\r?\n/).filter(Boolean),
+                },
     };
 
     await patchProvider(provider.id, patch, `${String(provider.displayName || provider.id).trim()} updated.`);
@@ -432,7 +442,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
     {
       title: 'Purpose',
       items: [
-        'Manages torrent provider adapters (YTS/TPB) with health status, tests, backoff, and logs.',
+        'Manages torrent provider adapters (YTS/TPB/EZTV) with health status, tests, backoff, and logs.',
         'No anti-bot bypass is implemented. Blocked/challenge responses are recorded and backoff is applied.',
       ],
     },
@@ -928,6 +938,21 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
                   className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm"
                   placeholder="/search/{query}/1/99/201"
                 />
+              </div>
+            ) : null}
+
+            {editProviderId === 'eztv' ? (
+              <div className="md:col-span-2">
+                <div className="mb-1 text-xs text-[var(--admin-muted)]">API endpoint path</div>
+                <input
+                  value={editForm.eztvEndpoint}
+                  onChange={(e) => setEditForm((prev) => ({ ...prev, eztvEndpoint: e.target.value }))}
+                  className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm"
+                  placeholder="/api/get-torrents"
+                />
+                <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                  For best results, use a test query like <span className="font-mono">tt0944947</span> (IMDb id).
+                </div>
               </div>
             ) : null}
 
