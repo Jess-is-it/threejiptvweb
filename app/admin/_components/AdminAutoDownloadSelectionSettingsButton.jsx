@@ -81,6 +81,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
   const [minSeriesSeeders, setMinSeriesSeeders] = useState('1');
   const [strictSeriesReplacement, setStrictSeriesReplacement] = useState(true);
   const [deletePartialSeriesOnReplacementFailure, setDeletePartialSeriesOnReplacementFailure] = useState(true);
+  const [bootstrapMissingSeriesToS01E01, setBootstrapMissingSeriesToS01E01] = useState(true);
   const [recentMonthsRange, setRecentMonthsRange] = useState(String(strategyDefaults.recentMonthsRange));
   const [classicYearStart, setClassicYearStart] = useState(String(strategyDefaults.classicYearStart));
   const [classicYearEnd, setClassicYearEnd] = useState(String(strategyDefaults.classicYearEnd));
@@ -108,6 +109,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
       setMinSeriesSeeders(String(Math.max(0, Number(settings?.sourceFilters?.minSeriesSeeders ?? 1) || 0)));
       setStrictSeriesReplacement(settings?.timeoutChecker?.strictSeriesReplacement !== false);
       setDeletePartialSeriesOnReplacementFailure(settings?.timeoutChecker?.deletePartialSeriesOnReplacementFailure !== false);
+      setBootstrapMissingSeriesToS01E01(settings?.selection?.seriesBootstrapMissingToS01E01 !== false);
       setRecentMonthsRange(String(strategy?.recentMonthsRange ?? strategyDefaults.recentMonthsRange));
       setClassicYearStart(String(strategy?.classicYearStart ?? strategyDefaults.classicYearStart));
       setClassicYearEnd(String(strategy?.classicYearEnd ?? strategyDefaults.classicYearEnd));
@@ -241,6 +243,9 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
                 strictSeriesReplacement,
                 deletePartialSeriesOnReplacementFailure,
               },
+              selection: {
+                seriesBootstrapMissingToS01E01: Boolean(bootstrapMissingSeriesToS01E01),
+              },
               selectionStrategy,
             };
 
@@ -370,6 +375,20 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
                       disabled={loading}
                     />
                     <span>{deletePartialSeriesOnReplacementFailure ? 'Enabled' : 'Disabled'}</span>
+                  </label>
+                </Field>
+                <Field
+                  label="Bootstrap missing series with S01E01 only"
+                  hint="If a series folder does not exist in the NAS library, only allow Season 1 Episode 1 torrents. Prevents random mid-season episodes for shows not yet in the library."
+                >
+                  <label className="inline-flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={bootstrapMissingSeriesToS01E01}
+                      onChange={(event) => setBootstrapMissingSeriesToS01E01(event.target.checked)}
+                      disabled={loading}
+                    />
+                    <span>{bootstrapMissingSeriesToS01E01 ? 'Enabled' : 'Disabled'}</span>
                   </label>
                 </Field>
               </>

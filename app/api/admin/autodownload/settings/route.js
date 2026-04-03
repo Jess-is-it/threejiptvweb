@@ -577,6 +577,12 @@ export async function PATCH(req) {
       deletePartialSeriesOnReplacementFailure: body?.timeoutChecker?.deletePartialSeriesOnReplacementFailure !== false,
     };
     patch.seriesSelectionStrategy = seriesSel.value;
+    const existingSelection = existingSettings?.selection && typeof existingSettings.selection === 'object' ? existingSettings.selection : {};
+    const bootstrap = body?.selection?.seriesBootstrapMissingToS01E01;
+    patch.selection = {
+      ...existingSelection,
+      seriesBootstrapMissingToS01E01: bootstrap === undefined || bootstrap === null ? existingSelection.seriesBootstrapMissingToS01E01 !== false : Boolean(bootstrap),
+    };
   }
 
   if (errors.length) {
