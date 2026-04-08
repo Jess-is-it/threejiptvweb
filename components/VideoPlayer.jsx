@@ -109,6 +109,7 @@ export default function VideoPlayer({
   servers = [],
   activeOrigin = '',
   onSelectServer = null,
+  onPlaybackError = null,
   subtitles = [],
   seriesNavigation = null,
 }) {
@@ -143,6 +144,8 @@ export default function VideoPlayer({
   const currentRef = useRef({ kind: '', url: '' });
   const prevMp4Ref = useRef(mp4);
   const liveRecoverRef = useRef({ lastAt: 0, tries: 0 });
+  const livePlaylistRecoverRef = useRef({ lastAt: 0, windowStartAt: 0, tries: 0 });
+  const liveHardResetRef = useRef({ lastAt: 0, windowStartAt: 0, resets: 0 });
   const { push, View: Toasts } = useToasts();
 
   const isHlsSource = (raw) => {
@@ -345,7 +348,9 @@ export default function VideoPlayer({
       if (useHls && isHlsLike) {
         if (Hls.isSupported()) {
           hlsInst = new Hls({
-            lowLatencyMode: true,
+            // Low latency mode tends to be brittle on some IPTV panels (sequence discontinuities, short windows).
+            // Prefer stability over minimal latency.
+            lowLatencyMode: meta?.type === 'live' ? false : true,
             enableWorker: true,
             backBufferLength: 90,
             maxBufferLength: 30,
@@ -364,11 +369,110 @@ export default function VideoPlayer({
           hlsInst.attachMedia(v);
           hlsInst.on(Hls.Events.ERROR, (_evt, data) => {
             if (!data) return;
+            const detail = String(data?.details || '').toLowerCase();
+            const msg = String(data?.err?.message || data?.error?.message || '');
+            const isLiveRecoverablePlaylistNoise =
+              meta?.type === 'live' &&
+              (msg.toLowerCase().includes('media sequence mismatch') ||
+                detail === 'levelparsingerror' ||
+                detail === 'levelloaderror' ||
+                detail === 'manifestloaderror');
             try {
-              // Helpful when users report "Playback error" without network details
-              console.warn('[3JTV][HLS]', data?.type, data?.details, data);
+              // Live IPTV panels can emit transient playlist mismatches even while playback stays healthy.
+              // The recovery path below handles those; avoid spamming the console with expected noise.
+              if (!isLiveRecoverablePlaylistNoise) {
+                console.warn('[3JTV][HLS]', data?.type, data?.details, data);
+              }
             } catch {}
             if (data?.fatal) {
+              // Hard reset helper: destroy/recreate pipeline with a cache-busted root playlist.
+              const hardResetLive = () => {
+                try {
+                  const isLive = meta?.type === 'live';
+                  if (!isLive || !srcs.hls) return false;
+                  const now = Date.now();
+                  if (!liveHardResetRef.current.windowStartAt || now - liveHardResetRef.current.windowStartAt > 60_000) {
+                    liveHardResetRef.current.windowStartAt = now;
+                    liveHardResetRef.current.resets = 0;
+                  }
+                  // Prevent rapid flicker loops.
+                  if (now - (liveHardResetRef.current.lastAt || 0) < 8000) return false;
+                  if (liveHardResetRef.current.resets >= 3) return false;
+                  liveHardResetRef.current.lastAt = now;
+                  liveHardResetRef.current.resets += 1;
+
+                  const bust = (s) => {
+                    const str = String(s || '');
+                    if (!str) return str;
+                    return str.includes('?') ? `${str}&_t=${Date.now()}` : `${str}?_t=${Date.now()}`;
+                  };
+                  attachSrc(bust(srcs.hls));
+                  setTimeout(() => {
+                    try {
+                      v.play?.();
+                    } catch {}
+                  }, 200);
+                  return true;
+                } catch {
+                  return false;
+                }
+              };
+
+              // Soft reload helper: refresh manifest loading without detaching the <video>.
+              // This avoids a visible flicker for transient live playlist inconsistencies.
+              const softResyncLive = () => {
+                try {
+                  const isLive = meta?.type === 'live';
+                  if (!isLive || !srcs.hls) return false;
+                  const now = Date.now();
+                  if (
+                    !livePlaylistRecoverRef.current.windowStartAt ||
+                    now - livePlaylistRecoverRef.current.windowStartAt > 20_000
+                  ) {
+                    livePlaylistRecoverRef.current.windowStartAt = now;
+                    livePlaylistRecoverRef.current.tries = 0;
+                  }
+                  if (now - (livePlaylistRecoverRef.current.lastAt || 0) < 1500) return false;
+                  if (livePlaylistRecoverRef.current.tries >= 4) return false;
+                  livePlaylistRecoverRef.current.lastAt = now;
+                  livePlaylistRecoverRef.current.tries += 1;
+                  // Ask hls.js to re-sync from the current live edge without replacing the media pipeline.
+                  try { hlsInst?.stopLoad?.(); } catch {}
+                  try { hlsInst?.startLoad?.(-1); } catch {}
+                  setTimeout(() => {
+                    try { v.play?.(); } catch {}
+                  }, 120);
+                  return true;
+                } catch {
+                  return false;
+                }
+              };
+
+              const softReloadLive = () => {
+                try {
+                  const isLive = meta?.type === 'live';
+                  if (!isLive || !srcs.hls) return false;
+                  const now = Date.now();
+                  if (now - (liveHardResetRef.current.lastAt || 0) < 4000) return false;
+                  const bust = (s) => {
+                    const str = String(s || '');
+                    if (!str) return str;
+                    return str.includes('?') ? `${str}&_t=${Date.now()}` : `${str}?_t=${Date.now()}`;
+                  };
+                  // Stop loading, refresh root, then resume from live edge.
+                  try { hlsInst?.stopLoad?.(); } catch {}
+                  try { hlsInst?.loadSource?.(bust(srcs.hls)); } catch {}
+                  try { hlsInst?.startLoad?.(-1); } catch {}
+                  // Keep current audio state.
+                  setTimeout(() => {
+                    try { v.play?.(); } catch {}
+                  }, 150);
+                  return true;
+                } catch {
+                  return false;
+                }
+              };
+
               // If a nested playlist URL expires or the upstream returned HTML (common after a while on live),
               // restart from the root source to get a fresh token.
               try {
@@ -383,23 +487,21 @@ export default function VideoPlayer({
                 const is404 = Number(status) === 404;
                 const isLevelOrManifest =
                   String(data?.details || '').includes('level') || String(data?.details || '').includes('manifest');
+                const isSeqMismatch = msg.toLowerCase().includes('media sequence mismatch');
+                const isLivePlaylistError =
+                  detail === 'levelparsingerror' ||
+                  detail === 'levelloaderror' ||
+                  detail === 'manifestloaderror';
+                if (isLive && (isSeqMismatch || isLivePlaylistError)) {
+                  // First try an in-place live-edge resync; only reload the source if that fails.
+                  if (softResyncLive()) return;
+                  if (softReloadLive()) return;
+                  if (hardResetLive()) return;
+                }
                 if (isLive && isNet && (is404 || isLevelOrManifest)) {
-                  const bust = (s) => {
-                    const str = String(s || '');
-                    if (!str) return str;
-                    return str.includes('?') ? `${str}&_t=${Date.now()}` : `${str}?_t=${Date.now()}`;
-                  };
-                  const root = bust(srcs.hls);
-                  attachSrc(root);
-                  setTimeout(() => {
-                    try {
-                      // Prefer starting muted for the recovery path; user can unmute with one click.
-                      v.muted = true;
-                      v.play?.();
-                      setNeedsUnmute(true);
-                    } catch {}
-                  }, 200);
-                  return;
+                  if (softResyncLive()) return;
+                  if (softReloadLive()) return;
+                  if (hardResetLive()) return;
                 }
               } catch {}
 
@@ -480,20 +582,26 @@ export default function VideoPlayer({
       const tryPlay = async () => {
         if (!autoPlayOnLoad) return;
 
-        // Always try to start with sound. If the browser blocks audible autoplay,
-        // do not fall back to muted autoplay (users hate "silent autoplay").
+        // Live: start muted (autoplay-friendly). VOD: try with sound first.
         try {
-          v.muted = false;
-          if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+          if (meta?.type === 'live') {
+            v.muted = true;
+          } else {
+            v.muted = false;
+            if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+          }
         } catch {}
 
         try {
           await v.play();
           setNeedsUnmute(Boolean(v.muted || v.volume === 0));
-        } catch {
+        } catch (e) {
           // Some browsers won't allow audible autoplay after navigation, even if user clicked.
-          // For live streams, prefer "start muted" over "doesn't start at all".
-          const allowMutedFallback = meta?.type === 'live';
+          // For VOD, prefer "start muted" over "doesn't start at all" (Netflix-style).
+          const errName = String(e?.name || '').toLowerCase();
+          const errMsg = String(e?.message || '').toLowerCase();
+          const isAutoplayPolicy = errName.includes('notallowed') || errMsg.includes('notallowed');
+          const allowMutedFallback = meta?.type === 'live' || isAutoplayPolicy;
           if (allowMutedFallback) {
             try {
               v.muted = true;
@@ -560,6 +668,15 @@ export default function VideoPlayer({
 	      try {
 	        console.warn('[3JTV][VIDEO]', 'error', errCode, mediaErr);
 	      } catch {}
+        try {
+          onPlaybackError?.({
+            code: errCode,
+            message: String(mediaErr?.message || '').trim(),
+            kind: currentRef.current?.kind || '',
+            url: currentRef.current?.url || '',
+            meta,
+          });
+        } catch {}
 
         // Live streams can occasionally return a bad segment (HTML/502) which causes a demuxer parse error.
         // Try a lightweight recover once or twice before surfacing the error.
@@ -584,7 +701,6 @@ export default function VideoPlayer({
                 // Best-effort resume
                 setTimeout(() => {
                   try {
-                    if (v.muted !== true) v.muted = true;
                     v.play?.();
                   } catch {}
                 }, 250);
@@ -690,12 +806,30 @@ export default function VideoPlayer({
     try {
       if (v.paused) {
         await ensureFullscreen();
-        // User gesture: unmute if possible
+        // User gesture: try to start with sound, but fall back to muted if the browser blocks it.
         try {
           if (v.muted) v.muted = false;
           if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
         } catch {}
-        await v.play();
+        try {
+          await v.play();
+          setAutoplayBlocked(false);
+          setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+        } catch (e) {
+          const errName = String(e?.name || '').toLowerCase();
+          const errMsg = String(e?.message || '').toLowerCase();
+          const isPolicy = errName.includes('notallowed') || errMsg.includes('notallowed');
+          if (meta?.type === 'live' || isPolicy) {
+            try {
+              v.muted = true;
+              await v.play();
+              setAutoplayBlocked(false);
+              setNeedsUnmute(true);
+              return;
+            } catch {}
+          }
+          throw e;
+        }
       } else {
         v.pause();
       }
