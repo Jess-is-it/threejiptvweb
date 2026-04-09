@@ -61,6 +61,10 @@ function queueKeyForType(type) {
   return normalizeSelectionType(type) === 'series' ? 'downloadsSeries' : 'downloadsMovies';
 }
 
+function autoCategoryForType(type) {
+  return normalizeSelectionType(type) === 'series' ? 'SERIES_AUTO' : 'MOVIE_AUTO';
+}
+
 function isActiveDownloadRow(row = {}) {
   return String(row?.status || '').trim().toLowerCase() !== 'deleted';
 }
@@ -161,140 +165,6 @@ function buildRecoveredSelectionLog(logId, type, rows = []) {
   };
 }
 
-function isRecoveredReferenceLog(log = {}) {
-  return String(log?.triggerReason || '').trim().toLowerCase() === 'recovered_reference';
-}
-
-function normalizeReleaseDate(value) {
-  const s = String(value || '').trim();
-  return s;
-}
-
-function queueKeyForLogType(type) {
-  return normalizeSelectionType(type) === 'series' ? 'downloadsSeries' : 'downloadsMovies';
-}
-
-function rewriteSelectionLogIdInQueue(db, type, fromId, toId) {
-  const src = String(fromId || '').trim();
-  const dst = String(toId || '').trim();
-  if (!src || !dst || src === dst) return 0;
-  const queueKey = queueKeyForLogType(type);
-  const rows = Array.isArray(db?.[queueKey]) ? db[queueKey] : [];
-  let updated = 0;
-  for (let i = 0; i < rows.length; i += 1) {
-    const row = rows[i];
-    if (String(row?.selectionLogId || '').trim() !== src) continue;
-    rows[i] = { ...row, selectionLogId: dst, updatedAt: Date.now() };
-    updated += 1;
-  }
-  db[queueKey] = rows;
-  return updated;
-}
-
-function mergeSelectedItems(a = [], b = [], canonicalId = '') {
-  const merged = dedupeSelectedItems([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]).map((row) => ({
-    ...row,
-    selectionLogId: canonicalId || row?.selectionLogId,
-  }));
-  return merged;
-}
-
-function logMergeSortValue(log = {}) {
-  return logSortValue(log);
-}
-
-function chooseCanonicalLogForRelease(logs = []) {
-  const list = Array.isArray(logs) ? logs : [];
-  if (!list.length) return null;
-
-  // Prefer a "real" log when present; recoveries should fold into it.
-  const sorted = [...list].sort((a, b) => {
-    const aRecovered = isRecoveredReferenceLog(a);
-    const bRecovered = isRecoveredReferenceLog(b);
-    if (aRecovered !== bRecovered) return aRecovered ? 1 : -1;
-    const aItems = Array.isArray(a?.selectedItems) ? a.selectedItems.length : 0;
-    const bItems = Array.isArray(b?.selectedItems) ? b.selectedItems.length : 0;
-    if (aItems !== bItems) return bItems - aItems;
-    return logMergeSortValue(b) - logMergeSortValue(a);
-  });
-  return sorted[0] || null;
-}
-
-function dedupeSelectionLogsByTypeAndReleaseDate(db) {
-  db.selectionLogs = Array.isArray(db.selectionLogs) ? db.selectionLogs : [];
-  if (db.selectionLogs.length < 2) return { changed: false, removed: 0, remappedQueueRows: 0 };
-
-  const groups = new Map();
-  for (const row of db.selectionLogs) {
-    const type = normalizeSelectionType(row?.selectionType || 'movie');
-    const releaseDate = normalizeReleaseDate(row?.releaseDate || '');
-    if (!releaseDate) continue;
-    const key = `${type}|${releaseDate}`;
-    const list = groups.get(key) || [];
-    list.push(row);
-    groups.set(key, list);
-  }
-
-  let changed = false;
-  let removed = 0;
-  let remappedQueueRows = 0;
-
-  for (const [key, rows] of groups.entries()) {
-    if (!rows || rows.length < 2) continue;
-    const [type] = key.split('|');
-    const canonical = chooseCanonicalLogForRelease(rows);
-    const canonicalId = String(canonical?.id || '').trim();
-    if (!canonicalId) continue;
-
-    const keep = [];
-    for (const row of rows) {
-      const id = String(row?.id || '').trim();
-      if (!id) {
-        keep.push(row);
-        continue;
-      }
-      if (id === canonicalId) {
-        keep.push(row);
-        continue;
-      }
-
-      // Merge any recovered data into the canonical row and remap queued download references.
-      remappedQueueRows += rewriteSelectionLogIdInQueue(db, type, id, canonicalId);
-      canonical.selectedItems = mergeSelectedItems(canonical.selectedItems, row?.selectedItems, canonicalId);
-      canonical.totalSelected = canonical.selectedItems.length;
-      canonical.updatedAt = Math.max(numericTimestamp(canonical?.updatedAt), numericTimestamp(row?.updatedAt), Date.now());
-      canonical.runAt = Math.min(numericTimestamp(canonical?.runAt) || Infinity, numericTimestamp(row?.runAt) || Infinity);
-      if (!Number.isFinite(canonical.runAt) || canonical.runAt === Infinity) canonical.runAt = numericTimestamp(canonical?.updatedAt) || Date.now();
-      canonical.skippedDuplicatesCount = Math.max(0, Number(canonical?.skippedDuplicatesCount || 0) + Number(row?.skippedDuplicatesCount || 0));
-      canonical.skippedNoSourceCount = Math.max(0, Number(canonical?.skippedNoSourceCount || 0) + Number(row?.skippedNoSourceCount || 0));
-      canonical.skippedStorageLimitCount = Math.max(0, Number(canonical?.skippedStorageLimitCount || 0) + Number(row?.skippedStorageLimitCount || 0));
-      const insufficient = [...(Array.isArray(canonical?.insufficient) ? canonical.insufficient : []), ...(Array.isArray(row?.insufficient) ? row.insufficient : [])];
-      canonical.insufficient = insufficient;
-      changed = true;
-      removed += 1;
-    }
-
-    if (removed > 0) {
-      // Ensure the canonical row is present exactly once.
-      db.selectionLogs = db.selectionLogs.filter((x) => {
-        const id = String(x?.id || '').trim();
-        if (!id) return true;
-        if (id === canonicalId) return true;
-        const xType = normalizeSelectionType(x?.selectionType || 'movie');
-        const xReleaseDate = normalizeReleaseDate(x?.releaseDate || '');
-        return !(xType === type && xReleaseDate && `${xType}|${xReleaseDate}` === key);
-      });
-      // Re-insert canonical (in case it was filtered out due to object identity mismatches).
-      const canonicalIdx = db.selectionLogs.findIndex((x) => String(x?.id || '').trim() === canonicalId);
-      if (canonicalIdx < 0) db.selectionLogs.unshift(canonical);
-      else db.selectionLogs[canonicalIdx] = canonical;
-    }
-  }
-
-  if (!changed) return { changed: false, removed: 0, remappedQueueRows: 0 };
-  return { changed: true, removed, remappedQueueRows };
-}
-
 function dedupeSelectionLogsById(db) {
   db.selectionLogs = Array.isArray(db.selectionLogs) ? db.selectionLogs : [];
   if (db.selectionLogs.length < 2) return { changed: false, removed: 0 };
@@ -374,8 +244,7 @@ async function backfillReferencedSelectionLogs(db) {
   db.downloadsSeries = Array.isArray(db.downloadsSeries) ? db.downloadsSeries : [];
 
   const dedupe = dedupeSelectionLogsById(db);
-  const dedupeByRelease = dedupeSelectionLogsByTypeAndReleaseDate(db);
-  if (dedupe.changed || dedupeByRelease.changed) await saveAdminDb(db);
+  if (dedupe.changed) await saveAdminDb(db);
 
   const knownIds = new Set(db.selectionLogs.map((row) => String(row?.id || '').trim()).filter(Boolean));
   const recovered = [];
@@ -396,26 +265,6 @@ async function backfillReferencedSelectionLogs(db) {
       const recoveredLog = buildRecoveredSelectionLog(logId, selectionType, rows);
       if (!recoveredLog) continue;
 
-      // If a canonical log exists for this release date already, remap queue rows to that log id
-      // and merge recovered selectedItems into it. This prevents duplicated selection log entries
-      // for the same day.
-      const rel = normalizeReleaseDate(recoveredLog?.releaseDate || '');
-      const candidates = db.selectionLogs.filter(
-        (x) =>
-          normalizeSelectionType(x?.selectionType || selectionType) === normalizeSelectionType(selectionType) &&
-          normalizeReleaseDate(x?.releaseDate || '') === rel
-      );
-      const canonical = chooseCanonicalLogForRelease(candidates);
-      const canonicalId = String(canonical?.id || '').trim();
-      if (canonicalId && canonicalId !== String(logId || '').trim()) {
-        rewriteSelectionLogIdInQueue(db, selectionType, logId, canonicalId);
-        canonical.selectedItems = mergeSelectedItems(canonical.selectedItems, recoveredLog.selectedItems, canonicalId);
-        canonical.totalSelected = canonical.selectedItems.length;
-        canonical.updatedAt = Math.max(numericTimestamp(canonical?.updatedAt), numericTimestamp(recoveredLog?.updatedAt), Date.now());
-        await saveAdminDb(db);
-        continue;
-      }
-
       knownIds.add(logId);
       recovered.push(recoveredLog);
     }
@@ -424,28 +273,8 @@ async function backfillReferencedSelectionLogs(db) {
   if (!recovered.length) return { recoveredCount: 0 };
 
   db.selectionLogs = [...db.selectionLogs, ...recovered].sort((a, b) => logSortValue(b) - logSortValue(a));
-  // If recovered logs collide with real logs for the same releaseDate, fold them in now.
-  const postDedupeByRelease = dedupeSelectionLogsByTypeAndReleaseDate(db);
   await saveAdminDb(db);
-  return { recoveredCount: recovered.length, dedupedByRelease: postDedupeByRelease };
-}
-
-function getReferencedSelectionLogIds(db, type = 'all') {
-  const wantedType = String(type || 'all').trim().toLowerCase();
-  const types = wantedType === 'all' ? ['movie', 'series'] : [normalizeSelectionType(wantedType)];
-  const ids = new Set();
-
-  for (const selectionType of types) {
-    const queueKey = queueKeyForType(selectionType);
-    const rows = Array.isArray(db?.[queueKey]) ? db[queueKey] : [];
-    for (const row of rows) {
-      if (!isActiveDownloadRow(row)) continue;
-      const logId = String(row?.selectionLogId || '').trim();
-      if (logId) ids.add(logId);
-    }
-  }
-
-  return ids;
+  return { recoveredCount: recovered.length };
 }
 
 export async function GET(req) {
@@ -501,20 +330,67 @@ export async function DELETE(req) {
   const db = await getAdminDb();
   await backfillReferencedSelectionLogs(db);
   const all = Array.isArray(db.selectionLogs) ? db.selectionLogs : [];
-  const protectedIds = getReferencedSelectionLogIds(db, type);
-  let preservedReferenced = 0;
+  const wantedType = type === 'all' ? 'all' : type === 'series' ? 'series' : 'movie';
+  const deletedIds = new Set(
+    all
+      .filter((x) => wantedType === 'all' || String(x?.selectionType || 'movie').toLowerCase() === wantedType)
+      .map((x) => String(x?.id || '').trim())
+      .filter(Boolean)
+  );
   const next = all.filter((x) => {
     const logType = String(x?.selectionType || 'movie').toLowerCase();
-    const wantedType = type === 'all' ? 'all' : type === 'series' ? 'series' : 'movie';
     const isTargeted = wantedType === 'all' || logType === wantedType;
-    if (!isTargeted) return true;
-    const logId = String(x?.id || '').trim();
-    if (logId && protectedIds.has(logId)) {
-      preservedReferenced += 1;
-      return true;
-    }
-    return false;
+    return !isTargeted;
   });
+
+  let detachedQueueRefs = 0;
+  let deletedLegacyQueueRows = 0;
+  for (const selectionType of wantedType === 'all' ? ['movie', 'series'] : [wantedType]) {
+    const queueKey = queueKeyForType(selectionType);
+    const desiredCategory = autoCategoryForType(selectionType);
+    const rows = Array.isArray(db?.[queueKey]) ? db[queueKey] : [];
+    db[queueKey] = rows.map((row) => {
+      const logId = String(row?.selectionLogId || '').trim();
+      if (logId && deletedIds.has(logId)) {
+        detachedQueueRefs += 1;
+        return {
+          ...row,
+          selectionLogId: null,
+          updatedAt: Date.now(),
+        };
+      }
+
+      const status = String(row?.status || '').trim().toLowerCase();
+      const releaseState = String(row?.releaseState || '').trim().toLowerCase();
+      const category = String(row?.category || '').trim().toUpperCase();
+      const isLegacyAutoManaged =
+        !logId &&
+        status !== 'deleted' &&
+        releaseState !== 'released' &&
+        category === desiredCategory &&
+        Number(row?.tmdb?.id || 0) > 0;
+      if (!isLegacyAutoManaged) return row;
+
+      deletedLegacyQueueRows += 1;
+      return {
+        ...row,
+        selectionLogId: null,
+        qbHash: null,
+        progress: 0,
+        status: 'Deleted',
+        cleanedAt: Date.now(),
+        updatedAt: Date.now(),
+        error: 'Selection log cleared; legacy auto-download entry removed.',
+        deletedReason: 'Selection log cleared; legacy auto-download entry removed.',
+        nextSourceRetryAt: null,
+      };
+    });
+  }
+
+  const beforeSourceLogs = Array.isArray(db.sourceProviderLogs) ? db.sourceProviderLogs : [];
+  const nextSourceLogs = beforeSourceLogs.filter((row) => !deletedIds.has(String(row?.selectionLogId || '').trim()));
+  const deletedSourceLogs = Math.max(0, beforeSourceLogs.length - nextSourceLogs.length);
+  db.sourceProviderLogs = nextSourceLogs;
   db.selectionLogs = next;
   await saveAdminDb(db);
 
@@ -522,9 +398,11 @@ export async function DELETE(req) {
     {
       ok: true,
       deleted: Math.max(0, all.length - next.length),
-      preservedReferenced,
+      detachedQueueRefs,
+      deletedLegacyQueueRows,
+      deletedSourceLogs,
       remaining: next.length,
-      type: type === 'all' ? 'all' : type === 'series' ? 'series' : 'movie',
+      type: wantedType,
     },
     { status: 200 }
   );

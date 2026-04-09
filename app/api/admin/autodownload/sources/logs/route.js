@@ -16,6 +16,8 @@ export async function GET(req) {
     const out = await queryDownloadSourceLogs({
       type: searchParams.get('type') || 'movie',
       provider: searchParams.get('provider') || 'all',
+      selectionLogId: searchParams.get('selectionLogId') || '',
+      offset: Number(searchParams.get('offset') || 0) || 0,
       domain: searchParams.get('domain') || 'all',
       range: searchParams.get('range') || '24h',
       status: searchParams.get('status') || 'all',
@@ -40,6 +42,7 @@ export async function DELETE(req) {
     const out = await clearDownloadSourceLogs({
       provider: searchParams.get('provider') || 'all',
       type: searchParams.get('type') || 'movie',
+      selectionLogId: searchParams.get('selectionLogId') || '',
     });
     return NextResponse.json({ ok: true, ...out }, { status: 200 });
   } catch (e) {
