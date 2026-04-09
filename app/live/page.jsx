@@ -1,11 +1,11 @@
 'use client';
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
 import ChannelCard from '../../components/ChannelCard';
 import VideoPlayer from '../../components/VideoPlayer';
 
-const LIVE_REFRESH_MS = 30_000;
+const LIVE_REFRESH_MS = 15_000;
 
 async function readJsonSafe(res) {
   const text = await res.text().catch(() => '');
@@ -52,6 +52,12 @@ function downKey({ username = '', origin = '' } = {}) {
   const u = normalizeUsername(username) || 'anon';
   const o = String(origin || '').trim() || 'origin';
   return `3jtv.liveDown:${u}:${o}`;
+}
+
+function lastHeroKey({ username = '', origin = '' } = {}) {
+  const u = normalizeUsername(username) || 'anon';
+  const o = String(origin || '').trim() || 'origin';
+  return `3jtv.liveLastHero:${u}:${o}`;
 }
 
 function readJsonStorage(key, fallback) {
@@ -174,6 +180,12 @@ function pickDirectSource(channel) {
   return candidates[0] || '';
 }
 
+function uptimeSecondsOf(channel) {
+  const n = Number(channel?.uptimeSeconds);
+  // Treat 0 as unknown: some catalogs don't provide real uptime.
+  return Number.isFinite(n) && n > 0 ? n : -1;
+}
+
 export default function LivePage() {
   const { session } = useSession();
   const [categories, setCategories] = useState([]);
@@ -217,16 +229,15 @@ export default function LivePage() {
           signal: ctrl.signal,
           // Probing every channel on a tight polling loop is expensive and can destabilize the server.
           // We rely on XUI status/pid + player error handling instead.
-          body: JSON.stringify({ streamBase: session?.streamBase, probe: false }),
+          body: JSON.stringify({ streamBase: session?.streamBase, probe: false, fresh: true }),
         });
         const data = await readJsonSafe(r);
         if (!alive) return;
         if (!r.ok || !data.ok) throw new Error(data?.error || 'Failed to load live channels');
-        startTransition(() => {
-          // Prepend ALL
-          setCategories([{ id: 'ALL', name: 'All' }, ...(data.categories || [])]);
-          setChannels(Array.isArray(data.channels) ? data.channels : []);
-        });
+        // Apply the latest list immediately so stopped streams disappear and the count updates
+        // even while the hero player is active.
+        setCategories([{ id: 'ALL', name: 'All' }, ...(data.categories || [])]);
+        setChannels(Array.isArray(data.channels) ? data.channels : []);
         if (!silent) setErr('');
       } catch (e) {
         // Avoid wiping the list on background refresh failures.
@@ -256,7 +267,16 @@ export default function LivePage() {
     setPinnedIds(pins);
     setRestartMap(restarts);
     setDownMap(down);
+
+    const lastHero = String(readJsonStorage(lastHeroKey({ username, origin: sessionOrigin }), '') || '').trim();
+    if (lastHero) setHeroId((current) => (String(current || '').trim() ? current : lastHero));
   }, [username, sessionOrigin]);
+
+  useEffect(() => {
+    const id = String(heroId || '').trim();
+    if (!id || !username || !sessionOrigin) return;
+    writeJsonStorage(lastHeroKey({ username, origin: sessionOrigin }), id);
+  }, [heroId, username, sessionOrigin]);
 
   useEffect(() => {
     const onFs = () => setHeroFs(Boolean(document.fullscreenElement));
@@ -272,14 +292,37 @@ export default function LivePage() {
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
-    return channels.filter((c) => {
+    const out = channels.filter((c) => {
       if (c?.isUp === false) return false;
       if (isDownHidden(c?.id)) return false;
       const okCat = selCat === 'ALL' ? true : String(c.category_id) === String(selCat);
       const okQ = !ql ? true : (c.name || '').toLowerCase().includes(ql);
       return okCat && okQ;
     });
-  }, [channels, selCat, q, downMap]);
+    // Default Live view should be stable and helpful: pinned first, then longest uptime.
+    if (selCat === 'ALL') {
+      const pinnedSet = new Set(pinnedIds.map((id) => String(id || '').trim()).filter(Boolean));
+      out.sort((a, b) => {
+        const ida = String(a?.id || '').trim();
+        const idb = String(b?.id || '').trim();
+        const pa = pinnedSet.has(ida);
+        const pb = pinnedSet.has(idb);
+        if (pa !== pb) return pa ? -1 : 1;
+        const ua = uptimeSecondsOf(a);
+        const ub = uptimeSecondsOf(b);
+        if (ua >= 0 && ub >= 0 && ua !== ub) return ub - ua;
+        // Heuristic uptime ordering: on the XUI host, older running processes tend to have smaller PIDs.
+        const pida = Number(a?.xuiPid);
+        const pidb = Number(b?.xuiPid);
+        if (Number.isFinite(pida) && Number.isFinite(pidb) && pida !== pidb) return pida - pidb;
+        const na = Number(a?.number || 0) || 0;
+        const nb = Number(b?.number || 0) || 0;
+        if (na && nb && na !== nb) return na - nb;
+        return String(a?.name || '').localeCompare(String(b?.name || ''));
+      });
+    }
+    return out;
+  }, [channels, selCat, q, downMap, pinnedIds]);
 
   const heroList = useMemo(() => {
     const base = channels.filter((c) => c?.isUp !== false).filter((c) => !isDownHidden(c?.id));
@@ -289,6 +332,12 @@ export default function LivePage() {
     const rest = base
       .filter((c) => !pinnedSet.has(String(c?.id || '').trim()))
       .sort((a, b) => {
+        const ua = uptimeSecondsOf(a);
+        const ub = uptimeSecondsOf(b);
+        if (ua >= 0 && ub >= 0 && ua !== ub) return ub - ua;
+        const pida = Number(a?.xuiPid);
+        const pidb = Number(b?.xuiPid);
+        if (Number.isFinite(pida) && Number.isFinite(pidb) && pida !== pidb) return pida - pidb;
         const ra = restartMap?.[String(a?.id || '').trim()] ?? 0;
         const rb = restartMap?.[String(b?.id || '').trim()] ?? 0;
         if (ra !== rb) return ra - rb;
@@ -296,7 +345,7 @@ export default function LivePage() {
         const nb = Number(b?.number || 0) || 0;
         if (na && nb && na !== nb) return na - nb;
         return String(a?.name || '').localeCompare(String(b?.name || ''));
-      });
+    });
     return [...pins, ...rest];
   }, [channels, pinnedIds, restartMap, downMap]);
 

@@ -86,6 +86,11 @@ export default function AdminSecretsPanel() {
   const [opensubtitlesUsername, setOpensubtitlesUsername] = useState('');
   const [opensubtitlesPassword, setOpensubtitlesPassword] = useState('');
   const [xuiServersText, setXuiServersText] = useState('');
+  const [xuiAdminBaseUrl, setXuiAdminBaseUrl] = useState('');
+  const [xuiAdminAccessCode, setXuiAdminAccessCode] = useState('');
+  const [xuiAdminApiKey, setXuiAdminApiKey] = useState('');
+  const [xuiAdminUsername, setXuiAdminUsername] = useState('');
+  const [xuiAdminPassword, setXuiAdminPassword] = useState('');
   const [mailFrom, setMailFrom] = useState('');
   const [mailUser, setMailUser] = useState('');
   const [mailPass, setMailPass] = useState('');
@@ -100,6 +105,11 @@ export default function AdminSecretsPanel() {
     setOpensubtitlesUsername(payload?.secrets?.opensubtitlesUsername || '');
     setOpensubtitlesPassword(payload?.secrets?.opensubtitlesPassword || '');
     setXuiServersText((payload?.xuioneServers || []).join('\n'));
+    setXuiAdminBaseUrl(payload?.secrets?.xuiAdminBaseUrl || '');
+    setXuiAdminAccessCode(payload?.secrets?.xuiAdminAccessCode || '');
+    setXuiAdminApiKey(payload?.secrets?.xuiAdminApiKey || '');
+    setXuiAdminUsername(payload?.secrets?.xuiAdminUsername || '');
+    setXuiAdminPassword(payload?.secrets?.xuiAdminPassword || '');
     setMailFrom(payload?.secrets?.mailFrom || '');
     setMailUser(payload?.secrets?.mailUser || '');
     setMailPass(payload?.secrets?.mailPass || '');
@@ -175,6 +185,16 @@ export default function AdminSecretsPanel() {
       detail: 'Used by auth and playback APIs',
     },
     {
+      title: 'XUI Admin API',
+      status:
+        hasSecretValue('xuiAdminBaseUrl') && hasSecretValue('xuiAdminAccessCode') && hasSecretValue('xuiAdminApiKey')
+          ? 'Configured'
+          : hasSecretValue('xuiAdminBaseUrl') || hasSecretValue('xuiAdminAccessCode') || hasSecretValue('xuiAdminApiKey')
+            ? 'Partial'
+            : 'Not set',
+      detail: 'Used by Live channel online detection',
+    },
+    {
       title: 'Mailer',
       status: hasSecretValue('mailFrom') || hasSecretValue('mailUser') || hasSecretValue('mailPass') ? 'Configured' : 'Not set',
       detail:
@@ -232,6 +252,11 @@ export default function AdminSecretsPanel() {
           opensubtitlesApiKey,
           opensubtitlesUsername,
           opensubtitlesPassword,
+          xuiAdminBaseUrl,
+          xuiAdminAccessCode,
+          xuiAdminApiKey,
+          xuiAdminUsername,
+          xuiAdminPassword,
           mailFrom,
           mailUser,
           mailPass,
@@ -297,7 +322,7 @@ export default function AdminSecretsPanel() {
         <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">{okMsg}</div>
       ) : null}
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
         {summary.map((item) => (
           <SummaryCard key={item.title} title={item.title} status={item.status} detail={item.detail} />
         ))}
@@ -383,6 +408,29 @@ export default function AdminSecretsPanel() {
                 rows={5}
               />
             </Field>
+          </Section>
+
+          <Section
+            title="XUI Admin API"
+            description="Used for admin-side Live stream listing so the app can hide down/stopped channels."
+          >
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Base URL" help="Example: `https://panel.example.com:2053` (no path).">
+                <Input value={xuiAdminBaseUrl} onChange={setXuiAdminBaseUrl} placeholder="XUI_ADMIN_BASE_URL" />
+              </Field>
+              <Field label="Access Code" help="The XUI panel access code used in the API URL path.">
+                <Input value={xuiAdminAccessCode} onChange={setXuiAdminAccessCode} placeholder="XUI_ADMIN_ACCESS_CODE" />
+              </Field>
+              <Field label="API Key" help="The XUI API key used as `api_key` for panel actions (e.g. `get_streams`).">
+                <Input value={xuiAdminApiKey} onChange={setXuiAdminApiKey} placeholder="XUI_ADMIN_API_KEY" type="password" />
+              </Field>
+              <Field label="Username (optional)" help="Stored for future admin-side API calls if needed.">
+                <Input value={xuiAdminUsername} onChange={setXuiAdminUsername} placeholder="XUI_ADMIN_USERNAME" />
+              </Field>
+              <Field label="Password (optional)" help="Stored for future admin-side API calls if needed.">
+                <Input value={xuiAdminPassword} onChange={setXuiAdminPassword} placeholder="XUI_ADMIN_PASSWORD" type="password" />
+              </Field>
+            </div>
           </Section>
 
           <Section title="Mailer" description="Used for account and notification emails.">

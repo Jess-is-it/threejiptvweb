@@ -11,28 +11,115 @@ export const runtime = 'nodejs';
 const PROBE_TIMEOUT_MS = 1200;
 const PROBE_TTL_MS = 12 * 1000;
 const PROBE_CONCURRENCY = 6;
-const LIVE_CATALOG_CACHE_MS = 30_000;
+function safeNum(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
-function getLiveCatalogCache() {
-  if (!globalThis.__threejTvLiveCatalogCache) {
-    globalThis.__threejTvLiveCatalogCache = { ts: 0, value: null };
+function parseClockDurationToSeconds(value) {
+  // Accept: "HH:MM:SS", "D:HH:MM:SS", "DD:HH:MM:SS", "MM:SS"
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const m = raw.match(/^(\d{1,3}:)?(\d{1,2}:)?(\d{1,2}):(\d{1,2})$/);
+  if (!m) return null;
+  const parts = raw.split(':').map((s) => Number(s));
+  if (parts.some((n) => !Number.isFinite(n))) return null;
+  if (parts.length === 2) {
+    const [mm, ss] = parts;
+    return mm * 60 + ss;
   }
-  return globalThis.__threejTvLiveCatalogCache;
+  if (parts.length === 3) {
+    const [hh, mm, ss] = parts;
+    return hh * 3600 + mm * 60 + ss;
+  }
+  if (parts.length === 4) {
+    const [dd, hh, mm, ss] = parts;
+    return dd * 86400 + hh * 3600 + mm * 60 + ss;
+  }
+  return null;
 }
 
-function readLiveCatalogCache() {
-  const cache = getLiveCatalogCache();
-  const ts = Number(cache?.ts || 0) || 0;
-  if (!cache?.value || !ts) return null;
-  if (Date.now() - ts > LIVE_CATALOG_CACHE_MS) return null;
-  return cache.value;
+function parseHumanDurationToSeconds(value) {
+  // Accept: "2d 3h 4m 5s", "1 day, 02:03:04", "3 hours 10 minutes"
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+
+  // Try clock-like inside a sentence.
+  const clock = raw.match(/(\d{1,3}:\d{1,2}:\d{1,2}|\d{1,3}:\d{1,2}:\d{1,2}:\d{1,2})/);
+  if (clock) {
+    const secs = parseClockDurationToSeconds(clock[1]);
+    if (secs !== null) {
+      const days = raw.match(/(\d+)\s*d(?:ay)?s?\b/);
+      const dd = days ? Number(days[1]) : 0;
+      return dd * 86400 + secs;
+    }
+  }
+
+  let total = 0;
+  let hit = false;
+  const re = /(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)\b/g;
+  let mm;
+  while ((mm = re.exec(raw))) {
+    hit = true;
+    const qty = Number(mm[1]);
+    const unit = mm[2];
+    if (!Number.isFinite(qty)) continue;
+    if (unit === 'd' || unit === 'day' || unit === 'days') total += qty * 86400;
+    else if (unit === 'h' || unit === 'hr' || unit === 'hrs' || unit === 'hour' || unit === 'hours') total += qty * 3600;
+    else if (unit === 'm' || unit === 'min' || unit === 'mins' || unit === 'minute' || unit === 'minutes') total += qty * 60;
+    else total += qty;
+  }
+  return hit ? total : null;
 }
 
-function writeLiveCatalogCache(value) {
-  globalThis.__threejTvLiveCatalogCache = {
-    ts: Date.now(),
-    value,
-  };
+function parseStartTimestampToUptimeSeconds(value) {
+  // Accept unix seconds/ms, or ISO strings.
+  if (value === null || value === undefined || value === '') return null;
+  const num = safeNum(value);
+  let ms = null;
+  if (num !== null) {
+    // Heuristic: >= 10^12 is milliseconds.
+    ms = num >= 1e12 ? num : num >= 1e9 ? num * 1000 : null;
+  } else {
+    const s = String(value || '').trim();
+    const t = Date.parse(s);
+    if (Number.isFinite(t)) ms = t;
+  }
+  if (!ms) return null;
+  const diff = Date.now() - ms;
+  if (!Number.isFinite(diff) || diff < 0) return null;
+  return Math.floor(diff / 1000);
+}
+
+function extractUptimeSeconds(row) {
+  const r = row && typeof row === 'object' ? row : {};
+  const direct =
+    safeNum(r?.uptimeSeconds) ??
+    safeNum(r?.uptime_seconds) ??
+    safeNum(r?.stream_uptime_seconds) ??
+    safeNum(r?.stream_uptime) ??
+    safeNum(r?.uptime);
+  if (direct !== null && direct >= 0) return Math.floor(direct);
+
+  const uptimeText = r?.uptimeText ?? r?.uptime_text ?? r?.uptimeString ?? r?.uptime_string ?? r?.uptime;
+  const asClock = parseClockDurationToSeconds(uptimeText);
+  if (asClock !== null) return asClock;
+  const asHuman = parseHumanDurationToSeconds(uptimeText);
+  if (asHuman !== null) return asHuman;
+
+  const startedAt =
+    r?.started_at ??
+    r?.startedAt ??
+    r?.start_time ??
+    r?.startTime ??
+    r?.online_since ??
+    r?.onlineSince ??
+    r?.last_started ??
+    r?.lastStarted;
+  const fromStart = parseStartTimestampToUptimeSeconds(startedAt);
+  if (fromStart !== null) return fromStart;
+
+  return null;
 }
 
 function sanitizeLogoUrl(value) {
@@ -94,6 +181,28 @@ function parseCategoryIds(value) {
     .filter(Boolean);
 }
 
+function hasOwn(obj, key) {
+  return Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function deriveLiveRuntimeStatus(row) {
+  const rawStatus = row?.stream_status ?? row?.streamStatus ?? row?.status ?? null;
+  const statusNum = Number(rawStatus);
+  const xuiStreamStatus = Number.isFinite(statusNum) ? statusNum : null;
+
+  const hasPidField = hasOwn(row, 'pid') || hasOwn(row, 'monitor_pid');
+  const rawPid = row?.pid ?? row?.monitor_pid ?? null;
+  const pidNum = Number(rawPid);
+  const xuiPid = Number.isFinite(pidNum) ? pidNum : null;
+  const pidUp = Number.isFinite(pidNum) && pidNum > 0;
+
+  // On this XUI build, `stream_status=0` usually means online, but it can stay stale while
+  // a stopped stream already has no PID. When a PID field exists, trust PID first.
+  const isUp = hasPidField ? pidUp : (xuiStreamStatus === null ? pidUp : xuiStreamStatus === 0);
+
+  return { xuiStreamStatus, xuiPid, isUp };
+}
+
 async function readXuiAdminStreamStatusMap() {
   // Optional: if XUI Admin API integration is configured, use it to decide UP/DOWN.
   // On this deployment, XUI Admin reports `stream_status=0` for playable streams and `1` for DOWN.
@@ -123,23 +232,33 @@ async function readXuiAdminLiveCatalog() {
     const apiKey = String(await getSecret(keys.xuiAdminApiKey)).trim();
     if (baseUrl && accessCode && apiKey) {
       const origin = new URL(baseUrl.includes('://') ? baseUrl : `https://${baseUrl}`).origin;
-      const url = new URL(`${origin.replace(/\/+$/, '')}/${encodeURIComponent(accessCode)}/`);
-      url.searchParams.set('api_key', apiKey);
-      url.searchParams.set('action', 'get_streams');
-      const insecureTls = await allowInsecureTlsFor(url.toString());
-      const r = await fetch(url.toString(), {
-        cache: 'no-store',
-        redirect: 'follow',
-        ...(insecureTls ? { dispatcher: insecureDispatcher } : {}),
-      });
-      const text = await r.text().catch(() => '');
-      if (!r.ok) throw new Error(`XUI Admin ${r.status}: ${text.slice(0, 200)}`);
-      const payload = JSON.parse(text);
-      const rows = Array.isArray(payload?.data) ? payload.data : [];
-      if (!rows.length) return null;
+      const base = `${origin.replace(/\/+$/, '')}/${encodeURIComponent(accessCode)}/`;
+      const insecureTls = await allowInsecureTlsFor(base);
+      const allRows = [];
+      // This endpoint pages in chunks of 50. Use the `start` query param to fetch all.
+      // Hard cap keeps us safe if an upstream starts returning an infinite repeating page.
+      for (let start = 0; start <= 2000; start += 50) {
+        const url = new URL(base);
+        url.searchParams.set('api_key', apiKey);
+        url.searchParams.set('action', 'get_streams');
+        if (start) url.searchParams.set('start', String(start));
+        const r = await fetch(url.toString(), {
+          cache: 'no-store',
+          redirect: 'follow',
+          ...(insecureTls ? { dispatcher: insecureDispatcher } : {}),
+        });
+        const text = await r.text().catch(() => '');
+        if (!r.ok) throw new Error(`XUI Admin ${r.status}: ${text.slice(0, 200)}`);
+        const payload = JSON.parse(text);
+        const rows = Array.isArray(payload?.data) ? payload.data : [];
+        if (!rows.length) break;
+        allRows.push(...rows);
+        if (rows.length < 50) break;
+      }
+      if (!allRows.length) return null;
 
       const catSet = new Set();
-      const channels = rows
+      const channels = allRows
         .map((r2) => {
           const id = String(r2?.id ?? r2?.stream_id ?? '').trim();
           if (!id) return null;
@@ -148,15 +267,8 @@ async function readXuiAdminLiveCatalog() {
           const sources = normalizeSourceList(r2?.stream_source || r2?.streamSource || r2?.sources);
           const cats = parseCategoryIds(r2?.category_id ?? r2?.categoryId);
           for (const c of cats) catSet.add(String(c));
-          const rawStatus = r2?.stream_status ?? r2?.streamStatus ?? r2?.status ?? null;
-          const statusNum = Number(rawStatus);
-          const xuiStreamStatus = Number.isFinite(statusNum) ? statusNum : null;
-          // XUI `stream_status` is not reliable enough (some stopped streams still show status=0).
-          // `pid` is the best signal we have:
-          // - running streams: pid is a positive number
-          // - stopped/broken streams: pid is null/empty or -1
-          const pidNum = Number(r2?.pid);
-          const isUp = Number.isFinite(pidNum) && pidNum > 0;
+          const { xuiStreamStatus, xuiPid, isUp } = deriveLiveRuntimeStatus(r2);
+          const uptimeSeconds = extractUptimeSeconds(r2);
 
           return {
             id,
@@ -171,7 +283,8 @@ async function readXuiAdminLiveCatalog() {
             streamStatus: null,
             isUp,
             xuiStreamStatus,
-            xuiPid: Number.isFinite(pidNum) ? pidNum : null,
+            xuiPid,
+            uptimeSeconds,
           };
         })
         .filter(Boolean)
@@ -199,11 +312,8 @@ async function readXuiAdminLiveCatalog() {
         const sources = normalizeSourceList(r?.stream_source || r?.streamSource || r?.sources);
         const cats = parseCategoryIds(r?.category_id ?? r?.categoryId);
         for (const c of cats) catSet.add(String(c));
-        const rawStatus = r?.stream_status ?? r?.streamStatus ?? r?.status ?? null;
-        const statusNum = Number(rawStatus);
-        const xuiStreamStatus = Number.isFinite(statusNum) ? statusNum : null;
-        const pidNum = Number(r?.pid);
-        const isUp = Number.isFinite(pidNum) && pidNum > 0;
+        const { xuiStreamStatus, xuiPid, isUp } = deriveLiveRuntimeStatus(r);
+        const uptimeSeconds = extractUptimeSeconds(r);
 
         return {
           id,
@@ -218,7 +328,8 @@ async function readXuiAdminLiveCatalog() {
           streamStatus: null,
           isUp,
           xuiStreamStatus,
-          xuiPid: Number.isFinite(pidNum) ? pidNum : null,
+          xuiPid,
+          uptimeSeconds,
         };
       })
       .filter(Boolean)
@@ -472,6 +583,8 @@ async function readStreamBase(req) {
   const fromQuery = url.searchParams.get('streamBase');
   const probeQuery = String(url.searchParams.get('probe') || '').trim();
   const probeFromQuery = probeQuery === '1' || probeQuery.toLowerCase() === 'true';
+  const freshQuery = String(url.searchParams.get('fresh') || '').trim();
+  const freshFromQuery = freshQuery === '1' || freshQuery.toLowerCase() === 'true';
   if (fromQuery) return { streamBase: String(fromQuery || ''), probe: probeFromQuery };
 
   // Allow POST body: { streamBase }
@@ -480,24 +593,34 @@ async function readStreamBase(req) {
     try {
       if (ct.includes('application/json')) {
         const b = await req.json().catch(() => ({}));
-        return { streamBase: String(b?.streamBase || ''), probe: Boolean(b?.probe) || probeFromQuery };
+        return {
+          streamBase: String(b?.streamBase || ''),
+          probe: Boolean(b?.probe) || probeFromQuery,
+          fresh: Boolean(b?.fresh) || freshFromQuery,
+        };
       }
       const raw = await req.text().catch(() => '');
       try {
         const b = JSON.parse(raw || '{}');
-        return { streamBase: String(b?.streamBase || ''), probe: Boolean(b?.probe) || probeFromQuery };
+        return {
+          streamBase: String(b?.streamBase || ''),
+          probe: Boolean(b?.probe) || probeFromQuery,
+          fresh: Boolean(b?.fresh) || freshFromQuery,
+        };
       } catch {
         const p = new URLSearchParams(raw || '');
         const probeRaw = String(p.get('probe') || '').trim();
+        const freshRaw = String(p.get('fresh') || '').trim();
         const probe = probeFromQuery || probeRaw === '1' || probeRaw.toLowerCase() === 'true';
-        return { streamBase: String(p.get('streamBase') || ''), probe };
+        const fresh = freshFromQuery || freshRaw === '1' || freshRaw.toLowerCase() === 'true';
+        return { streamBase: String(p.get('streamBase') || ''), probe, fresh };
       }
     } catch {
-      return { streamBase: '', probe: probeFromQuery };
+      return { streamBase: '', probe: probeFromQuery, fresh: freshFromQuery };
     }
   }
 
-  return { streamBase: '', probe: probeFromQuery };
+  return { streamBase: '', probe: probeFromQuery, fresh: freshFromQuery };
 }
 
 async function handle(req) {
@@ -510,16 +633,14 @@ async function handle(req) {
 
   try {
     const sessionParsed = streamBase ? parseStreamBase(streamBase) : { server: '', username: '', password: '' };
-    // Always use XUI Admin live catalog.
-    const cachedCatalog = !probe ? readLiveCatalogCache() : null;
-    const xuiCatalog = cachedCatalog || (await readXuiAdminLiveCatalog());
+    // Always read the latest XUI Admin live catalog so stopped streams disappear on the next poll.
+    const xuiCatalog = await readXuiAdminLiveCatalog();
     if (!xuiCatalog) {
       return NextResponse.json(
         { ok: false, error: 'XUI Admin `get_streams` is required for Live, but it could not be loaded. Check XUI Integration / Secrets.' },
         { status: 502 }
       );
     }
-    if (!probe && !cachedCatalog) writeLiveCatalogCache(xuiCatalog);
 
     let channels = xuiCatalog.channels || [];
     if (probe) {
@@ -548,11 +669,24 @@ async function handle(req) {
       channels = out.filter((ch) => ch && ch.isUp === true);
     }
 
-    return NextResponse.json({ ok: true, categories: xuiCatalog.categories || [], channels }, { status: 200 });
+    return NextResponse.json(
+      { ok: true, categories: xuiCatalog.categories || [], channels },
+      {
+        status: 200,
+        headers: {
+          'Cache-Control': 'no-store, max-age=0',
+        },
+      }
+    );
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e?.message || 'Failed to load live channels' },
-      { status: 502 }
+      {
+        status: 502,
+        headers: {
+          'Cache-Control': 'no-store, max-age=0',
+        },
+      }
     );
   }
 }

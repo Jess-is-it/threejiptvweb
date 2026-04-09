@@ -33,6 +33,11 @@ async function storedSecrets() {
     [keys.firebaseAuthDomain]: await getSecret(keys.firebaseAuthDomain),
     [keys.firebaseProjectId]: await getSecret(keys.firebaseProjectId),
     [keys.firebaseAppId]: await getSecret(keys.firebaseAppId),
+    [keys.xuiAdminBaseUrl]: await getSecret(keys.xuiAdminBaseUrl),
+    [keys.xuiAdminAccessCode]: await getSecret(keys.xuiAdminAccessCode),
+    [keys.xuiAdminApiKey]: await getSecret(keys.xuiAdminApiKey),
+    [keys.xuiAdminUsername]: await getSecret(keys.xuiAdminUsername),
+    [keys.xuiAdminPassword]: await getSecret(keys.xuiAdminPassword),
   };
 }
 
@@ -54,6 +59,11 @@ async function effectiveSecrets() {
     [keys.firebaseAuthDomain]: await get(keys.firebaseAuthDomain, 'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN'),
     [keys.firebaseProjectId]: await get(keys.firebaseProjectId, 'NEXT_PUBLIC_FIREBASE_PROJECT_ID'),
     [keys.firebaseAppId]: await get(keys.firebaseAppId, 'NEXT_PUBLIC_FIREBASE_APP_ID'),
+    [keys.xuiAdminBaseUrl]: await get(keys.xuiAdminBaseUrl, 'XUI_ADMIN_BASE_URL'),
+    [keys.xuiAdminAccessCode]: await get(keys.xuiAdminAccessCode, 'XUI_ADMIN_ACCESS_CODE'),
+    [keys.xuiAdminApiKey]: await get(keys.xuiAdminApiKey, 'XUI_ADMIN_API_KEY'),
+    [keys.xuiAdminUsername]: await get(keys.xuiAdminUsername, 'XUI_ADMIN_USERNAME'),
+    [keys.xuiAdminPassword]: await get(keys.xuiAdminPassword, 'XUI_ADMIN_PASSWORD'),
   };
 }
 

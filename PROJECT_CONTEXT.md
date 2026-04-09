@@ -111,7 +111,7 @@ There is currently **no automated test suite**. Use:
 - `deploy/systemd/` — service and timer units for production
 
 ### Primary User Routes
-- Public: `/login`, `/` (redirects to `/movies`), `/movies`, `/movies/[id]`, `/series`, `/series/[id]`, `/live`, `/bookmarks`, `/request`, `/search`
+- Public: `/login`, `/` (redirects to `/movies`), `/movies`, `/movies/[id]`, `/series`, `/series/[id]`, `/live` (nav label: `Live TV`), `/bookmarks`, `/request`, `/search`
 - Public search: `/search` shows unified movie + series results. Header search category chips are merged into one combined `Categories` list and now open `/search?genre=<name>` instead of filling the text query. Genre-filtered results stay combined across movies + series and are sorted by TMDB popularity.
 - Watch: `/watch/movie/[id]`, `/watch/series/[seriesId]/[episodeId]`, `/watch/live/[id]`
 - Admin auth: `/admin/login`, `/admin/setup`
@@ -221,6 +221,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Processing pipeline: `lib/server/autodownload/processingService.js`
 - XUI debounced scan logic: `lib/server/autodownload/xuiService.js`
 - qB provisioning/auth logic: `lib/server/autodownload/qbittorrentService.js`
+- Live TV page (`/live`) loads channels from `/api/xuione/live`, which uses XUI Admin `get_streams` (configured via Admin Secrets) and only shows channels detected as online; when XUI includes `pid`/`monitor_pid`, that runtime PID signal is treated as authoritative over stale `stream_status` values. The route is served uncached (`Cache-Control: no-store`) so stopped streams disappear on the next background poll (about every 15s) without a manual page reload, and list/count updates are applied immediately even while the hero player is active. `All` is the default category, channels are sorted by longest uptime first (best-effort via XUI PID ordering if no explicit uptime field exists), and the hero player remembers the last viewed live channel per user/server (localStorage).
 - AutoDownload download/sync/control now opens an authenticated qB WebUI session using stored encrypted credentials (cookie-based login per SSH job) and treats HTTP/transport failures as hard errors instead of silent success.
 - Download sync now enforces expected qB placement/category for managed items (`MOVIE_AUTO`/`SERIES_AUTO`, configured Downloading/Downloaded folders) using qB `setLocation` + `setCategory`.
 - qBittorrent settings include a dedicated admin `qBittorrent Options` section on `/admin/autodownload/qbittorrent` for app-managed torrent lifecycle behavior only (`downloadClient.autoDeleteCompletedTorrents`, `autoDeleteCompletedDelayMinutes`); `Delete Delay (minutes)` is enforced by the app sync loop after completion (`deleteFiles=false`), while qB queue limits are no longer managed in this portal and should be edited directly in qB WebUI.
@@ -394,6 +395,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
   - `ADMIN_DATA_KEY` (required for vault encryption)
   - `TMDB_API_KEY`
   - `MAIL_FROM`, `MAIL_USER`, `MAIL_PASS`
+  - optional: `XUI_ADMIN_BASE_URL`, `XUI_ADMIN_ACCESS_CODE`, `XUI_ADMIN_API_KEY`, `XUI_ADMIN_USERNAME`, `XUI_ADMIN_PASSWORD`
   - `SCHEDULER_TOKEN`
   - optional: `ALLOW_INSECURE_UPSTREAM_TLS`, `PINNED_SERVER`, `LOAD_BALANCING_ENABLED`
 - Run:

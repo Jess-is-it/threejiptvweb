@@ -373,7 +373,7 @@ function MobileMenu({ open, onClose, onOpenSearch, requestCta, requestEnabled })
           {[
             ['/movies', 'Movies'],
             ['/series', 'Series'],
-            ['/live', 'Live'],
+            ['/live', 'Live TV'],
             ['/bookmarks', 'My watchlist'],
           ].map(([href, label]) => (
             (() => {
@@ -602,7 +602,7 @@ export default function Header() {
             <nav className="hidden md:flex items-center gap-2">
               <NavLink href="/movies" onWarm={warmMovieCatalog}>Movies</NavLink>
               <NavLink href="/series" onWarm={warmSeriesCatalog}>Series</NavLink>
-              <NavLink href="/live">Live</NavLink>
+              <NavLink href="/live">Live TV</NavLink>
               <NavLink href="/bookmarks">My watchlist</NavLink>
             </nav>
           </div>
