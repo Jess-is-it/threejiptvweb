@@ -9,7 +9,7 @@ export const runtime = 'nodejs';
 // Keep probes very fresh so stopped streams disappear quickly from the Live page.
 // This TTL is intentionally short; the route also limits concurrency.
 const PROBE_TIMEOUT_MS = 1200;
-const PROBE_TTL_MS = 12 * 1000;
+const PROBE_TTL_MS = 20 * 1000;
 const PROBE_CONCURRENCY = 6;
 function safeNum(value) {
   const n = Number(value);
@@ -181,6 +181,36 @@ function parseCategoryIds(value) {
     .filter(Boolean);
 }
 
+function normalizeCategoryRows(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.categories)) return payload.categories;
+  return [];
+}
+
+function buildLiveCategoryMap(rows) {
+  const map = new Map();
+  for (const row of normalizeCategoryRows(rows)) {
+    const type = String(row?.category_type || row?.type || '').trim().toLowerCase();
+    if (type && type !== 'live') continue;
+    const id = String(row?.category_id ?? row?.id ?? '').trim();
+    const name = String(row?.category_name || row?.name || '').trim();
+    if (!id || !name) continue;
+    map.set(id, name);
+  }
+  return map;
+}
+
+function mapLiveCategories(catSet, categoryMap) {
+  return Array.from(catSet)
+    .map((id) => {
+      const cid = String(id || '').trim();
+      if (!cid) return null;
+      return { id: cid, name: categoryMap.get(cid) || `Category ${cid}` };
+    })
+    .filter(Boolean);
+}
+
 function hasOwn(obj, key) {
   return Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key);
 }
@@ -223,6 +253,39 @@ async function readXuiAdminStreamStatusMap() {
   }
 }
 
+async function readXuiAdminLiveCategoryMap() {
+  try {
+    const keys = secretKeys();
+    const baseUrl = String(await getSecret(keys.xuiAdminBaseUrl)).trim();
+    const accessCode = String(await getSecret(keys.xuiAdminAccessCode)).trim();
+    const apiKey = String(await getSecret(keys.xuiAdminApiKey)).trim();
+    if (baseUrl && accessCode && apiKey) {
+      const origin = new URL(baseUrl.includes('://') ? baseUrl : `https://${baseUrl}`).origin;
+      const base = `${origin.replace(/\/+$/, '')}/${encodeURIComponent(accessCode)}/`;
+      const insecureTls = await allowInsecureTlsFor(base);
+      const url = new URL(base);
+      url.searchParams.set('api_key', apiKey);
+      url.searchParams.set('action', 'get_categories');
+      const r = await fetch(url.toString(), {
+        cache: 'no-store',
+        redirect: 'follow',
+        ...(insecureTls ? { dispatcher: insecureDispatcher } : {}),
+      });
+      const text = await r.text().catch(() => '');
+      if (!r.ok) throw new Error(`XUI Admin categories ${r.status}: ${text.slice(0, 200)}`);
+      return buildLiveCategoryMap(JSON.parse(text));
+    }
+  } catch {
+  }
+
+  try {
+    const payload = await xuiApiCall({ action: 'get_categories' });
+    return buildLiveCategoryMap(payload);
+  } catch {
+    return new Map();
+  }
+}
+
 async function readXuiAdminLiveCatalog() {
   // First preference: plaintext Admin Secrets (portable and not tied to AutoDownload encrypted vault).
   try {
@@ -231,6 +294,7 @@ async function readXuiAdminLiveCatalog() {
     const accessCode = String(await getSecret(keys.xuiAdminAccessCode)).trim();
     const apiKey = String(await getSecret(keys.xuiAdminApiKey)).trim();
     if (baseUrl && accessCode && apiKey) {
+      const categoryMap = await readXuiAdminLiveCategoryMap();
       const origin = new URL(baseUrl.includes('://') ? baseUrl : `https://${baseUrl}`).origin;
       const base = `${origin.replace(/\/+$/, '')}/${encodeURIComponent(accessCode)}/`;
       const insecureTls = await allowInsecureTlsFor(base);
@@ -290,7 +354,7 @@ async function readXuiAdminLiveCatalog() {
         .filter(Boolean)
         .filter((ch) => ch.isUp === true);
 
-      const categories = Array.from(catSet).map((id) => ({ id: String(id), name: `Category ${id}` }));
+      const categories = mapLiveCategories(catSet, categoryMap);
       return { categories, channels };
     }
   } catch {
@@ -298,6 +362,7 @@ async function readXuiAdminLiveCatalog() {
   }
 
   try {
+    const categoryMap = await readXuiAdminLiveCategoryMap();
     const payload = await xuiApiCall({ action: 'get_streams' });
     const rows = Array.isArray(payload?.data) ? payload.data : [];
     if (!rows.length) return null;
@@ -336,7 +401,7 @@ async function readXuiAdminLiveCatalog() {
       // Filter out DOWN streams immediately (status=1).
       .filter((ch) => ch.isUp === true);
 
-    const categories = Array.from(catSet).map((id) => ({ id: String(id), name: `Category ${id}` }));
+    const categories = mapLiveCategories(catSet, categoryMap);
     return { categories, channels };
   } catch {
     return null;

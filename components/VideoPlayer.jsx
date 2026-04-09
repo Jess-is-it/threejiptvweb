@@ -106,10 +106,14 @@ export default function VideoPlayer({
   mode = 'inline', // 'inline' | 'immersive'
   autoFullscreen = false,
   autoPlayOnLoad = false,
+  startMuted = undefined,
+  fill = false,
   servers = [],
   activeOrigin = '',
   onSelectServer = null,
   onPlaybackError = null,
+  onMutedChange = null,
+  controlRef = null,
   subtitles = [],
   seriesNavigation = null,
 }) {
@@ -147,6 +151,11 @@ export default function VideoPlayer({
   const livePlaylistRecoverRef = useRef({ lastAt: 0, windowStartAt: 0, tries: 0 });
   const liveHardResetRef = useRef({ lastAt: 0, windowStartAt: 0, resets: 0 });
   const { push, View: Toasts } = useToasts();
+  const onMutedChangeRef = useRef(null);
+
+  useEffect(() => {
+    onMutedChangeRef.current = typeof onMutedChange === 'function' ? onMutedChange : null;
+  }, [onMutedChange]);
 
   const isHlsSource = (raw) => {
     const s = String(raw || '');
@@ -276,15 +285,21 @@ export default function VideoPlayer({
     if (!v) return;
     try {
       if (typeof v.volume === 'number') setVol(v.volume);
-      setMuted(Boolean(v.muted));
+      const nextMuted = Boolean(v.muted);
+      const nextVol = typeof v.volume === 'number' ? v.volume : 1;
+      setMuted(nextMuted);
       setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+      onMutedChangeRef.current?.(nextMuted, nextVol);
     } catch {}
 
     const onVol = () => {
       try {
-        setVol(typeof v.volume === 'number' ? v.volume : 1);
-        setMuted(Boolean(v.muted));
+        const nextMuted = Boolean(v.muted);
+        const nextVol = typeof v.volume === 'number' ? v.volume : 1;
+        setVol(nextVol);
+        setMuted(nextMuted);
         setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+        onMutedChangeRef.current?.(nextMuted, nextVol);
       } catch {}
     };
     v.addEventListener('volumechange', onVol);
@@ -310,7 +325,7 @@ export default function VideoPlayer({
   }, [origin, mp4, hls, meta?.id]);
 
   // core attach
-  useEffect(() => {
+  useLayoutEffect(() => {
     const v = videoRef.current;
     if (!v) return;
 
@@ -582,9 +597,13 @@ export default function VideoPlayer({
       const tryPlay = async () => {
         if (!autoPlayOnLoad) return;
 
-        // Live: start muted (autoplay-friendly). VOD: try with sound first.
         try {
-          if (meta?.type === 'live') {
+          // Live: start muted (autoplay-friendly) unless caller overrides.
+          // VOD: try with sound first unless caller overrides.
+          if (typeof startMuted === 'boolean') {
+            v.muted = startMuted;
+            if (!startMuted && typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+          } else if (meta?.type === 'live') {
             v.muted = true;
           } else {
             v.muted = false;
@@ -601,7 +620,10 @@ export default function VideoPlayer({
           const errName = String(e?.name || '').toLowerCase();
           const errMsg = String(e?.message || '').toLowerCase();
           const isAutoplayPolicy = errName.includes('notallowed') || errMsg.includes('notallowed');
-          const allowMutedFallback = meta?.type === 'live' || isAutoplayPolicy;
+          // Even when a caller asks for sound (`startMuted=false`), browsers may block audible autoplay
+          // after a navigation. For Live, prefer "play muted + show unmute hint" over "doesn't start".
+          const allowMutedFallback =
+            meta?.type === 'live' ? true : (startMuted !== false && isAutoplayPolicy);
           if (allowMutedFallback) {
             try {
               v.muted = true;
@@ -906,7 +928,8 @@ export default function VideoPlayer({
   const unmuteNow = async () => {
     const v = videoRef.current;
     if (!v) return;
-    await ensureFullscreen();
+    // Avoid `await` here to preserve user activation for browsers that are strict about gesture chains.
+    ensureFullscreen();
     try {
       v.muted = false;
       if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
@@ -914,9 +937,51 @@ export default function VideoPlayer({
       setAutoplayBlocked(false);
     } catch {}
     try {
-      if (v.paused) await v.play();
+      if (v.paused) {
+        const p = v.play();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
     } catch {}
   };
+
+  const muteNow = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.muted = true;
+      setNeedsUnmute(true);
+    } catch {}
+  };
+
+  const toggleMuteNow = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      if (v.muted || v.volume === 0) {
+        unmuteNow();
+        return;
+      }
+      muteNow();
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (!controlRef) return;
+    try {
+      controlRef.current = {
+        mute: muteNow,
+        unmute: unmuteNow,
+        toggleMute: toggleMuteNow,
+        isMuted: () => Boolean(videoRef.current?.muted || videoRef.current?.volume === 0),
+        setVolume,
+      };
+    } catch {}
+    return () => {
+      try {
+        if (controlRef.current) controlRef.current = null;
+      } catch {}
+    };
+  }, [controlRef]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const goBack = async () => {
     try {
@@ -1047,14 +1112,16 @@ export default function VideoPlayer({
   return (
     <div
       ref={wrapRef}
-      className={mode === 'immersive' ? 'fixed inset-0 z-[60] bg-black' : 'w-full'}
+      className={mode === 'immersive' ? 'fixed inset-0 z-[60] bg-black' : fill ? 'h-full w-full' : 'w-full'}
       onClick={() => setShowControls(true)}
     >
       <div
         className={
           mode === 'immersive'
             ? 'relative h-full w-full bg-black'
-            : 'relative aspect-video overflow-hidden rounded-xl border border-neutral-800 bg-black'
+            : fill
+              ? 'relative h-full w-full overflow-hidden bg-black'
+              : 'relative aspect-video overflow-hidden rounded-xl border border-neutral-800 bg-black'
         }
       >
         <button
