@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Play } from 'lucide-react';
 import { flushSync } from 'react-dom';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
@@ -359,6 +359,7 @@ export default function LivePage() {
   const [bootstrapped, setBootstrapped] = useState(false);
   const bootstrappedRef = useRef(false);
   const heroWrapRef = useRef(null);
+  const heroPlayerRef = useRef(null);
   const username = String(session?.user?.username || '').trim();
   const sessionOrigin = useMemo(() => getOriginFromStreamBase(session?.streamBase), [session?.streamBase]);
 
@@ -659,10 +660,10 @@ export default function LivePage() {
 
   useEffect(() => {
     clearHeroTimer();
-    if (!HERO_AUTOPLAY_MS || heroSlides.length < 2 || heroControlsHovered) return undefined;
+    if (!HERO_AUTOPLAY_MS || heroSlides.length < 2 || heroControlsHovered || heroFs) return undefined;
     heroTimerRef.current = setTimeout(() => stepHeroSlide(1), HERO_AUTOPLAY_MS);
     return () => clearHeroTimer();
-  }, [heroSlides.length, heroIndex, heroControlsHovered]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [heroSlides.length, heroIndex, heroControlsHovered, heroFs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep meta stable across background refreshes; VideoPlayer re-attaches its media pipeline when `meta` changes.
   const playerMeta = useMemo(() => {
@@ -741,15 +742,27 @@ export default function LivePage() {
     });
   };
 
-  const toggleFullscreen = async () => {
-    const el = heroWrapRef.current;
+  const heroVideoEl = () => {
+    const host = heroWrapRef.current;
+    if (!host) return null;
+    return host.querySelector('video');
+  };
+
+  const playHeroFullscreen = () => {
+    const host = heroWrapRef.current;
+    const v = heroVideoEl();
     try {
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-        return;
-      }
-      if (el?.requestFullscreen) {
-        el.requestFullscreen();
+      host?.requestFullscreen?.();
+    } catch {}
+    try {
+      heroPlayerRef.current?.unmute?.();
+    } catch {}
+    try {
+      if (v) {
+        v.muted = false;
+        if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+        const p = v.play?.();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
       }
     } catch {}
   };
@@ -793,7 +806,7 @@ export default function LivePage() {
           }}
         >
           {/* background */}
-          <div className="absolute inset-0">
+              <div className="absolute inset-0">
             {activeHero ? (
               <VideoPlayer
                 mp4={playback.mp4}
@@ -806,6 +819,7 @@ export default function LivePage() {
                 autoFullscreen={false}
                 startMuted={true}
                 chrome="background"
+                controlRef={heroPlayerRef}
                 servers={servers}
                 activeOrigin={sessionOrigin}
                 onPlaybackError={({ code }) => {
@@ -858,13 +872,12 @@ export default function LivePage() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={toggleFullscreen}
+                  onClick={playHeroFullscreen}
                   className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-semibold text-white"
                   style={{ background: BRAND }}
-                  title={heroFs ? 'Exit fullscreen' : 'Fullscreen'}
+                  title="Play"
                 >
-                  {heroFs ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-                  {heroFs ? 'Exit Fullscreen' : 'Fullscreen'}
+                  <Play size={18} /> Play
                 </button>
               </div>
             </div>
