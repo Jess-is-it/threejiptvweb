@@ -822,7 +822,7 @@ export default function VideoPlayer({
       if (hlsInst) hlsInst.destroy();
       clearTimeout(loadTimeout);
     };
-  }, [origin, srcs, useHls, autoFullscreen, autoPlayOnLoad, mp4, hls, servers, meta]);
+  }, [origin, srcs, useHls, autoFullscreen, autoPlayOnLoad, mp4, hls, servers, meta, chrome, startMuted]);
 
   const infoVisible = !showControls && paused;
   const backVisible = Boolean(showControls || err || autoplayBlocked);
