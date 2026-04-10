@@ -172,6 +172,20 @@ export default function VideoPlayer({
   }, [useHls]);
 
   const hasInteractiveAudioIntent = () => Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 10_000;
+  const applyMutedState = (player, nextMuted) => {
+    if (!player) return;
+    try {
+      player.defaultMuted = Boolean(nextMuted);
+    } catch {}
+    try {
+      player.muted = Boolean(nextMuted);
+    } catch {}
+    if (!nextMuted) {
+      try {
+        if (typeof player.volume === 'number' && player.volume === 0) player.volume = 1;
+      } catch {}
+    }
+  };
 
   const isHlsSource = (raw) => {
     const s = String(raw || '');
@@ -374,8 +388,7 @@ export default function VideoPlayer({
       const pending = hasInteractiveAudioIntent();
       if (!pending) return;
       try {
-        v.muted = false;
-        if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+        applyMutedState(v, false);
         setNeedsUnmute(false);
         setAutoplayBlocked(false);
       } catch {}
@@ -662,7 +675,8 @@ export default function VideoPlayer({
         attachSrc(url, useHlsForCheck);
       }
       const keepExistingPlayback = isSame && hasMediaAttached && !v.paused && !v.ended;
-      if (keepExistingPlayback || interactiveAudioPending) {
+      if (keepExistingPlayback) {
+        if (interactiveAudioPending) tryResumeInteractiveAudio();
         setAutoplayBlocked(false);
         setNeedsUnmute(Boolean(v.muted || v.volume === 0));
         return;
@@ -676,16 +690,13 @@ export default function VideoPlayer({
           // Live: start muted (autoplay-friendly) unless caller overrides.
           // VOD: try with sound first unless caller overrides.
           if (interactiveAudioPending) {
-            v.muted = false;
-            if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+            applyMutedState(v, false);
           } else if (typeof startMuted === 'boolean') {
-            v.muted = startMuted;
-            if (!startMuted && typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+            applyMutedState(v, startMuted);
           } else if (meta?.type === 'live') {
-            v.muted = true;
+            applyMutedState(v, true);
           } else {
-            v.muted = false;
-            if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+            applyMutedState(v, false);
           }
         } catch {}
 
@@ -706,7 +717,7 @@ export default function VideoPlayer({
               : (startMuted !== false && isAutoplayPolicy);
           if (allowMutedFallback) {
             try {
-              v.muted = true;
+              applyMutedState(v, true);
               await v.play();
               setNeedsUnmute(true);
               setAutoplayBlocked(false);
@@ -935,8 +946,7 @@ export default function VideoPlayer({
         await ensureFullscreen();
         // User gesture: try to start with sound, but fall back to muted if the browser blocks it.
         try {
-          if (v.muted) v.muted = false;
-          if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+          applyMutedState(v, false);
         } catch {}
         try {
           await v.play();
@@ -948,7 +958,7 @@ export default function VideoPlayer({
           const isPolicy = errName.includes('notallowed') || errMsg.includes('notallowed');
           if (meta?.type === 'live' || isPolicy) {
             try {
-              v.muted = true;
+              applyMutedState(v, true);
               await v.play();
               setAutoplayBlocked(false);
               setNeedsUnmute(true);
@@ -990,8 +1000,7 @@ export default function VideoPlayer({
     const next = Math.min(1, Math.max(0, Number(value)));
     try {
       v.volume = next;
-      if (next > 0) v.muted = false;
-      if (next === 0) v.muted = true;
+      applyMutedState(v, next === 0);
     } catch {}
   };
 
@@ -1003,15 +1012,13 @@ export default function VideoPlayer({
     if (!volOpen) {
       setVolOpen(true);
       try {
-        if (v.muted) v.muted = false;
-        if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+        applyMutedState(v, false);
       } catch {}
       return;
     }
 
     try {
-      v.muted = !v.muted;
-      if (!v.muted && typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+      applyMutedState(v, !(v.muted || v.volume === 0));
     } catch {}
   };
 
@@ -1036,8 +1043,7 @@ export default function VideoPlayer({
     // Avoid `await` here to preserve user activation for browsers that are strict about gesture chains.
     ensureFullscreen();
     try {
-      v.muted = false;
-      if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+      applyMutedState(v, false);
       setNeedsUnmute(false);
       setAutoplayBlocked(false);
     } catch {}
@@ -1054,7 +1060,7 @@ export default function VideoPlayer({
     if (!v) return;
     try {
       interactiveAudioRef.current = { at: 0 };
-      v.muted = true;
+      applyMutedState(v, true);
       setNeedsUnmute(true);
     } catch {}
   };
@@ -1198,12 +1204,11 @@ export default function VideoPlayer({
 
     try {
       if (withSound) {
-        v.muted = false;
-        if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+        applyMutedState(v, false);
         setNeedsUnmute(false);
         setAutoplayBlocked(false);
       } else {
-        v.muted = true;
+        applyMutedState(v, true);
       }
     } catch {}
 
@@ -1212,9 +1217,14 @@ export default function VideoPlayer({
       setAutoplayBlocked(false);
       setNeedsUnmute(Boolean(v.muted || v.volume === 0));
     } catch (e) {
+      if (withSound) {
+        setAutoplayBlocked(false);
+        setNeedsUnmute(false);
+        return;
+      }
       try {
         interactiveAudioRef.current = { at: 0 };
-        v.muted = true;
+        applyMutedState(v, true);
         await v.play();
         setAutoplayBlocked(false);
         setNeedsUnmute(true);
@@ -1589,8 +1599,7 @@ export default function VideoPlayer({
                         const v = videoRef.current;
                         if (!v) return;
                         try {
-                          v.muted = !v.muted;
-                          if (!v.muted && v.volume === 0) v.volume = 1;
+                          applyMutedState(v, !(v.muted || v.volume === 0));
                         } catch {}
                       }}
                     >
