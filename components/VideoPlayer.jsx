@@ -116,6 +116,7 @@ export default function VideoPlayer({
   onMutedChange = null,
   controlRef = null,
   subtitles = [],
+  menuNavigation = null,
   seriesNavigation = null,
 }) {
   const router = useRouter();
@@ -145,6 +146,9 @@ export default function VideoPlayer({
   const [nextPreviewOpen, setNextPreviewOpen] = useState(false);
   const [episodeBrowserOpen, setEpisodeBrowserOpen] = useState(false);
   const [episodeBrowserSeason, setEpisodeBrowserSeason] = useState(null);
+  const [menuBrowserOpen, setMenuBrowserOpen] = useState(false);
+  const [menuBrowserGroupId, setMenuBrowserGroupId] = useState(null);
+  const [menuNextPreviewOpen, setMenuNextPreviewOpen] = useState(false);
   const stallTimer = useRef(null);
   const attemptRef = useRef({ key: '', triedMp4: false, triedHls: false });
   const currentRef = useRef({ kind: '', url: '' });
@@ -207,6 +211,14 @@ export default function VideoPlayer({
     () => (Array.isArray(seriesNavigation?.seasons) ? seriesNavigation.seasons : []),
     [seriesNavigation?.seasons]
   );
+  const menuGroups = useMemo(
+    () => (Array.isArray(menuNavigation?.groups) ? menuNavigation.groups : []),
+    [menuNavigation?.groups]
+  );
+  const menuGroupLabel = String(menuNavigation?.groupLabel || 'Categories').trim() || 'Categories';
+  const menuItemLabel = String(menuNavigation?.itemLabel || 'Channels').trim() || 'Channels';
+  const currentMenuItemId = String(menuNavigation?.currentItemId || '').trim();
+  const nextMenuItem = menuNavigation?.nextItem || null;
   const currentSeriesSeasonNumber = Number(seriesNavigation?.currentSeasonNumber || 0) || null;
   const currentSeriesEpisodeId = String(seriesNavigation?.currentEpisodeId || '').trim();
   const nextSeriesEpisode =
@@ -219,12 +231,21 @@ export default function VideoPlayer({
   }, [episodeBrowserSeason, seriesSeasons]);
   const canNavigateSeriesEpisodes =
     meta?.type === 'series' && typeof seriesNavigation?.onSelectEpisode === 'function' && seriesSeasons.length > 0;
+  const canNavigateMenu =
+    typeof menuNavigation?.onSelectItem === 'function' && menuGroups.length > 0;
+  const renderMenuNav = canNavigateMenu && !canNavigateSeriesEpisodes;
 
   useEffect(() => {
     setNextPreviewOpen(false);
     setEpisodeBrowserOpen(false);
     setEpisodeBrowserSeason(currentSeriesSeasonNumber || null);
   }, [meta?.id, currentSeriesSeasonNumber]);
+
+  useEffect(() => {
+    setMenuNextPreviewOpen(false);
+    setMenuBrowserOpen(false);
+    setMenuBrowserGroupId(null);
+  }, [meta?.id]);
 
   // overlay visibility
   useEffect(() => {
@@ -1044,6 +1065,34 @@ export default function VideoPlayer({
     });
   };
 
+  const toggleMenuBrowser = () => {
+    if (!canNavigateMenu) return;
+    setSubsOpen(false);
+    setVolOpen(false);
+    setMenuBrowserOpen((open) => {
+      const nextOpen = !open;
+      setMenuBrowserGroupId(null);
+      return nextOpen;
+    });
+  };
+
+  const activeMenuGroup = useMemo(() => {
+    const id = String(menuBrowserGroupId || '').trim();
+    if (!id) return null;
+    return menuGroups.find((g) => String(g?.id || '').trim() === id) || null;
+  }, [menuBrowserGroupId, menuGroups]);
+
+  const selectMenuItem = (item) => {
+    const id = String(item?.id || '').trim();
+    if (!id) return;
+    try {
+      menuNavigation?.onSelectItem?.(item);
+    } catch {}
+    setMenuBrowserOpen(false);
+    setMenuBrowserGroupId(null);
+    setMenuNextPreviewOpen(false);
+  };
+
   const reportOptions = [
     {
       key: 'buffering',
@@ -1181,7 +1230,7 @@ export default function VideoPlayer({
         <video
           ref={videoRef}
           playsInline
-          className="h-full w-full"
+          className={`h-full w-full ${meta?.type === 'live' ? 'object-cover' : 'object-contain'}`}
           controls={false}
           preload="auto"
         >
@@ -1380,6 +1429,162 @@ export default function VideoPlayer({
 
           {/* Bottom right: subtitles + fullscreen */}
           <div className="absolute bottom-4 right-4 flex items-center gap-3">
+            {renderMenuNav ? (
+              <div className="relative">
+                <button
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+                  onClick={toggleMenuBrowser}
+                  aria-label={`Browse ${menuGroupLabel}`}
+                  title={`Browse ${menuGroupLabel}`}
+                >
+                  <List size={22} />
+                </button>
+
+                {menuBrowserOpen ? (
+                  <div className="absolute bottom-14 right-0 w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-black/75 text-white shadow-2xl backdrop-blur-md">
+                    {activeMenuGroup ? (
+                      <>
+                        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-3 py-3">
+                          <button
+                            className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-neutral-100 hover:bg-white/10"
+                            onClick={() => setMenuBrowserGroupId(null)}
+                          >
+                            <ArrowLeft size={14} />
+                            {menuGroupLabel}
+                          </button>
+                          <div className="text-right">
+                            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-300">
+                              {String(activeMenuGroup?.title || '').trim() || menuItemLabel}
+                            </div>
+                            <div className="text-[11px] text-neutral-400">
+                              {(Array.isArray(activeMenuGroup?.items) ? activeMenuGroup.items : []).length} {menuItemLabel.toLowerCase()}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="max-h-[60vh] space-y-2 overflow-auto p-3">
+                          {(Array.isArray(activeMenuGroup?.items) ? activeMenuGroup.items : []).map((item) => {
+                            const isCurrent = String(item?.id || '').trim() === currentMenuItemId;
+                            return (
+                              <button
+                                key={String(item?.id || '')}
+                                className={
+                                  'flex w-full items-center gap-3 rounded-xl border p-3 text-left transition ' +
+                                  (isCurrent
+                                    ? 'border-[var(--brand)] bg-white/10'
+                                    : 'border-white/10 bg-white/5 hover:bg-white/10')
+                                }
+                                onClick={() => selectMenuItem(item)}
+                                title={String(item?.title || item?.name || '').trim() || 'Channel'}
+                              >
+                                <div className="h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-neutral-800">
+                                  {item?.image ? (
+                                    <img src={item.image} alt={item?.title || ''} className="h-full w-full object-cover" />
+                                  ) : null}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-400">
+                                    {menuItemLabel.slice(0, -1) || menuItemLabel}
+                                  </div>
+                                  <div className="mt-1 line-clamp-2 text-sm font-semibold text-white">
+                                    {String(item?.title || item?.name || 'Channel').trim()}
+                                  </div>
+                                </div>
+                                {isCurrent ? (
+                                  <span className="rounded-full border border-white/10 bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-200">
+                                    Now
+                                  </span>
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="border-b border-white/10 px-4 py-3">
+                          <div className="text-xs font-semibold uppercase tracking-[0.22em] text-neutral-300">
+                            {menuGroupLabel}
+                          </div>
+                          <div className="mt-1 text-[11px] text-neutral-400">
+                            Choose a category, then pick a channel.
+                          </div>
+                        </div>
+                        <div className="max-h-[60vh] space-y-2 overflow-auto p-3">
+                          {menuGroups.map((group) => {
+                            const id = String(group?.id || '').trim();
+                            const title = String(group?.title || group?.name || '').trim() || menuGroupLabel;
+                            const count = (Array.isArray(group?.items) ? group.items : []).length;
+                            return (
+                              <button
+                                key={id || title}
+                                className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-white/5 p-3 text-left transition hover:bg-white/10"
+                                onClick={() => setMenuBrowserGroupId(id)}
+                              >
+                                <div>
+                                  <div className="text-sm font-semibold text-white">{title}</div>
+                                  <div className="mt-1 text-[11px] text-neutral-400">
+                                    {count} {menuItemLabel.toLowerCase()}
+                                  </div>
+                                </div>
+                                <span className="rounded-full border border-white/10 bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-200">
+                                  Open
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {renderMenuNav && nextMenuItem?.id ? (
+              <div className="relative">
+                <button
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+                  onClick={() => selectMenuItem(nextMenuItem)}
+                  onMouseEnter={() => setMenuNextPreviewOpen(true)}
+                  onMouseLeave={() => setMenuNextPreviewOpen(false)}
+                  onFocus={() => setMenuNextPreviewOpen(true)}
+                  onBlur={() => setMenuNextPreviewOpen(false)}
+                  aria-label={`Next ${menuItemLabel.slice(0, -1) || menuItemLabel}`}
+                  title={`Next ${menuItemLabel.slice(0, -1) || menuItemLabel}`}
+                >
+                  <SkipForward size={22} />
+                </button>
+
+                {menuNextPreviewOpen ? (
+                  <div className="pointer-events-none absolute bottom-14 right-0 w-72 overflow-hidden rounded-2xl border border-white/10 bg-black/75 text-white shadow-2xl backdrop-blur-md">
+                    <div className="flex gap-3 p-3">
+                      <div className="h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-neutral-800">
+                        {nextMenuItem?.image ? (
+                          <img
+                            src={nextMenuItem.image}
+                            alt={nextMenuItem.title || ''}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : null}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-neutral-300">
+                          Up next
+                        </div>
+                        {nextMenuItem?.groupTitle ? (
+                          <div className="mt-1 text-xs text-neutral-300">{nextMenuItem.groupTitle}</div>
+                        ) : null}
+                        <div className="mt-1 line-clamp-2 text-sm font-semibold text-white">
+                          {String(nextMenuItem?.title || 'Channel').trim()}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {canNavigateSeriesEpisodes ? (
               <div className="relative">
                 <button

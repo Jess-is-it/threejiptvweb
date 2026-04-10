@@ -369,6 +369,7 @@ export default function LivePage() {
   const [heroId, setHeroId] = useState('');
   const [heroIndex, setHeroIndex] = useState(0);
   const [heroFs, setHeroFs] = useState(false);
+  const [heroPlayerMode, setHeroPlayerMode] = useState(false);
   const [heroMsg, setHeroMsg] = useState('');
   const [heroControlsHovered, setHeroControlsHovered] = useState(false);
   const heroTimerRef = useRef(null);
@@ -502,7 +503,11 @@ export default function LivePage() {
   }, [heroId, username, sessionOrigin]);
 
   useEffect(() => {
-    const onFs = () => setHeroFs(Boolean(document.fullscreenElement));
+    const onFs = () => {
+      const fs = Boolean(document.fullscreenElement);
+      setHeroFs(fs);
+      if (!fs) setHeroPlayerMode(false);
+    };
     document.addEventListener('fullscreenchange', onFs);
     onFs();
     return () => document.removeEventListener('fullscreenchange', onFs);
@@ -716,7 +721,19 @@ export default function LivePage() {
       setHeroId(wanted);
     });
     try {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      if (!document.fullscreenElement) window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {}
+    try {
+      if (heroPlayerMode || document.fullscreenElement) {
+        heroPlayerRef.current?.unmute?.();
+        const v = heroVideoEl();
+        if (v) {
+          v.muted = false;
+          if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+          const p = v.play?.();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        }
+      }
     } catch {}
   };
 
@@ -750,7 +767,7 @@ export default function LivePage() {
 
   const playHeroFullscreen = () => {
     const host = heroWrapRef.current;
-    const v = heroVideoEl();
+    flushSync(() => setHeroPlayerMode(true));
     try {
       host?.requestFullscreen?.();
     } catch {}
@@ -758,6 +775,7 @@ export default function LivePage() {
       heroPlayerRef.current?.unmute?.();
     } catch {}
     try {
+      const v = heroVideoEl();
       if (v) {
         v.muted = false;
         if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
@@ -765,7 +783,54 @@ export default function LivePage() {
         if (p && typeof p.catch === 'function') p.catch(() => {});
       }
     } catch {}
+    setTimeout(() => {
+      try {
+        if (!document.fullscreenElement) setHeroPlayerMode(false);
+      } catch {
+        setHeroPlayerMode(false);
+      }
+    }, 900);
   };
+
+  const menuNavigation = useMemo(() => {
+    const currentId = String(activeHero?.id || '').trim();
+    if (!currentId) return null;
+    const groups = channelsByCategory
+      .filter((g) => (Array.isArray(g?.channels) ? g.channels : []).length)
+      .map((g) => ({
+        id: String(g?.id || '').trim() || 'UNCAT',
+        title: String(g?.name || '').trim() || 'Channels',
+        items: (Array.isArray(g?.channels) ? g.channels : []).map((ch) => ({
+          id: String(ch?.id || '').trim(),
+          title: String(ch?.name || '').trim() || 'Channel',
+          image: String(ch?.logo || '').trim(),
+        })),
+      }))
+      .filter((g) => g.items.length);
+
+    const flat = [];
+    for (const g of groups) {
+      for (const item of g.items) {
+        if (!item?.id) continue;
+        flat.push({ ...item, groupId: g.id, groupTitle: g.title });
+      }
+    }
+    const idx = flat.findIndex((row) => String(row?.id || '').trim() === currentId);
+    const nextItem = flat.length ? flat[(idx >= 0 ? idx + 1 : 0) % flat.length] : null;
+
+    return {
+      groupLabel: 'Categories',
+      itemLabel: 'Channels',
+      groups,
+      currentItemId: currentId,
+      nextItem,
+      onSelectItem: (item) => {
+        const id = String(item?.id || '').trim();
+        if (!id) return;
+        setHeroById(id);
+      },
+    };
+  }, [channelsByCategory, activeHero?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Protected>
@@ -784,11 +849,13 @@ export default function LivePage() {
           onMouseEnter={() => setHeroControlsHovered(true)}
           onMouseLeave={() => setHeroControlsHovered(false)}
           onTouchStart={(e) => {
+            if (heroFs) return;
             const touch = e.changedTouches?.[0];
             if (!touch) return;
             heroTouchRef.current = { active: true, x: touch.clientX, y: touch.clientY };
           }}
           onTouchEnd={(e) => {
+            if (heroFs) return;
             const touch = e.changedTouches?.[0];
             if (!touch) return;
             const st = heroTouchRef.current;
@@ -817,9 +884,10 @@ export default function LivePage() {
                 fill={true}
                 autoPlayOnLoad={true}
                 autoFullscreen={false}
-                startMuted={true}
-                chrome="background"
+                startMuted={heroPlayerMode ? false : true}
+                chrome={heroPlayerMode ? 'default' : 'background'}
                 controlRef={heroPlayerRef}
+                menuNavigation={heroPlayerMode ? menuNavigation : null}
                 servers={servers}
                 activeOrigin={sessionOrigin}
                 onPlaybackError={({ code }) => {
@@ -836,55 +904,62 @@ export default function LivePage() {
               <div className="absolute inset-0 bg-neutral-900" />
             )}
 
-            {/* TOP gradient under the header so nav stays readable */}
-            <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-20 sm:h-24 lg:h-28 bg-gradient-to-b from-black/75 via-black/40 to-transparent" />
-
-            {/* BOTTOM vignette to darken the lower area over cards */}
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent z-[1]" />
+            {!heroFs ? (
+              <>
+                {/* TOP gradient under the header so nav stays readable */}
+                <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-20 sm:h-24 lg:h-28 bg-gradient-to-b from-black/75 via-black/40 to-transparent" />
+                {/* BOTTOM vignette to darken the lower area over cards */}
+                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent z-[1]" />
+              </>
+            ) : null}
           </div>
 
           {/* Total channels badge (movies hero release-date style) */}
-          <div
-            className="absolute right-4 z-20 inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md sm:right-6 lg:right-10"
-            style={{ top: `${headerH + 18}px` }}
-          >
-            <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
-            <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
-            <span className="text-white">{visibleChannels.length}</span>
-          </div>
+          {!heroFs ? (
+            <div
+              className="absolute right-4 z-20 inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md sm:right-6 lg:right-10"
+              style={{ top: `${headerH + 18}px` }}
+            >
+              <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
+              <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
+              <span className="text-white">{visibleChannels.length}</span>
+            </div>
+          ) : null}
 
           {/* copy & CTAs */}
-          <div className="relative z-10 flex h-full flex-col justify-end px-4 sm:px-6 lg:px-10 pb-10">
-            <div className="max-w-[72ch] bg-gradient-to-r from-black/80 via-black/50 to-transparent p-5 sm:p-6">
-              <div className="mb-2 text-xs uppercase tracking-[0.2em] text-white/70">Now playing</div>
+          {!heroFs ? (
+            <div className="relative z-10 flex h-full flex-col justify-end px-4 sm:px-6 lg:px-10 pb-10">
+              <div className="max-w-[72ch] bg-gradient-to-r from-black/80 via-black/50 to-transparent p-5 sm:p-6">
+                <div className="mb-2 text-xs uppercase tracking-[0.2em] text-white/70">Now playing</div>
 
-              <h2 className="mb-2 text-3xl font-extrabold leading-tight text-white sm:text-4xl md:text-6xl line-clamp-2">
-                {activeHero?.name || (loading ? 'Loading channels…' : 'No live channels available.')}
-              </h2>
+                <h2 className="mb-2 text-3xl font-extrabold leading-tight text-white sm:text-4xl md:text-6xl line-clamp-2">
+                  {activeHero?.name || (loading ? 'Loading channels…' : 'No live channels available.')}
+                </h2>
 
-              {(activeSlide?.categoryName || heroMsg) ? (
-                <div className="mb-3 flex flex-wrap items-center gap-x-3 text-sm text-neutral-200">
-                  {activeSlide?.categoryName ? <span>• {activeSlide.categoryName}</span> : null}
-                  {heroMsg ? <span className="rounded bg-amber-500/20 px-2 py-1 text-xs text-amber-100">{heroMsg}</span> : null}
+                {(activeSlide?.categoryName || heroMsg) ? (
+                  <div className="mb-3 flex flex-wrap items-center gap-x-3 text-sm text-neutral-200">
+                    {activeSlide?.categoryName ? <span>• {activeSlide.categoryName}</span> : null}
+                    {heroMsg ? <span className="rounded bg-amber-500/20 px-2 py-1 text-xs text-amber-100">{heroMsg}</span> : null}
+                  </div>
+                ) : null}
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={playHeroFullscreen}
+                    className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-semibold text-white"
+                    style={{ background: BRAND }}
+                    title="Play"
+                  >
+                    <Play size={18} /> Play
+                  </button>
                 </div>
-              ) : null}
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={playHeroFullscreen}
-                  className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-semibold text-white"
-                  style={{ background: BRAND }}
-                  title="Play"
-                >
-                  <Play size={18} /> Play
-                </button>
               </div>
             </div>
-          </div>
+          ) : null}
 
           {/* arrows */}
-          {heroSlides.length > 1 ? (
+          {!heroFs && heroSlides.length > 1 ? (
             <>
               <button
                 type="button"
