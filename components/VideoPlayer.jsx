@@ -631,7 +631,8 @@ export default function VideoPlayer({
       const useHlsForCheck = typeof forcedUseHlsRef.current === 'boolean' ? forcedUseHlsRef.current : useHls;
       const desiredKind = useHlsForCheck && isHlsSource(url) ? 'hls' : 'mp4';
       const isSame = currentRef.current?.url === desiredFinal && currentRef.current?.kind === desiredKind;
-      if (!isSame) {
+      const hasMediaAttached = Boolean(v.currentSrc || v.src);
+      if (!isSame || !hasMediaAttached) {
         attachSrc(url, useHlsForCheck);
       }
 
