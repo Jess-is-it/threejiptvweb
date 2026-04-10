@@ -123,6 +123,8 @@ export default function VideoPlayer({
   const { session } = useSession();
   const wrapRef = useRef(null);
   const videoRef = useRef(null);
+  const attachSrcRef = useRef(null);
+  const forcedUseHlsRef = useRef(null);
   const isBackgroundChrome = chrome === 'background';
   const [origin, setOrigin] = useState(activeOrigin);
   const [srcs, setSrcs] = useState({ mp4, hls });
@@ -162,6 +164,10 @@ export default function VideoPlayer({
   useEffect(() => {
     onMutedChangeRef.current = typeof onMutedChange === 'function' ? onMutedChange : null;
   }, [onMutedChange]);
+
+  useEffect(() => {
+    forcedUseHlsRef.current = useHls;
+  }, [useHls]);
 
   const isHlsSource = (raw) => {
     const s = String(raw || '');
@@ -355,7 +361,7 @@ export default function VideoPlayer({
     let hlsInst;
     let loadTimeout;
 
-    const attachSrc = (url) => {
+    const attachSrc = (url, forceUseHls = null) => {
       setErr('');
 
       // Ensure we don't leak old HLS instances when we re-attach/recover (important for long-running live playback).
@@ -373,8 +379,10 @@ export default function VideoPlayer({
 
       const isHlsLike = isHlsSource(url);
       const finalUrl = maybeProxy(url);
+      const useHlsWanted = typeof forceUseHls === 'boolean' ? forceUseHls : useHls;
+      forcedUseHlsRef.current = useHlsWanted;
       currentRef.current = {
-        kind: isHlsLike ? 'hls' : 'mp4',
+        kind: useHlsWanted && isHlsLike ? 'hls' : 'mp4',
         url: finalUrl,
       };
       // clear previous
@@ -383,7 +391,7 @@ export default function VideoPlayer({
       v.load();
 
       // attach
-      if (useHls && isHlsLike) {
+      if (useHlsWanted && isHlsLike) {
         if (Hls.isSupported()) {
           hlsInst = new Hls({
             // Low latency mode tends to be brittle on some IPTV panels (sequence discontinuities, short windows).
@@ -615,7 +623,17 @@ export default function VideoPlayer({
       if (url === srcs.hls) attemptRef.current.triedHls = true;
       if (url === srcs.mp4) attemptRef.current.triedMp4 = true;
 
-      attachSrc(url);
+      const maybeProxy = (raw) => {
+        const proxied = toBrowserMediaUrl(raw, { forceProxy: meta?.type === 'live' });
+        return proxied || raw;
+      };
+      const desiredFinal = maybeProxy(url);
+      const useHlsForCheck = typeof forcedUseHlsRef.current === 'boolean' ? forcedUseHlsRef.current : useHls;
+      const desiredKind = useHlsForCheck && isHlsSource(url) ? 'hls' : 'mp4';
+      const isSame = currentRef.current?.url === desiredFinal && currentRef.current?.kind === desiredKind;
+      if (!isSame) {
+        attachSrc(url, useHlsForCheck);
+      }
 
       const tryPlay = async () => {
         if (!autoPlayOnLoad) return;
@@ -680,6 +698,8 @@ export default function VideoPlayer({
 
       await tryPlay();
     };
+
+    attachSrcRef.current = attachSrc;
 
     // server switch with position preservation
     const switchServer = async (newOrigin, silent = false) => {
@@ -821,6 +841,7 @@ export default function VideoPlayer({
       v.removeEventListener('pause', onPause);
       if (hlsInst) hlsInst.destroy();
       clearTimeout(loadTimeout);
+      if (attachSrcRef.current === attachSrc) attachSrcRef.current = null;
     };
   }, [origin, srcs, useHls, autoFullscreen, autoPlayOnLoad, mp4, hls, servers, meta, chrome, startMuted]);
 
@@ -997,6 +1018,7 @@ export default function VideoPlayer({
         toggleMute: toggleMuteNow,
         isMuted: () => Boolean(videoRef.current?.muted || videoRef.current?.volume === 0),
         setVolume,
+        switchToSources: (opts) => switchToSourcesNow({ ...(opts || {}) }),
       };
     } catch {}
     return () => {
@@ -1082,10 +1104,67 @@ export default function VideoPlayer({
     return menuGroups.find((g) => String(g?.id || '').trim() === id) || null;
   }, [menuBrowserGroupId, menuGroups]);
 
+  const switchToSourcesNow = async ({
+    mp4: nextMp4,
+    hls: nextHls,
+    preferHls: nextPreferHls = true,
+    withSound = false,
+  } = {}) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const mp4Url = String(nextMp4 || '').trim();
+    const hlsUrl = String(nextHls || '').trim();
+    const prefer = Boolean(nextPreferHls);
+    const wantUseHls = Boolean((prefer && hlsUrl) || (!mp4Url && hlsUrl));
+    const url = (wantUseHls ? (hlsUrl || mp4Url) : (mp4Url || hlsUrl)) || '';
+    if (!url) return;
+
+    try {
+      setUseHls(wantUseHls);
+    } catch {}
+    try {
+      forcedUseHlsRef.current = wantUseHls;
+    } catch {}
+    try {
+      attachSrcRef.current?.(url, wantUseHls);
+    } catch {}
+
+    try {
+      if (withSound) {
+        v.muted = false;
+        if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+      } else {
+        v.muted = true;
+      }
+    } catch {}
+
+    try {
+      await v.play();
+      setAutoplayBlocked(false);
+      setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+    } catch (e) {
+      try {
+        v.muted = true;
+        await v.play();
+        setAutoplayBlocked(false);
+        setNeedsUnmute(true);
+      } catch {}
+    }
+  };
+
   const selectMenuItem = (item) => {
     const id = String(item?.id || '').trim();
     if (!id) return;
     try {
+      if (item?.mp4 || item?.hls) {
+        // Keep audio on channel switches by swapping streams within the user gesture.
+        switchToSourcesNow({
+          mp4: item.mp4 || '',
+          hls: item.hls || '',
+          preferHls: item.preferHls !== false,
+          withSound: true,
+        });
+      }
       menuNavigation?.onSelectItem?.(item);
     } catch {}
     setMenuBrowserOpen(false);
@@ -1743,59 +1822,61 @@ export default function VideoPlayer({
               </div>
             ) : null}
 
-            <div className="relative">
-              <button
-                className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
-                onClick={() => setSubsOpen((v) => !v)}
-                aria-label="Subtitles"
-                title="Subtitles"
-              >
-                <Captions size={22} />
-              </button>
+            {meta?.type !== 'live' ? (
+              <div className="relative">
+                <button
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+                  onClick={() => setSubsOpen((v) => !v)}
+                  aria-label="Subtitles"
+                  title="Subtitles"
+                >
+                  <Captions size={22} />
+                </button>
 
-              {subsOpen ? (
-                <div className="absolute bottom-14 right-0 w-64 overflow-hidden rounded-2xl border border-white/10 bg-black/60 p-2 text-sm text-white shadow-2xl backdrop-blur-md">
-                  <div className="px-2 pb-2 pt-1 text-xs font-semibold text-neutral-200">Subtitles</div>
-                  <button
-                    className="flex w-full items-center justify-between rounded-lg px-2 py-2 hover:bg-white/10"
-                    onClick={() => {
-                      const v = videoRef.current;
-                      if (!v) return;
-                      try {
-                        for (const t of Array.from(v.textTracks || [])) t.mode = 'disabled';
-                      } catch {}
-                      setSubsOpen(false);
-                      push('Subtitles off');
-                    }}
-                  >
-                    Off
-                  </button>
-                  {subtitleTracks.map((t, idx) => (
+                {subsOpen ? (
+                  <div className="absolute bottom-14 right-0 w-64 overflow-hidden rounded-2xl border border-white/10 bg-black/60 p-2 text-sm text-white shadow-2xl backdrop-blur-md">
+                    <div className="px-2 pb-2 pt-1 text-xs font-semibold text-neutral-200">Subtitles</div>
                     <button
-                      key={`${t.url}-${idx}`}
                       className="flex w-full items-center justify-between rounded-lg px-2 py-2 hover:bg-white/10"
                       onClick={() => {
                         const v = videoRef.current;
                         if (!v) return;
                         try {
-                          const tracks = Array.from(v.textTracks || []);
-                          tracks.forEach((x, i) => {
-                            x.mode = i === idx ? 'showing' : 'disabled';
-                          });
+                          for (const t of Array.from(v.textTracks || [])) t.mode = 'disabled';
                         } catch {}
                         setSubsOpen(false);
-                        push(`Subtitles: ${t.label || t.lang || 'On'}`);
+                        push('Subtitles off');
                       }}
                     >
-                      <span className="truncate">{t.label || t.lang || `Subtitle ${idx + 1}`}</span>
+                      Off
                     </button>
-                  ))}
-                  {!subtitleTracks.length ? (
-                    <div className="px-2 py-2 text-xs text-neutral-200">No subtitles available.</div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+                    {subtitleTracks.map((t, idx) => (
+                      <button
+                        key={`${t.url}-${idx}`}
+                        className="flex w-full items-center justify-between rounded-lg px-2 py-2 hover:bg-white/10"
+                        onClick={() => {
+                          const v = videoRef.current;
+                          if (!v) return;
+                          try {
+                            const tracks = Array.from(v.textTracks || []);
+                            tracks.forEach((x, i) => {
+                              x.mode = i === idx ? 'showing' : 'disabled';
+                            });
+                          } catch {}
+                          setSubsOpen(false);
+                          push(`Subtitles: ${t.label || t.lang || 'On'}`);
+                        }}
+                      >
+                        <span className="truncate">{t.label || t.lang || `Subtitle ${idx + 1}`}</span>
+                      </button>
+                    ))}
+                    {!subtitleTracks.length ? (
+                      <div className="px-2 py-2 text-xs text-neutral-200">No subtitles available.</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <button
               className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"

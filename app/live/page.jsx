@@ -794,7 +794,22 @@ export default function LivePage() {
 
   const menuNavigation = useMemo(() => {
     const currentId = String(activeHero?.id || '').trim();
-    if (!currentId) return null;
+    if (!currentId || !session?.streamBase || !sessionOrigin) return null;
+    const { username: u, password: p } = parseCreds(session.streamBase);
+    const playbackFor = (ch) => {
+      if (!ch?.id) return { mp4: '', hls: '', preferHls: true };
+      const directSource = rebaseSourceOrigin(pickDirectSource(ch), sessionOrigin);
+      const directIsHls = isHlsLikeSource(directSource);
+      const normalizedExt = normalizeLiveExt(ch?.ext || sourceExtension(directSource) || '');
+      const defaultHls = `${sessionOrigin}/live/${encodeURIComponent(u)}/${encodeURIComponent(p)}/${ch.id}.m3u8`;
+      const fallbackExt = normalizedExt && normalizedExt !== 'm3u8' ? normalizedExt : 'ts';
+      const defaultDirect = `${sessionOrigin}/live/${encodeURIComponent(u)}/${encodeURIComponent(p)}/${ch.id}.${fallbackExt}`;
+
+      if (directSource) {
+        return { mp4: directIsHls ? '' : directSource, hls: directIsHls ? directSource : defaultHls, preferHls: true };
+      }
+      return { mp4: normalizedExt === 'm3u8' ? '' : defaultDirect, hls: defaultHls, preferHls: true };
+    };
     const groups = channelsByCategory
       .filter((g) => (Array.isArray(g?.channels) ? g.channels : []).length)
       .map((g) => ({
@@ -804,6 +819,7 @@ export default function LivePage() {
           id: String(ch?.id || '').trim(),
           title: String(ch?.name || '').trim() || 'Channel',
           image: String(ch?.logo || '').trim(),
+          ...playbackFor(ch),
         })),
       }))
       .filter((g) => g.items.length);
@@ -830,7 +846,7 @@ export default function LivePage() {
         setHeroById(id);
       },
     };
-  }, [channelsByCategory, activeHero?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [channelsByCategory, activeHero?.id, session?.streamBase, sessionOrigin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Protected>
