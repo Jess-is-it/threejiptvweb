@@ -171,7 +171,11 @@ export default function VideoPlayer({
     forcedUseHlsRef.current = useHls;
   }, [useHls]);
 
+  const isPlayerMuted = (player) => Boolean(player?.muted || player?.volume === 0);
   const hasInteractiveAudioIntent = () => Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 10_000;
+  const setInteractiveAudioIntent = (active) => {
+    interactiveAudioRef.current = { at: active ? Date.now() : 0 };
+  };
   const applyMutedState = (player, nextMuted) => {
     if (!player) return;
     try {
@@ -185,6 +189,25 @@ export default function VideoPlayer({
         if (typeof player.volume === 'number' && player.volume === 0) player.volume = 1;
       } catch {}
     }
+  };
+  const syncNeedsUnmute = (player) => {
+    const nextNeedsUnmute = isPlayerMuted(player);
+    setNeedsUnmute(nextNeedsUnmute);
+    return nextNeedsUnmute;
+  };
+  const clearPlaybackPrompts = () => {
+    setAutoplayBlocked(false);
+    setNeedsUnmute(false);
+  };
+  const markPlaybackReady = (player, forcedNeedsUnmute = null) => {
+    setAutoplayBlocked(false);
+    if (forcedNeedsUnmute === null) return syncNeedsUnmute(player);
+    setNeedsUnmute(Boolean(forcedNeedsUnmute));
+    return Boolean(forcedNeedsUnmute);
+  };
+  const markAutoplayBlocked = () => {
+    setAutoplayBlocked(true);
+    setNeedsUnmute(true);
   };
 
   const isHlsSource = (raw) => {
@@ -389,8 +412,7 @@ export default function VideoPlayer({
       if (!pending) return;
       try {
         applyMutedState(v, false);
-        setNeedsUnmute(false);
-        setAutoplayBlocked(false);
+        clearPlaybackPrompts();
       } catch {}
       try {
         const p = v.play?.();
@@ -702,6 +724,7 @@ export default function VideoPlayer({
 
         try {
           await v.play();
+          setAutoplayBlocked(false);
           setNeedsUnmute(Boolean(v.muted || v.volume === 0));
         } catch (e) {
           // Some browsers won't allow audible autoplay after navigation, even if user clicked.
@@ -719,21 +742,19 @@ export default function VideoPlayer({
             try {
               applyMutedState(v, true);
               await v.play();
-              setNeedsUnmute(true);
               setAutoplayBlocked(false);
+              setNeedsUnmute(true);
               return;
             } catch {}
           }
 
           if (interactiveAudioPending) {
-            setNeedsUnmute(false);
-            setAutoplayBlocked(false);
+            clearPlaybackPrompts();
             return;
           }
 
           try { v.pause(); } catch {}
-          setAutoplayBlocked(true);
-          setNeedsUnmute(true);
+          markAutoplayBlocked();
           return;
         }
 
@@ -888,8 +909,7 @@ export default function VideoPlayer({
     const onPlay = () => {
       setPaused(false);
       if (hasInteractiveAudioIntent()) {
-        setNeedsUnmute(false);
-        setAutoplayBlocked(false);
+        clearPlaybackPrompts();
       }
     };
     const onPause = () => setPaused(true);
@@ -950,8 +970,7 @@ export default function VideoPlayer({
         } catch {}
         try {
           await v.play();
-          setAutoplayBlocked(false);
-          setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+          markPlaybackReady(v);
         } catch (e) {
           const errName = String(e?.name || '').toLowerCase();
           const errMsg = String(e?.message || '').toLowerCase();
@@ -960,8 +979,7 @@ export default function VideoPlayer({
             try {
               applyMutedState(v, true);
               await v.play();
-              setAutoplayBlocked(false);
-              setNeedsUnmute(true);
+              markPlaybackReady(v, true);
               return;
             } catch {}
           }
@@ -1018,7 +1036,7 @@ export default function VideoPlayer({
     }
 
     try {
-      applyMutedState(v, !(v.muted || v.volume === 0));
+      applyMutedState(v, !isPlayerMuted(v));
     } catch {}
   };
 
@@ -1044,8 +1062,7 @@ export default function VideoPlayer({
     ensureFullscreen();
     try {
       applyMutedState(v, false);
-      setNeedsUnmute(false);
-      setAutoplayBlocked(false);
+      clearPlaybackPrompts();
     } catch {}
     try {
       if (v.paused) {
@@ -1059,7 +1076,7 @@ export default function VideoPlayer({
     const v = videoRef.current;
     if (!v) return;
     try {
-      interactiveAudioRef.current = { at: 0 };
+      setInteractiveAudioIntent(false);
       applyMutedState(v, true);
       setNeedsUnmute(true);
     } catch {}
@@ -1084,7 +1101,7 @@ export default function VideoPlayer({
         mute: muteNow,
         unmute: unmuteNow,
         toggleMute: toggleMuteNow,
-        isMuted: () => Boolean(videoRef.current?.muted || videoRef.current?.volume === 0),
+        isMuted: () => isPlayerMuted(videoRef.current),
         setVolume,
         switchToSources: (opts) => switchToSourcesNow({ ...(opts || {}) }),
       };
@@ -1193,11 +1210,7 @@ export default function VideoPlayer({
     try {
       forcedUseHlsRef.current = wantUseHls;
     } catch {}
-    if (withSound) {
-      interactiveAudioRef.current = { at: Date.now() };
-    } else {
-      interactiveAudioRef.current = { at: 0 };
-    }
+    setInteractiveAudioIntent(withSound);
     try {
       attachSrcRef.current?.(url, wantUseHls);
     } catch {}
@@ -1205,8 +1218,7 @@ export default function VideoPlayer({
     try {
       if (withSound) {
         applyMutedState(v, false);
-        setNeedsUnmute(false);
-        setAutoplayBlocked(false);
+        clearPlaybackPrompts();
       } else {
         applyMutedState(v, true);
       }
@@ -1214,20 +1226,17 @@ export default function VideoPlayer({
 
     try {
       await v.play();
-      setAutoplayBlocked(false);
-      setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+      markPlaybackReady(v);
     } catch (e) {
       if (withSound) {
-        setAutoplayBlocked(false);
-        setNeedsUnmute(false);
+        clearPlaybackPrompts();
         return;
       }
       try {
-        interactiveAudioRef.current = { at: 0 };
+        setInteractiveAudioIntent(false);
         applyMutedState(v, true);
         await v.play();
-        setAutoplayBlocked(false);
-        setNeedsUnmute(true);
+        markPlaybackReady(v, true);
       } catch {}
     }
   };
@@ -1599,7 +1608,7 @@ export default function VideoPlayer({
                         const v = videoRef.current;
                         if (!v) return;
                         try {
-                          applyMutedState(v, !(v.muted || v.volume === 0));
+                          applyMutedState(v, !isPlayerMuted(v));
                         } catch {}
                       }}
                     >
