@@ -184,7 +184,7 @@ There is currently **no automated test suite**. Use:
    - User authenticates via `/api/auth/login` (Xtream/XUI validation).
    - Session stored client-side by `components/SessionProvider.jsx`.
    - Watch pages use `components/VideoPlayer.jsx`.
-   - Live hero playback on `/live` uses `VideoPlayer` in muted-background mode; clicking **Play** enters fullscreen and swaps to the full player chrome with in-player `menuNavigation` (Categories/Channels browser + Next channel). Live channel switching swaps the source first inside the fullscreen click, delays parent hero-state sync slightly, and now keeps the media element's real/default muted state aligned so fullscreen Next/channel changes do not fall back to the `Tap to unmute` overlay.
+   - Live hero playback on `/live` uses `VideoPlayer` in muted-background mode; clicking **Play** enters fullscreen and swaps to the full player chrome with in-player `menuNavigation` (Categories/Channels browser + Next channel). Live channel switching swaps the source first inside the fullscreen click, delays parent hero-state sync slightly, keeps the media element's real/default muted state aligned so fullscreen Next/channel changes do not fall back to the `Tap to unmute` overlay, and hides the seek bar while fullscreen live playback is active.
    - HLS URLs are served through `/api/proxy/hls`.
 2. **Admin flow**
    - Cookie-based admin sessions from `/api/admin/login`.

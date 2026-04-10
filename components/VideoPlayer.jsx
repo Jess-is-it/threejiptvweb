@@ -957,6 +957,7 @@ export default function VideoPlayer({
     const d = Number(time.duration);
     return Number.isFinite(d) && d > 1 && d < 24 * 60 * 60 * 24; // < 24h
   }, [time.duration]);
+  const showTimeline = canSeek && !(meta?.type === 'live' && isFullscreen);
 
   const togglePlay = async () => {
     const v = videoRef.current;
@@ -1509,7 +1510,7 @@ export default function VideoPlayer({
           </button>
 
           {/* Timeline (VOD only) */}
-          {canSeek ? (
+          {showTimeline ? (
             <div className="absolute bottom-20 left-4 right-4">
               <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/35 px-4 py-3 backdrop-blur-md">
                 <div className="w-14 text-right text-xs text-neutral-200 tabular-nums">
