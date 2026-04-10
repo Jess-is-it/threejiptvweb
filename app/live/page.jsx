@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Maximize2, Minimize2, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
 import { flushSync } from 'react-dom';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
@@ -10,6 +10,8 @@ const LIVE_REFRESH_MS = 15_000;
 const BRAND = 'var(--brand)';
 const HEADER_H = 64;
 const SHELL_HEADER_OFFSET = 64;
+const SECTION_TOP_GAP = 24;
+const HERO_AUTOPLAY_MS = 12_000;
 const SCROLL_EDGE_TOLERANCE = 4;
 
 async function readJsonSafe(res) {
@@ -349,7 +351,6 @@ export default function LivePage() {
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const heroWrapRef = useRef(null);
-  const heroPlayerRef = useRef(null);
   const username = String(session?.user?.username || '').trim();
   const sessionOrigin = useMemo(() => getOriginFromStreamBase(session?.streamBase), [session?.streamBase]);
 
@@ -360,7 +361,9 @@ export default function LivePage() {
   const [heroIndex, setHeroIndex] = useState(0);
   const [heroFs, setHeroFs] = useState(false);
   const [heroMsg, setHeroMsg] = useState('');
-  const [heroMuted, setHeroMuted] = useState(false);
+  const [heroControlsHovered, setHeroControlsHovered] = useState(false);
+  const heroTimerRef = useRef(null);
+  const heroTouchRef = useRef({ active: false, x: 0, y: 0 });
   const servers = useMemo(() => (sessionOrigin ? [{ label: 'Current server', origin: sessionOrigin }] : []), [sessionOrigin]);
 
   useEffect(() => {
@@ -455,21 +458,6 @@ export default function LivePage() {
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, []);
 
-  // Best-effort: browsers can block audible autoplay after navigation. Unmute on first user interaction.
-  useEffect(() => {
-    const onFirstGesture = () => {
-      try {
-        heroPlayerRef.current?.unmute?.();
-      } catch {}
-    };
-    window.addEventListener('pointerdown', onFirstGesture, { capture: true, once: true });
-    window.addEventListener('keydown', onFirstGesture, { capture: true, once: true });
-    return () => {
-      window.removeEventListener('pointerdown', onFirstGesture, true);
-      window.removeEventListener('keydown', onFirstGesture, true);
-    };
-  }, []);
-
   const isDownHidden = (id) => {
     const downAt = downMap?.[String(id || '').trim()] || 0;
     return shouldHideDown({ downAt });
@@ -527,55 +515,105 @@ export default function LivePage() {
     return ordered;
   }, [visibleChannels, categories, pinnedIds]);
 
-  const heroList = useMemo(() => {
-    const base = channels.filter((c) => c?.isUp !== false).filter((c) => !isDownHidden(c?.id));
-    const byId = new Map(base.map((c) => [String(c?.id || '').trim(), c]));
-    const pins = pinnedIds.map((id) => byId.get(String(id || '').trim())).filter(Boolean);
-    const pinnedSet = new Set(pins.map((c) => String(c?.id || '').trim()));
-    const rest = base
-      .filter((c) => !pinnedSet.has(String(c?.id || '').trim()))
-      .sort((a, b) => {
-        const ua = uptimeSecondsOf(a);
-        const ub = uptimeSecondsOf(b);
-        if (ua >= 0 && ub >= 0 && ua !== ub) return ub - ua;
-        const pida = Number(a?.xuiPid);
-        const pidb = Number(b?.xuiPid);
-        if (Number.isFinite(pida) && Number.isFinite(pidb) && pida !== pidb) return pida - pidb;
-        const ra = restartMap?.[String(a?.id || '').trim()] ?? 0;
-        const rb = restartMap?.[String(b?.id || '').trim()] ?? 0;
-        if (ra !== rb) return ra - rb;
-        const na = Number(a?.number || 0) || 0;
-        const nb = Number(b?.number || 0) || 0;
-        if (na && nb && na !== nb) return na - nb;
-        return String(a?.name || '').localeCompare(String(b?.name || ''));
-    });
-    return [...pins, ...rest];
-  }, [channels, pinnedIds, restartMap, downMap]);
+  // Hero slides: one channel per category (highest uptime first). If the user last viewed a
+  // channel in a category, that channel becomes the representative slide for that category.
+  const heroSlides = useMemo(() => {
+    const wanted = String(heroId || '').trim();
+    const pickLongestUptime = (rows) => {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) return null;
+      let best = null;
+      let bestUptime = -1;
+      for (const ch of list) {
+        const u = uptimeSecondsOf(ch);
+        if (u >= 0 && u > bestUptime) {
+          bestUptime = u;
+          best = ch;
+        }
+      }
+      if (best) return best;
+      // Fallback: older-running processes tend to have smaller PIDs on this XUI host.
+      let bestPid = null;
+      for (const ch of list) {
+        const pid = Number(ch?.xuiPid);
+        if (!Number.isFinite(pid)) continue;
+        if (bestPid === null || pid < bestPid) {
+          bestPid = pid;
+          best = ch;
+        }
+      }
+      return best || list[0];
+    };
+    const out = [];
+    for (const group of channelsByCategory) {
+      const list = Array.isArray(group?.channels) ? group.channels : [];
+      if (!list.length) continue;
+      const override = wanted ? list.find((c) => String(c?.id || '').trim() === wanted) : null;
+      const channel = override || pickLongestUptime(list);
+      if (!channel) continue;
+      out.push({
+        categoryId: String(group?.id || '').trim(),
+        categoryName: String(group?.name || '').trim() || 'Channels',
+        channel,
+      });
+    }
+    return out;
+  }, [channelsByCategory, heroId]);
 
   useEffect(() => {
-    if (!heroList.length) {
+    if (!heroSlides.length) {
       setHeroId('');
       setHeroIndex(0);
       return;
     }
-    // If the current hero is missing (filtered out), pick a new one.
     const wanted = String(heroId || '').trim();
-    const idx = wanted ? heroList.findIndex((c) => String(c?.id || '').trim() === wanted) : -1;
-    const nextIdx = idx >= 0 ? idx : 0;
-    setHeroIndex(nextIdx);
-    setHeroId(String(heroList[nextIdx]?.id || '').trim());
-  }, [heroList, heroId]);
+    let idx = wanted ? heroSlides.findIndex((s) => String(s?.channel?.id || '').trim() === wanted) : -1;
+    if (idx < 0) idx = Math.min(heroSlides.length - 1, Math.max(0, heroIndex));
+    const nextId = String(heroSlides[idx]?.channel?.id || '').trim();
+    if (idx !== heroIndex) setHeroIndex(idx);
+    if (nextId && nextId !== wanted) setHeroId(nextId);
+  }, [heroSlides]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const activeHero = heroList.length ? heroList[Math.min(heroList.length - 1, Math.max(0, heroIndex))] : null;
+  const activeSlide = heroSlides.length ? heroSlides[Math.min(heroSlides.length - 1, Math.max(0, heroIndex))] : null;
+  const activeHero = activeSlide?.channel || null;
+
+  const clearHeroTimer = () => {
+    if (heroTimerRef.current) clearTimeout(heroTimerRef.current);
+    heroTimerRef.current = null;
+  };
+
+  const moveToHeroSlide = (idx, { manual = false } = {}) => {
+    if (!heroSlides.length) return;
+    clearHeroTimer();
+    const n = heroSlides.length;
+    const nextIdx = Math.min(n - 1, Math.max(0, Number(idx || 0)));
+    const next = heroSlides[nextIdx];
+    const nextId = String(next?.channel?.id || '').trim();
+    if (!nextId) return;
+    if (manual) setHeroControlsHovered(true);
+    flushSync(() => {
+      setHeroIndex(nextIdx);
+      setHeroId(nextId);
+    });
+    if (manual) {
+      setTimeout(() => setHeroControlsHovered(false), 800);
+    }
+  };
+
+  const stepHeroSlide = (delta, { manual = false } = {}) => {
+    if (!heroSlides.length) return;
+    const n = heroSlides.length;
+    const cur = Math.min(n - 1, Math.max(0, heroIndex));
+    const nextIdx = (cur + (delta > 0 ? 1 : -1) + n) % n;
+    moveToHeroSlide(nextIdx, { manual });
+  };
 
   useEffect(() => {
-    if (!activeHero?.id) return;
-    // Best-effort: try to keep audio on when the hero changes (browsers may still require a gesture).
-    const t = setTimeout(() => {
-      tryUnmuteHero();
-    }, 120);
-    return () => clearTimeout(t);
-  }, [activeHero?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    clearHeroTimer();
+    if (!HERO_AUTOPLAY_MS || heroSlides.length < 2 || heroControlsHovered) return undefined;
+    heroTimerRef.current = setTimeout(() => stepHeroSlide(1), HERO_AUTOPLAY_MS);
+    return () => clearHeroTimer();
+  }, [heroSlides.length, heroIndex, heroControlsHovered]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep meta stable across background refreshes; VideoPlayer re-attaches its media pipeline when `meta` changes.
   const playerMeta = useMemo(() => {
@@ -619,17 +657,14 @@ export default function LivePage() {
   const setHeroById = (id) => {
     const wanted = String(id || '').trim();
     if (!wanted) return;
-    const idx = heroList.findIndex((c) => String(c?.id || '').trim() === wanted);
-    if (idx < 0) return;
+    const idx = channelsByCategory.findIndex((g) =>
+      (Array.isArray(g?.channels) ? g.channels : []).some((c) => String(c?.id || '').trim() === wanted)
+    );
+    if (idx < 0 || idx >= heroSlides.length) return;
     flushSync(() => {
       setHeroIndex(idx);
       setHeroId(wanted);
     });
-    try {
-      // User gesture: make a best-effort attempt to start with sound.
-      heroPlayerRef.current?.unmute?.();
-      setTimeout(() => heroPlayerRef.current?.unmute?.(), 75);
-    } catch {}
     try {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch {}
@@ -657,76 +692,6 @@ export default function LivePage() {
     });
   };
 
-  const heroVideoEl = () => {
-    const host = heroWrapRef.current;
-    if (!host) return null;
-    return host.querySelector('video');
-  };
-
-  const tryUnmuteHero = () => {
-    const ctl = heroPlayerRef.current;
-    if (ctl?.unmute) {
-      try {
-        ctl.unmute();
-      } catch {}
-      setHeroMuted(false);
-      return true;
-    }
-    const v = heroVideoEl();
-    if (!v) return false;
-    try {
-      v.muted = false;
-      if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
-    } catch {}
-    try {
-      const p = v.play?.();
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-    } catch {}
-    setHeroMuted(false);
-    return true;
-  };
-
-  const toggleHeroMute = () => {
-    const ctl = heroPlayerRef.current;
-    if (ctl?.toggleMute) {
-      try {
-        ctl.toggleMute();
-      } catch {}
-      try {
-        setHeroMuted(Boolean(ctl.isMuted?.()));
-      } catch {}
-      return true;
-    }
-    const v = heroVideoEl();
-    if (!v) return false;
-    try {
-      const isMuted = Boolean(v.muted || v.volume === 0);
-      if (isMuted) {
-        tryUnmuteHero();
-        return true;
-      }
-      v.muted = true;
-      setHeroMuted(true);
-    } catch {}
-    return true;
-  };
-
-  const goNext = (dir) => {
-    if (!heroList.length) return;
-    const n = heroList.length;
-    let i = heroIndex;
-    for (let step = 0; step < n; step += 1) {
-      i = (i + (dir > 0 ? 1 : -1) + n) % n;
-      const candidate = heroList[i];
-      if (!candidate) continue;
-      if (candidate?.isUp === false) continue;
-      if (isDownHidden(candidate?.id)) continue;
-      setHeroIndex(i);
-      setHeroId(String(candidate?.id || '').trim());
-      return;
-    }
-  };
-
   const toggleFullscreen = async () => {
     const el = heroWrapRef.current;
     try {
@@ -748,108 +713,167 @@ export default function LivePage() {
         {/* Hero */}
         <div
           ref={heroWrapRef}
-          className="group relative -mx-4 sm:-mx-6 lg:-mx-10 w-auto overflow-hidden bg-black"
+          className="group relative -mx-4 sm:-mx-6 lg:-mx-10 mb-6 h-[68vh] md:h-[72vh] lg:h-[74vh] w-auto overflow-hidden bg-black"
           style={{
-            marginTop: `-${headerH + SHELL_HEADER_OFFSET}px`,
-            height: 'calc(100vh - 160px)',
+            marginTop: `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
+            paddingTop: `${headerH}px`,
+            touchAction: 'pan-y',
+          }}
+          onMouseEnter={() => setHeroControlsHovered(true)}
+          onMouseLeave={() => setHeroControlsHovered(false)}
+          onTouchStart={(e) => {
+            const touch = e.changedTouches?.[0];
+            if (!touch) return;
+            heroTouchRef.current = { active: true, x: touch.clientX, y: touch.clientY };
+          }}
+          onTouchEnd={(e) => {
+            const touch = e.changedTouches?.[0];
+            if (!touch) return;
+            const st = heroTouchRef.current;
+            if (!st?.active) return;
+            heroTouchRef.current = { active: false, x: 0, y: 0 };
+            const deltaX = touch.clientX - st.x;
+            const deltaY = touch.clientY - st.y;
+            const absX = Math.abs(deltaX);
+            const absY = Math.abs(deltaY);
+            if (absX < 48 || absX <= absY * 1.1) return;
+            stepHeroSlide(deltaX < 0 ? 1 : -1, { manual: true });
+          }}
+          onTouchCancel={() => {
+            heroTouchRef.current = { active: false, x: 0, y: 0 };
           }}
         >
-          {activeHero ? (
-            <>
-              {/* Total channels badge (movies hero release-date style) */}
-              <div
-                className="absolute right-4 z-20 inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md sm:right-6 lg:right-10"
-                style={{ top: `${headerH + 18}px` }}
-              >
-                <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
-                <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
-                <span className="text-white">{visibleChannels.length}</span>
+          {/* background */}
+          <div className="absolute inset-0">
+            {activeHero ? (
+              <VideoPlayer
+                mp4={playback.mp4}
+                hls={playback.hls}
+                preferHls={playback.preferHls}
+                meta={playerMeta}
+                mode="inline"
+                fill={true}
+                autoPlayOnLoad={true}
+                autoFullscreen={false}
+                startMuted={true}
+                chrome="background"
+                servers={servers}
+                activeOrigin={sessionOrigin}
+                onPlaybackError={({ code }) => {
+                  bumpRestart(activeHero?.id);
+                  if (Number(code || 0) === 4) {
+                    markDown(activeHero?.id);
+                    setHeroMsg(`Channel seems down. Switching…`);
+                    setTimeout(() => setHeroMsg(''), 2500);
+                    stepHeroSlide(1, { manual: true });
+                  }
+                }}
+              />
+            ) : (
+              <div className="absolute inset-0 bg-neutral-900" />
+            )}
+
+            {/* TOP gradient under the header so nav stays readable */}
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-20 sm:h-24 lg:h-28 bg-gradient-to-b from-black/75 via-black/40 to-transparent" />
+
+            {/* BOTTOM vignette to darken the lower area over cards */}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent z-[1]" />
+          </div>
+
+          {/* Total channels badge (movies hero release-date style) */}
+          <div
+            className="absolute right-4 z-20 inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md sm:right-6 lg:right-10"
+            style={{ top: `${headerH + 18}px` }}
+          >
+            <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
+            <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
+            <span className="text-white">{visibleChannels.length}</span>
+          </div>
+
+          {/* copy & CTAs */}
+          <div className="relative z-10 flex h-full flex-col justify-end px-4 sm:px-6 lg:px-10 pb-10">
+            <div className="max-w-[72ch] bg-gradient-to-r from-black/80 via-black/50 to-transparent p-5 sm:p-6">
+              <div className="mb-2 text-xs uppercase tracking-[0.2em] text-white/70">Now playing</div>
+
+              <h2 className="mb-2 text-3xl font-extrabold leading-tight text-white sm:text-4xl md:text-6xl line-clamp-2">
+                {activeHero?.name || (loading ? 'Loading channels…' : 'No live channels available.')}
+              </h2>
+
+              {(activeSlide?.categoryName || heroMsg) ? (
+                <div className="mb-3 flex flex-wrap items-center gap-x-3 text-sm text-neutral-200">
+                  {activeSlide?.categoryName ? <span>• {activeSlide.categoryName}</span> : null}
+                  {heroMsg ? <span className="rounded bg-amber-500/20 px-2 py-1 text-xs text-amber-100">{heroMsg}</span> : null}
+                </div>
+              ) : null}
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-semibold text-white"
+                  style={{ background: BRAND }}
+                  title={heroFs ? 'Exit fullscreen' : 'Fullscreen'}
+                >
+                  {heroFs ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                  {heroFs ? 'Exit Fullscreen' : 'Fullscreen'}
+                </button>
               </div>
-
-              <div className="absolute inset-0">
-                <VideoPlayer
-                  mp4={playback.mp4}
-                  hls={playback.hls}
-                  preferHls={playback.preferHls}
-                  meta={playerMeta}
-                  mode="inline"
-                  fill={true}
-                  autoPlayOnLoad={true}
-                  autoFullscreen={false}
-                  startMuted={false}
-                  controlRef={heroPlayerRef}
-                  onMutedChange={(m) => setHeroMuted(Boolean(m))}
-                  servers={servers}
-                  activeOrigin={sessionOrigin}
-                  onPlaybackError={({ code }) => {
-                    bumpRestart(activeHero?.id);
-                    // If it's truly unsupported/offline, mark it down and advance.
-                    if (Number(code || 0) === 4) {
-                      markDown(activeHero?.id);
-                      setHeroMsg(`Channel seems down. Switching…`);
-                      setTimeout(() => setHeroMsg(''), 2500);
-                      goNext(1);
-                    }
-                  }}
-                />
-              </div>
-
-	              {/* TOP gradient under the header so nav stays readable */}
-	              <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-20 sm:h-24 lg:h-28 bg-gradient-to-b from-black/75 via-black/40 to-transparent" />
-
-	              {/* BOTTOM vignette + copy (movies hero style) */}
-	              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent" />
-
-	              <div className="pointer-events-none relative z-10 flex h-full flex-col justify-end px-4 sm:px-6 lg:px-10 pb-10">
-	                <div className="pointer-events-auto max-w-[72ch] bg-gradient-to-r from-black/80 via-black/50 to-transparent p-5 sm:p-6">
-	                  <div className="mb-2 text-xs uppercase tracking-[0.2em] text-white/70">Now playing</div>
-
-	                  <h2 className="mb-3 text-3xl font-extrabold leading-tight text-white sm:text-4xl md:text-6xl line-clamp-2">
-	                    {activeHero?.name || 'Live Channel'}
-	                  </h2>
-
-	                  {activeHero?.number || heroMsg ? (
-	                    <div className="mb-5 flex flex-wrap items-center gap-2 text-xs text-neutral-200">
-	                      {activeHero?.number ? <span className="rounded bg-white/10 px-2 py-1">#{activeHero.number}</span> : null}
-	                      {heroMsg ? <span className="rounded bg-amber-500/20 px-2 py-1 text-amber-100">{heroMsg}</span> : null}
-	                    </div>
-	                  ) : (
-	                    <div className="mb-5" />
-	                  )}
-
-	                  <div className="flex items-center gap-3">
-	                    <button
-	                      type="button"
-	                      onClick={toggleFullscreen}
-	                      className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-semibold text-white"
-	                      style={{ background: BRAND }}
-	                      title={heroFs ? 'Exit fullscreen' : 'Fullscreen'}
-	                    >
-	                      {heroFs ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-	                      {heroFs ? 'Exit Fullscreen' : 'Fullscreen'}
-	                    </button>
-	                    <button
-	                      type="button"
-	                      onClick={() => {
-	                        try {
-	                          toggleHeroMute();
-	                        } catch {}
-	                      }}
-	                      className="inline-flex h-[44px] w-[44px] items-center justify-center rounded-lg bg-white/10 hover:bg-white/15"
-	                      title={heroMuted ? 'Unmute' : 'Mute'}
-	                      aria-label={heroMuted ? 'Unmute' : 'Mute'}
-	                    >
-	                      {heroMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
-	                    </button>
-	                  </div>
-	                </div>
-	              </div>
-	            </>
-	          ) : (
-	            <div className="flex h-full items-center justify-center text-sm text-white/70">
-	              {loading ? 'Loading channels…' : 'No live channels available.'}
             </div>
-          )}
+          </div>
+
+          {/* arrows */}
+          {heroSlides.length > 1 ? (
+            <>
+              <button
+                type="button"
+                className="
+                  absolute left-3 top-1/2 z-20 hidden -translate-y-1/2 rounded-full bg-black/40 p-2 text-white
+                  sm:inline-flex hover:bg-black/60 cursor-pointer transition
+                "
+                onClick={() => stepHeroSlide(-1, { manual: true })}
+                onMouseEnter={() => setHeroControlsHovered(true)}
+                onMouseLeave={() => setHeroControlsHovered(false)}
+                onFocus={() => setHeroControlsHovered(true)}
+                onBlur={() => setHeroControlsHovered(false)}
+                aria-label="Previous"
+              >
+                <ChevronLeft />
+              </button>
+              <button
+                type="button"
+                className="
+                  absolute right-3 top-1/2 z-20 hidden -translate-y-1/2 rounded-full bg-black/40 p-2 text-white
+                  sm:inline-flex hover:bg-black/60 cursor-pointer transition
+                "
+                onClick={() => stepHeroSlide(1, { manual: true })}
+                onMouseEnter={() => setHeroControlsHovered(true)}
+                onMouseLeave={() => setHeroControlsHovered(false)}
+                onFocus={() => setHeroControlsHovered(true)}
+                onBlur={() => setHeroControlsHovered(false)}
+                aria-label="Next"
+              >
+                <ChevronRight />
+              </button>
+
+              {/* dots */}
+              <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/55 px-2 py-1">
+                <div className="flex items-center gap-1">
+                  {heroSlides.map((s, i) => (
+                    <button
+                      type="button"
+                      key={String(s?.categoryId || i)}
+                      onClick={() => moveToHeroSlide(i, { manual: true })}
+                      className={`h-2 w-3 cursor-pointer rounded-full transition-all ${
+                        i === heroIndex ? 'w-4 bg-[var(--brand)]' : 'bg-white/60'
+                      }`}
+                      style={{ ['--brand']: BRAND }}
+                      aria-label={`Go to slide ${i + 1}`}
+                    />
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : null}
         </div>
 
         {/* Channels */}

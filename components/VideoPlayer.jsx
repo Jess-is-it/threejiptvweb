@@ -104,6 +104,7 @@ function useToasts() {
 export default function VideoPlayer({
   mp4, hls, preferHls = false, meta,
   mode = 'inline', // 'inline' | 'immersive'
+  chrome = 'default', // 'default' | 'background'
   autoFullscreen = false,
   autoPlayOnLoad = false,
   startMuted = undefined,
@@ -121,6 +122,7 @@ export default function VideoPlayer({
   const { session } = useSession();
   const wrapRef = useRef(null);
   const videoRef = useRef(null);
+  const isBackgroundChrome = chrome === 'background';
   const [origin, setOrigin] = useState(activeOrigin);
   const [srcs, setSrcs] = useState({ mp4, hls });
   const [useHls, setUseHls] = useState(Boolean((preferHls && hls) || (!mp4 && hls)));
@@ -1108,6 +1110,43 @@ export default function VideoPlayer({
       push(e?.message || 'Failed to send report.', 'error');
     }
   };
+
+  if (isBackgroundChrome) {
+    return (
+      <div
+        ref={wrapRef}
+        className={mode === 'immersive' ? 'fixed inset-0 z-[60] bg-black' : fill ? 'h-full w-full' : 'w-full'}
+      >
+        <div
+          className={
+            mode === 'immersive'
+              ? 'relative h-full w-full bg-black'
+              : fill
+                ? 'relative h-full w-full overflow-hidden bg-black'
+                : 'relative aspect-video overflow-hidden rounded-xl border border-neutral-800 bg-black'
+          }
+        >
+          <video
+            ref={videoRef}
+            playsInline
+            className="h-full w-full"
+            controls={false}
+            preload="auto"
+          >
+            {subtitleTracks.map((t, i) => (
+              <track
+                key={i}
+                kind="subtitles"
+                src={t.url}
+                label={t.label || t.lang || `Sub ${i + 1}`}
+                srcLang={t.srclang || undefined}
+              />
+            ))}
+          </video>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
