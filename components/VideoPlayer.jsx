@@ -361,6 +361,23 @@ export default function VideoPlayer({
 
     let hlsInst;
     let loadTimeout;
+    const tryResumeInteractiveAudio = () => {
+      const pending =
+        interactiveAudioRef.current.url === currentRef.current?.url &&
+        interactiveAudioRef.current.kind === currentRef.current?.kind &&
+        Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 8000;
+      if (!pending) return;
+      try {
+        v.muted = false;
+        if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+        setNeedsUnmute(false);
+        setAutoplayBlocked(false);
+      } catch {}
+      try {
+        const p = v.play?.();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch {}
+    };
 
     const attachSrc = (url, forceUseHls = null) => {
       setErr('');
@@ -414,6 +431,7 @@ export default function VideoPlayer({
           });
           hlsInst.loadSource(finalUrl);
           hlsInst.attachMedia(v);
+          hlsInst.on(Hls.Events.MANIFEST_PARSED, tryResumeInteractiveAudio);
           hlsInst.on(Hls.Events.ERROR, (_evt, data) => {
             if (!data) return;
             const detail = String(data?.details || '').toLowerCase();
@@ -649,11 +667,18 @@ export default function VideoPlayer({
 
       const tryPlay = async () => {
         if (!autoPlayOnLoad) return;
+        const interactiveAudioPending =
+          interactiveAudioRef.current.url === desiredFinal &&
+          interactiveAudioRef.current.kind === desiredKind &&
+          Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 8000;
 
         try {
           // Live: start muted (autoplay-friendly) unless caller overrides.
           // VOD: try with sound first unless caller overrides.
-          if (typeof startMuted === 'boolean') {
+          if (interactiveAudioPending) {
+            v.muted = false;
+            if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+          } else if (typeof startMuted === 'boolean') {
             v.muted = startMuted;
             if (!startMuted && typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
           } else if (meta?.type === 'live') {
@@ -676,7 +701,9 @@ export default function VideoPlayer({
           // Even when a caller asks for sound (`startMuted=false`), browsers may block audible autoplay
           // after a navigation. For Live, prefer "play muted + show unmute hint" over "doesn't start".
           const allowMutedFallback =
-            meta?.type === 'live' ? true : (startMuted !== false && isAutoplayPolicy);
+            meta?.type === 'live'
+              ? !interactiveAudioPending
+              : (startMuted !== false && isAutoplayPolicy);
           if (allowMutedFallback) {
             try {
               v.muted = true;
@@ -685,6 +712,12 @@ export default function VideoPlayer({
               setAutoplayBlocked(false);
               return;
             } catch {}
+          }
+
+          if (interactiveAudioPending) {
+            setNeedsUnmute(false);
+            setAutoplayBlocked(false);
+            return;
           }
 
           try { v.pause(); } catch {}
@@ -817,6 +850,12 @@ export default function VideoPlayer({
       setErr(msg);
     };
     const onWaiting = () => { /* optional hook */ };
+    const onLoadedMetadata = () => {
+      tryResumeInteractiveAudio();
+    };
+    const onCanPlay = () => {
+      tryResumeInteractiveAudio();
+    };
     const onTime = () => {
       try {
         const duration = Number(v.duration);
@@ -837,12 +876,16 @@ export default function VideoPlayer({
     };
     const onPlay = () => {
       setPaused(false);
-      interactiveAudioRef.current = { url: '', kind: '', at: 0 };
+      if (!(v.muted || v.volume === 0)) {
+        interactiveAudioRef.current = { url: '', kind: '', at: 0 };
+      }
     };
     const onPause = () => setPaused(true);
 
     v.addEventListener('error', onError);
     v.addEventListener('waiting', onWaiting);
+    v.addEventListener('loadedmetadata', onLoadedMetadata);
+    v.addEventListener('canplay', onCanPlay);
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('play', onPlay);
     v.addEventListener('pause', onPause);
@@ -851,6 +894,8 @@ export default function VideoPlayer({
     return () => {
       v.removeEventListener('error', onError);
       v.removeEventListener('waiting', onWaiting);
+      v.removeEventListener('loadedmetadata', onLoadedMetadata);
+      v.removeEventListener('canplay', onCanPlay);
       v.removeEventListener('timeupdate', onTime);
       v.removeEventListener('play', onPlay);
       v.removeEventListener('pause', onPause);
