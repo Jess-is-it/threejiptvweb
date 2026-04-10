@@ -1129,7 +1129,7 @@ export default function VideoPlayer({
           <video
             ref={videoRef}
             playsInline
-            className="h-full w-full"
+            className="h-full w-full object-cover"
             controls={false}
             preload="auto"
           >
