@@ -756,6 +756,16 @@ export default function LivePage() {
         >
           {activeHero ? (
             <>
+              {/* Total channels badge (movies hero release-date style) */}
+              <div
+                className="absolute right-4 z-20 inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md sm:right-6 lg:right-10"
+                style={{ top: `${headerH + 18}px` }}
+              >
+                <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
+                <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
+                <span className="text-white">{visibleChannels.length}</span>
+              </div>
+
               <div className="absolute inset-0">
                 <VideoPlayer
                   mp4={playback.mp4}
@@ -844,8 +854,6 @@ export default function LivePage() {
 
         {/* Channels */}
         <div className="relative z-10 -mt-10 pb-3">
-          <div className="px-3 text-xs text-neutral-400">{visibleChannels.length} online</div>
-
           {loading ? (
             <div className="px-3 pt-3">
               <div className="h-4 w-40 animate-pulse rounded bg-neutral-800/70" />
