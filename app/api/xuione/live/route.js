@@ -180,15 +180,16 @@ function sanitizeLogoUrl(value, { origin = '' } = {}) {
   const baseOrigin = String(origin || '').trim();
   if (baseOrigin) {
     try {
+      const proxied = (src) => `/api/xuione/image?src=${encodeURIComponent(src)}&server=${encodeURIComponent(baseOrigin)}`;
       if (/^\/images\//i.test(raw)) {
-        return new URL(raw, `${baseOrigin.replace(/\/+$/, '')}/`).toString();
+        return proxied(raw);
       }
       if (/^images\//i.test(raw)) {
-        return new URL(`/${raw.replace(/^\/+/, '')}`, `${baseOrigin.replace(/\/+$/, '')}/`).toString();
+        return proxied(`/${raw.replace(/^\/+/, '')}`);
       }
       const pseudoPath = raw.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\d*:(\/images\/.+)$/i);
       if (pseudoPath?.[1]) {
-        return new URL(pseudoPath[1], `${baseOrigin.replace(/\/+$/, '')}/`).toString();
+        return proxied(pseudoPath[1]);
       }
     } catch {}
   }
