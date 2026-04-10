@@ -154,7 +154,7 @@ export default function VideoPlayer({
   const stallTimer = useRef(null);
   const attemptRef = useRef({ key: '', triedMp4: false, triedHls: false });
   const currentRef = useRef({ kind: '', url: '' });
-  const interactiveAudioRef = useRef({ url: '', kind: '', at: 0 });
+  const interactiveAudioRef = useRef({ at: 0 });
   const prevMp4Ref = useRef(mp4);
   const liveRecoverRef = useRef({ lastAt: 0, tries: 0 });
   const livePlaylistRecoverRef = useRef({ lastAt: 0, windowStartAt: 0, tries: 0 });
@@ -169,6 +169,8 @@ export default function VideoPlayer({
   useEffect(() => {
     forcedUseHlsRef.current = useHls;
   }, [useHls]);
+
+  const hasInteractiveAudioIntent = () => Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 10_000;
 
   const isHlsSource = (raw) => {
     const s = String(raw || '');
@@ -362,10 +364,7 @@ export default function VideoPlayer({
     let hlsInst;
     let loadTimeout;
     const tryResumeInteractiveAudio = () => {
-      const pending =
-        interactiveAudioRef.current.url === currentRef.current?.url &&
-        interactiveAudioRef.current.kind === currentRef.current?.kind &&
-        Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 8000;
+      const pending = hasInteractiveAudioIntent();
       if (!pending) return;
       try {
         v.muted = false;
@@ -651,10 +650,7 @@ export default function VideoPlayer({
       const desiredKind = useHlsForCheck && isHlsSource(url) ? 'hls' : 'mp4';
       const isSame = currentRef.current?.url === desiredFinal && currentRef.current?.kind === desiredKind;
       const hasMediaAttached = Boolean(v.currentSrc || v.src);
-      const interactiveAudioPending =
-        interactiveAudioRef.current.url === desiredFinal &&
-        interactiveAudioRef.current.kind === desiredKind &&
-        Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 8000;
+      const interactiveAudioPending = hasInteractiveAudioIntent();
       if (!isSame || !hasMediaAttached) {
         attachSrc(url, useHlsForCheck);
       }
@@ -667,10 +663,7 @@ export default function VideoPlayer({
 
       const tryPlay = async () => {
         if (!autoPlayOnLoad) return;
-        const interactiveAudioPending =
-          interactiveAudioRef.current.url === desiredFinal &&
-          interactiveAudioRef.current.kind === desiredKind &&
-          Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 8000;
+        const interactiveAudioPending = hasInteractiveAudioIntent();
 
         try {
           // Live: start muted (autoplay-friendly) unless caller overrides.
@@ -876,8 +869,9 @@ export default function VideoPlayer({
     };
     const onPlay = () => {
       setPaused(false);
-      if (!(v.muted || v.volume === 0)) {
-        interactiveAudioRef.current = { url: '', kind: '', at: 0 };
+      if (hasInteractiveAudioIntent()) {
+        setNeedsUnmute(false);
+        setAutoplayBlocked(false);
       }
     };
     const onPause = () => setPaused(true);
@@ -1052,6 +1046,7 @@ export default function VideoPlayer({
     const v = videoRef.current;
     if (!v) return;
     try {
+      interactiveAudioRef.current = { at: 0 };
       v.muted = true;
       setNeedsUnmute(true);
     } catch {}
@@ -1178,11 +1173,6 @@ export default function VideoPlayer({
     const wantUseHls = Boolean((prefer && hlsUrl) || (!mp4Url && hlsUrl));
     const url = (wantUseHls ? (hlsUrl || mp4Url) : (mp4Url || hlsUrl)) || '';
     if (!url) return;
-    const proxiedUrl = (() => {
-      const proxied = toBrowserMediaUrl(url, { forceProxy: meta?.type === 'live' });
-      return proxied || url;
-    })();
-    const nextKind = wantUseHls && isHlsSource(url) ? 'hls' : 'mp4';
 
     try {
       setUseHls(wantUseHls);
@@ -1191,9 +1181,9 @@ export default function VideoPlayer({
       forcedUseHlsRef.current = wantUseHls;
     } catch {}
     if (withSound) {
-      interactiveAudioRef.current = { url: proxiedUrl, kind: nextKind, at: Date.now() };
+      interactiveAudioRef.current = { at: Date.now() };
     } else {
-      interactiveAudioRef.current = { url: '', kind: '', at: 0 };
+      interactiveAudioRef.current = { at: 0 };
     }
     try {
       attachSrcRef.current?.(url, wantUseHls);
@@ -1216,7 +1206,7 @@ export default function VideoPlayer({
       setNeedsUnmute(Boolean(v.muted || v.volume === 0));
     } catch (e) {
       try {
-        interactiveAudioRef.current = { url: '', kind: '', at: 0 };
+        interactiveAudioRef.current = { at: 0 };
         v.muted = true;
         await v.play();
         setAutoplayBlocked(false);
