@@ -468,7 +468,8 @@ export default function Header() {
   const logoUrl = settings?.brand?.logoUrl || '/brand/logo.svg';
   const requestCta = requestCtaForPath(pathname);
   const requestEnabled = ready ? settings?.requests?.enabled !== false : false;
-  const heroBackdropEnabled = pathname.startsWith('/movies') || pathname.startsWith('/series');
+  const heroBackdropEnabled =
+    pathname.startsWith('/movies') || pathname.startsWith('/series') || pathname.startsWith('/live');
   const heroHeaderActive = heroBackdropEnabled && !scrolled;
   const warmMovieCatalog = useCallback(() => {
     if (!session?.streamBase) return;

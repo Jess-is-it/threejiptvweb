@@ -381,6 +381,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Request Settings now include `seriesEpisodeLimitDefault` (default `8` per day), and request submission enforces this daily per-user series-episode quota alongside the title-count quota.
 - Request submit feedback now reports reason-specific skips (`already requested`, `already available`, `daily limit`) and keeps daily-limit-rejected items in the request cart for retry.
 - Header request CTA is now contextual by route (`Request` on Home, `Request Movie` on Movies pages, `Request Series` on Series pages) and routes to `/request?type=all|movie|tv`.
+- The fixed top header switches into “hero mode” (transparent + top-to-bottom dark gradient overlay) on pages with a full-bleed hero backdrop: `/movies`, `/series`, and `/live` (until you scroll past the hero threshold).
 - Playback proxy (`/api/proxy/hls`) uses an undici dispatcher with `bodyTimeout: 0` to avoid long VOD streams being cut mid-playback.
 - Movie watch page (`/watch/movie/[id]`) now prefers HLS first in `VideoPlayer` and falls back to MP4 only if needed.
 - Production runtime uses `NEXT_DIST_DIR=.next-runtime` to isolate live chunks from local/dev builds and reduce ChunkLoadError during updates.
