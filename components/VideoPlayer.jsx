@@ -151,6 +151,7 @@ export default function VideoPlayer({
   const [menuBrowserOpen, setMenuBrowserOpen] = useState(false);
   const [menuBrowserGroupId, setMenuBrowserGroupId] = useState(null);
   const [menuNextPreviewOpen, setMenuNextPreviewOpen] = useState(false);
+  const menuSyncTimerRef = useRef(null);
   const stallTimer = useRef(null);
   const attemptRef = useRef({ key: '', triedMp4: false, triedHls: false });
   const currentRef = useRef({ kind: '', url: '' });
@@ -255,6 +256,12 @@ export default function VideoPlayer({
     setMenuBrowserOpen(false);
     setMenuBrowserGroupId(null);
   }, [meta?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (menuSyncTimerRef.current) clearTimeout(menuSyncTimerRef.current);
+    };
+  }, []);
 
   // overlay visibility
   useEffect(() => {
@@ -1218,18 +1225,44 @@ export default function VideoPlayer({
   const selectMenuItem = (item) => {
     const id = String(item?.id || '').trim();
     if (!id) return;
-    try {
-      if (item?.mp4 || item?.hls) {
-        // Keep audio on channel switches by swapping streams within the user gesture.
+    const hasDirectSwitchSource = Boolean(item?.mp4 || item?.hls);
+    const shouldDelayParentSync = meta?.type === 'live' && hasDirectSwitchSource;
+
+    if (menuSyncTimerRef.current) {
+      clearTimeout(menuSyncTimerRef.current);
+      menuSyncTimerRef.current = null;
+    }
+
+    if (shouldDelayParentSync) {
+      try {
         switchToSourcesNow({
           mp4: item.mp4 || '',
           hls: item.hls || '',
           preferHls: item.preferHls !== false,
           withSound: true,
         });
-      }
-      menuNavigation?.onSelectItem?.(item);
-    } catch {}
+      } catch {}
+
+      menuSyncTimerRef.current = setTimeout(() => {
+        try {
+          menuNavigation?.onSelectItem?.(item);
+        } catch {}
+        menuSyncTimerRef.current = null;
+      }, 650);
+    } else {
+      try {
+        if (hasDirectSwitchSource) {
+          switchToSourcesNow({
+            mp4: item.mp4 || '',
+            hls: item.hls || '',
+            preferHls: item.preferHls !== false,
+            withSound: true,
+          });
+        }
+        menuNavigation?.onSelectItem?.(item);
+      } catch {}
+    }
+
     setMenuBrowserOpen(false);
     setMenuBrowserGroupId(null);
     setMenuNextPreviewOpen(false);
