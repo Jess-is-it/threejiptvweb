@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { allowInsecureTlsFor, insecureDispatcher, parseStreamBase, xtreamWithFallback } from '../_shared';
-import { xuiApiCall } from '../../../../lib/server/autodownload/xuiService';
+import { getXuiIntegrationSafe, xuiApiCall } from '../../../../lib/server/autodownload/xuiService';
 import { getSecret, secretKeys } from '../../../../lib/server/secrets';
 
 export const dynamic = 'force-dynamic';
@@ -174,9 +174,24 @@ function extractUptimeSeconds(row) {
   return null;
 }
 
-function sanitizeLogoUrl(value) {
+function sanitizeLogoUrl(value, { origin = '' } = {}) {
   const raw = String(value || '').trim();
   if (!raw) return '';
+  const baseOrigin = String(origin || '').trim();
+  if (baseOrigin) {
+    try {
+      if (/^\/images\//i.test(raw)) {
+        return new URL(raw, `${baseOrigin.replace(/\/+$/, '')}/`).toString();
+      }
+      if (/^images\//i.test(raw)) {
+        return new URL(`/${raw.replace(/^\/+/, '')}`, `${baseOrigin.replace(/\/+$/, '')}/`).toString();
+      }
+      const pseudoPath = raw.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\d*:(\/images\/.+)$/i);
+      if (pseudoPath?.[1]) {
+        return new URL(pseudoPath[1], `${baseOrigin.replace(/\/+$/, '')}/`).toString();
+      }
+    } catch {}
+  }
   // Browsers will refuse `file://` (and it spams the console).
   if (raw.toLowerCase().startsWith('file://')) return '';
   // Windows paths like `S:\images\...` occasionally leak via XUI icons.
@@ -379,7 +394,7 @@ async function readXuiAdminLiveCatalog() {
           const id = String(r2?.id ?? r2?.stream_id ?? '').trim();
           if (!id) return null;
           const name = String(r2?.stream_display_name || r2?.name || `CH ${id}`).trim();
-          const icon = sanitizeLogoUrl(r2?.stream_icon);
+          const icon = sanitizeLogoUrl(r2?.stream_icon, { origin });
           const sources = normalizeSourceList(r2?.stream_source || r2?.streamSource || r2?.sources);
           const cats = parseCategoryIds(r2?.category_id ?? r2?.categoryId);
           for (const c of cats) catSet.add(String(c));
@@ -415,6 +430,8 @@ async function readXuiAdminLiveCatalog() {
 
   try {
     const categoryMap = await readXuiAdminLiveCategoryMap();
+    const integration = await getXuiIntegrationSafe().catch(() => null);
+    const origin = String(integration?.baseUrl || '').trim();
     const payload = await xuiApiCall({ action: 'get_streams' });
     const rows = Array.isArray(payload?.data) ? payload.data : [];
     if (!rows.length) return null;
@@ -425,7 +442,7 @@ async function readXuiAdminLiveCatalog() {
         const id = String(r?.id ?? r?.stream_id ?? '').trim();
         if (!id) return null;
         const name = String(r?.stream_display_name || r?.name || `CH ${id}`).trim();
-        const icon = sanitizeLogoUrl(r?.stream_icon);
+        const icon = sanitizeLogoUrl(r?.stream_icon, { origin });
         const sources = normalizeSourceList(r?.stream_source || r?.streamSource || r?.sources);
         const cats = parseCategoryIds(r?.category_id ?? r?.categoryId);
         for (const c of cats) catSet.add(String(c));
