@@ -154,6 +154,7 @@ export default function VideoPlayer({
   const stallTimer = useRef(null);
   const attemptRef = useRef({ key: '', triedMp4: false, triedHls: false });
   const currentRef = useRef({ kind: '', url: '' });
+  const interactiveAudioRef = useRef({ url: '', kind: '', at: 0 });
   const prevMp4Ref = useRef(mp4);
   const liveRecoverRef = useRef({ lastAt: 0, tries: 0 });
   const livePlaylistRecoverRef = useRef({ lastAt: 0, windowStartAt: 0, tries: 0 });
@@ -632,11 +633,15 @@ export default function VideoPlayer({
       const desiredKind = useHlsForCheck && isHlsSource(url) ? 'hls' : 'mp4';
       const isSame = currentRef.current?.url === desiredFinal && currentRef.current?.kind === desiredKind;
       const hasMediaAttached = Boolean(v.currentSrc || v.src);
+      const interactiveAudioPending =
+        interactiveAudioRef.current.url === desiredFinal &&
+        interactiveAudioRef.current.kind === desiredKind &&
+        Date.now() - (Number(interactiveAudioRef.current.at || 0) || 0) < 8000;
       if (!isSame || !hasMediaAttached) {
         attachSrc(url, useHlsForCheck);
       }
       const keepExistingPlayback = isSame && hasMediaAttached && !v.paused && !v.ended;
-      if (keepExistingPlayback) {
+      if (keepExistingPlayback || interactiveAudioPending) {
         setAutoplayBlocked(false);
         setNeedsUnmute(Boolean(v.muted || v.volume === 0));
         return;
@@ -830,7 +835,10 @@ export default function VideoPlayer({
         });
       } catch {}
     };
-    const onPlay = () => setPaused(false);
+    const onPlay = () => {
+      setPaused(false);
+      interactiveAudioRef.current = { url: '', kind: '', at: 0 };
+    };
     const onPause = () => setPaused(true);
 
     v.addEventListener('error', onError);
@@ -1125,6 +1133,11 @@ export default function VideoPlayer({
     const wantUseHls = Boolean((prefer && hlsUrl) || (!mp4Url && hlsUrl));
     const url = (wantUseHls ? (hlsUrl || mp4Url) : (mp4Url || hlsUrl)) || '';
     if (!url) return;
+    const proxiedUrl = (() => {
+      const proxied = toBrowserMediaUrl(url, { forceProxy: meta?.type === 'live' });
+      return proxied || url;
+    })();
+    const nextKind = wantUseHls && isHlsSource(url) ? 'hls' : 'mp4';
 
     try {
       setUseHls(wantUseHls);
@@ -1132,6 +1145,11 @@ export default function VideoPlayer({
     try {
       forcedUseHlsRef.current = wantUseHls;
     } catch {}
+    if (withSound) {
+      interactiveAudioRef.current = { url: proxiedUrl, kind: nextKind, at: Date.now() };
+    } else {
+      interactiveAudioRef.current = { url: '', kind: '', at: 0 };
+    }
     try {
       attachSrcRef.current?.(url, wantUseHls);
     } catch {}
@@ -1153,6 +1171,7 @@ export default function VideoPlayer({
       setNeedsUnmute(Boolean(v.muted || v.volume === 0));
     } catch (e) {
       try {
+        interactiveAudioRef.current = { url: '', kind: '', at: 0 };
         v.muted = true;
         await v.play();
         setAutoplayBlocked(false);
