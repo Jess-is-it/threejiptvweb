@@ -832,6 +832,7 @@ export default function LivePage() {
       }
     }
     const idx = flat.findIndex((row) => String(row?.id || '').trim() === currentId);
+    const previousItem = flat.length ? flat[(idx > 0 ? idx - 1 : flat.length - 1)] : null;
     const nextItem = flat.length ? flat[(idx >= 0 ? idx + 1 : 0) % flat.length] : null;
 
     return {
@@ -839,6 +840,7 @@ export default function LivePage() {
       itemLabel: 'Channels',
       groups,
       currentItemId: currentId,
+      previousItem,
       nextItem,
       onSelectItem: (item) => {
         const id = String(item?.id || '').trim();

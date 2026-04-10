@@ -20,6 +20,7 @@ import {
   Minimize2,
   Check,
   X,
+  SkipBack,
   SkipForward,
   List,
 } from 'lucide-react';
@@ -150,6 +151,7 @@ export default function VideoPlayer({
   const [episodeBrowserSeason, setEpisodeBrowserSeason] = useState(null);
   const [menuBrowserOpen, setMenuBrowserOpen] = useState(false);
   const [menuBrowserGroupId, setMenuBrowserGroupId] = useState(null);
+  const [menuPrevPreviewOpen, setMenuPrevPreviewOpen] = useState(false);
   const [menuNextPreviewOpen, setMenuNextPreviewOpen] = useState(false);
   const menuSyncTimerRef = useRef(null);
   const stallTimer = useRef(null);
@@ -265,6 +267,7 @@ export default function VideoPlayer({
   const menuGroupLabel = String(menuNavigation?.groupLabel || 'Categories').trim() || 'Categories';
   const menuItemLabel = String(menuNavigation?.itemLabel || 'Channels').trim() || 'Channels';
   const currentMenuItemId = String(menuNavigation?.currentItemId || '').trim();
+  const previousMenuItem = menuNavigation?.previousItem || null;
   const nextMenuItem = menuNavigation?.nextItem || null;
   const currentSeriesSeasonNumber = Number(seriesNavigation?.currentSeasonNumber || 0) || null;
   const currentSeriesEpisodeId = String(seriesNavigation?.currentEpisodeId || '').trim();
@@ -289,6 +292,7 @@ export default function VideoPlayer({
   }, [meta?.id, currentSeriesSeasonNumber]);
 
   useEffect(() => {
+    setMenuPrevPreviewOpen(false);
     setMenuNextPreviewOpen(false);
     setMenuBrowserOpen(false);
     setMenuBrowserGroupId(null);
@@ -958,6 +962,7 @@ export default function VideoPlayer({
     return Number.isFinite(d) && d > 1 && d < 24 * 60 * 60 * 24; // < 24h
   }, [time.duration]);
   const showTimeline = canSeek && !(meta?.type === 'live' && isFullscreen);
+  const showFullscreenLiveTransportToggle = !(meta?.type === 'live' && isFullscreen);
 
   const togglePlay = async () => {
     const v = videoRef.current;
@@ -1285,6 +1290,7 @@ export default function VideoPlayer({
 
     setMenuBrowserOpen(false);
     setMenuBrowserGroupId(null);
+    setMenuPrevPreviewOpen(false);
     setMenuNextPreviewOpen(false);
   };
 
@@ -1553,14 +1559,16 @@ export default function VideoPlayer({
 
           {/* Bottom left: transport */}
           <div className="absolute bottom-4 left-4 flex items-center gap-3">
-            <button
-              className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/90 p-4 text-black hover:bg-white"
-              onClick={togglePlay}
-              aria-label={paused ? 'Play' : 'Pause'}
-              title={paused ? 'Play' : 'Pause'}
-            >
-              {paused ? <Play size={24} /> : <Pause size={24} />}
-            </button>
+            {showFullscreenLiveTransportToggle ? (
+              <button
+                className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/90 p-4 text-black hover:bg-white"
+                onClick={togglePlay}
+                aria-label={paused ? 'Play' : 'Pause'}
+                title={paused ? 'Play' : 'Pause'}
+              >
+                {paused ? <Play size={24} /> : <Pause size={24} />}
+              </button>
+            ) : null}
             <button
               className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
               onClick={() => seekBy(-10)}
@@ -1730,6 +1738,50 @@ export default function VideoPlayer({
                         </div>
                       </>
                     )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {renderMenuNav && previousMenuItem?.id ? (
+              <div className="relative">
+                <button
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+                  onClick={() => selectMenuItem(previousMenuItem)}
+                  onMouseEnter={() => setMenuPrevPreviewOpen(true)}
+                  onMouseLeave={() => setMenuPrevPreviewOpen(false)}
+                  onFocus={() => setMenuPrevPreviewOpen(true)}
+                  onBlur={() => setMenuPrevPreviewOpen(false)}
+                  aria-label={`Previous ${menuItemLabel.slice(0, -1) || menuItemLabel}`}
+                  title={`Previous ${menuItemLabel.slice(0, -1) || menuItemLabel}`}
+                >
+                  <SkipBack size={22} />
+                </button>
+
+                {menuPrevPreviewOpen ? (
+                  <div className="pointer-events-none absolute bottom-14 right-0 w-72 overflow-hidden rounded-2xl border border-white/10 bg-black/75 text-white shadow-2xl backdrop-blur-md">
+                    <div className="flex gap-3 p-3">
+                      <div className="h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-neutral-800">
+                        {previousMenuItem?.image ? (
+                          <img
+                            src={previousMenuItem.image}
+                            alt={previousMenuItem.title || ''}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : null}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-neutral-300">
+                          Previous
+                        </div>
+                        {previousMenuItem?.groupTitle ? (
+                          <div className="mt-1 text-xs text-neutral-300">{previousMenuItem.groupTitle}</div>
+                        ) : null}
+                        <div className="mt-1 line-clamp-2 text-sm font-semibold text-white">
+                          {String(previousMenuItem?.title || 'Channel').trim()}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 ) : null}
               </div>
