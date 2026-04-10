@@ -11,6 +11,58 @@ export const runtime = 'nodejs';
 const PROBE_TIMEOUT_MS = 1200;
 const PROBE_TTL_MS = 20 * 1000;
 const PROBE_CONCURRENCY = 6;
+
+function getProbeRuns() {
+  if (!globalThis.__threejTvLiveProbeRuns) globalThis.__threejTvLiveProbeRuns = new Map();
+  return globalThis.__threejTvLiveProbeRuns;
+}
+
+function startBackgroundProbeRun({ serverOrigin, username, password, channels }) {
+  try {
+    const origin = String(serverOrigin || '').trim();
+    const u = String(username || '').trim();
+    const p = String(password || '').trim();
+    if (!origin || !u || !p) return;
+    const list = Array.isArray(channels) ? channels.filter(Boolean) : [];
+    if (!list.length) return;
+
+    const key = `${origin}|${u}`;
+    const runs = getProbeRuns();
+    const current = runs.get(key);
+    if (current?.inFlight) return;
+
+    runs.set(key, { inFlight: true, startedAt: Date.now() });
+    // Fire-and-forget: keep the API response fast while probes refresh the in-memory cache.
+    // This works because this app runs as a long-lived Node server (not a serverless runtime).
+    (async () => {
+      try {
+        const work = list.map((channel) => async () => {
+          const explicit = channel?.isUp;
+          if (explicit === false) return;
+          await probeChannel({ serverOrigin: origin, username: u, password: p, channel });
+        });
+
+        let idx = 0;
+        const runWorker = async () => {
+          while (idx < work.length) {
+            const my = idx;
+            idx += 1;
+            await work[my]();
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, work.length) }, () => runWorker()));
+      } catch {
+        // ignore
+      } finally {
+        try {
+          runs.delete(key);
+        } catch {}
+      }
+    })();
+  } catch {
+    // ignore
+  }
+}
 function safeNum(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -712,26 +764,28 @@ async function handle(req) {
       const serverOrigin = String(sessionParsed?.server || '').trim();
       const probeUser = String(sessionParsed?.username || '').trim();
       const probePass = String(sessionParsed?.password || '').trim();
-      const work = channels.map((channel) => async () => {
+      const cache = getProbeCache();
+      pruneProbeCache(cache);
+      const toProbe = [];
+      const filtered = [];
+      for (const channel of channels) {
+        if (!channel) continue;
         const explicit = channel?.isUp;
-        // If something is explicitly DOWN, skip probing and keep it filtered out.
-        if (explicit === false) return { ...channel, isUp: false };
-        // Otherwise always probe the actual stream URL. `stream_status` is not reliable enough.
-        const ok = await probeChannel({ serverOrigin, username: probeUser, password: probePass, channel });
-        return { ...channel, isUp: ok };
-      });
-
-      const out = [];
-      let idx = 0;
-      const runWorker = async () => {
-        while (idx < work.length) {
-          const my = idx;
-          idx += 1;
-          out[my] = await work[my]();
+        if (explicit === false) continue;
+        const id = String(channel?.id || '').trim();
+        if (!id) continue;
+        const k = `${serverOrigin}|${id}`;
+        const hit = cache.get(k);
+        if (hit && Date.now() - Number(hit.ts || 0) < PROBE_TTL_MS) {
+          if (hit.isUp) filtered.push(channel);
+          continue;
         }
-      };
-      await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, work.length) }, () => runWorker()));
-      channels = out.filter((ch) => ch && ch.isUp === true);
+        // No fresh cache: include optimistically for now, and refresh cache in the background.
+        filtered.push(channel);
+        toProbe.push(channel);
+      }
+      channels = filtered;
+      startBackgroundProbeRun({ serverOrigin, username: probeUser, password: probePass, channels: toProbe });
     }
 
     return NextResponse.json(

@@ -67,6 +67,11 @@ function lastHeroKey({ username = '', origin = '' } = {}) {
   return `3jtv.liveLastHero:${u}:${o}`;
 }
 
+function liveCatalogCacheKey({ origin = '' } = {}) {
+  const o = String(origin || '').trim() || 'origin';
+  return `3jtv.liveCatalogCache:${o}`;
+}
+
 function readJsonStorage(key, fallback) {
   if (typeof window === 'undefined') return fallback;
   try {
@@ -350,6 +355,9 @@ export default function LivePage() {
   const [channels, setChannels] = useState([]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [bootstrapped, setBootstrapped] = useState(false);
+  const bootstrappedRef = useRef(false);
   const heroWrapRef = useRef(null);
   const username = String(session?.user?.username || '').trim();
   const sessionOrigin = useMemo(() => getOriginFromStreamBase(session?.streamBase), [session?.streamBase]);
@@ -381,6 +389,10 @@ export default function LivePage() {
   }, []);
 
   useEffect(() => {
+    bootstrappedRef.current = Boolean(bootstrapped);
+  }, [bootstrapped]);
+
+  useEffect(() => {
     if (!session?.streamBase) {
       setLoading(false);
       return;
@@ -392,7 +404,10 @@ export default function LivePage() {
     const load = async ({ silent = false } = {}) => {
       if (silent && typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
-        if (!silent) setLoading(true);
+        if (!silent) {
+          if (!bootstrappedRef.current) setLoading(true);
+          else setRefreshing(true);
+        }
         if (ctrl) ctrl.abort();
         ctrl = new AbortController();
         const r = await fetch('/api/xuione/live', {
@@ -409,18 +424,52 @@ export default function LivePage() {
         if (!r.ok || !data.ok) throw new Error(data?.error || 'Failed to load live channels');
         // Apply the latest list immediately so stopped streams disappear and the count updates
         // even while the hero player is active.
-        setCategories(Array.isArray(data.categories) ? data.categories : []);
-        setChannels(Array.isArray(data.channels) ? data.channels : []);
+        const nextCategories = Array.isArray(data.categories) ? data.categories : [];
+        const nextChannels = Array.isArray(data.channels) ? data.channels : [];
+        setCategories(nextCategories);
+        setChannels(nextChannels);
+        setBootstrapped(true);
+        try {
+          writeJsonStorage(liveCatalogCacheKey({ origin: sessionOrigin }), {
+            ts: Date.now(),
+            categories: nextCategories,
+            channels: nextChannels,
+          });
+        } catch {}
         if (!silent) setErr('');
       } catch (e) {
         // Avoid wiping the list on background refresh failures.
         if (!silent) setErr(e.message || 'Network error');
       } finally {
-        if (alive && !silent) setLoading(false);
+        if (alive && !silent) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     };
 
-    load({ silent: false });
+    // Fast path: render cached list immediately, then refresh in the background.
+    let usedCache = false;
+    if (sessionOrigin && typeof window !== 'undefined') {
+      try {
+        const cached = readJsonStorage(liveCatalogCacheKey({ origin: sessionOrigin }), null);
+        const ts = Number(cached?.ts || 0) || 0;
+        const ttlMs = 10 * 60 * 1000;
+        if (ts && Date.now() - ts < ttlMs) {
+          const cachedCategories = Array.isArray(cached?.categories) ? cached.categories : [];
+          const cachedChannels = Array.isArray(cached?.channels) ? cached.channels : [];
+          if (cachedCategories.length || cachedChannels.length) {
+            setCategories(cachedCategories);
+            setChannels(cachedChannels);
+            setBootstrapped(true);
+            setLoading(false);
+            usedCache = true;
+          }
+        }
+      } catch {}
+    }
+
+    load({ silent: usedCache });
     // Background refresh is intentionally conservative; aggressive polling was destabilizing the server
     // while the user was already watching the active channel.
     intervalId = setInterval(() => load({ silent: true }), LIVE_REFRESH_MS);
@@ -430,7 +479,7 @@ export default function LivePage() {
       if (intervalId) clearInterval(intervalId);
       if (ctrl) ctrl.abort();
     };
-  }, [session?.streamBase]);
+  }, [session?.streamBase, sessionOrigin]);
 
   useEffect(() => {
     if (!username || !sessionOrigin) return;
