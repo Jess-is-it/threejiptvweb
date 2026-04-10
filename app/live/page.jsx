@@ -792,6 +792,14 @@ export default function LivePage() {
     }, 900);
   };
 
+  const handleHeroPlayerBack = async ({ exitFullscreen } = {}) => {
+    try {
+      await exitFullscreen?.();
+    } catch {}
+    flushSync(() => setHeroPlayerMode(false));
+    setHeroFs(false);
+  };
+
   const menuNavigation = useMemo(() => {
     const currentId = String(activeHero?.id || '').trim();
     if (!currentId || !session?.streamBase || !sessionOrigin) return null;
@@ -910,6 +918,7 @@ export default function LivePage() {
                 chrome={heroPlayerMode ? 'default' : 'background'}
                 controlRef={heroPlayerRef}
                 menuNavigation={heroPlayerMode ? menuNavigation : null}
+                onBack={handleHeroPlayerBack}
                 servers={servers}
                 activeOrigin={sessionOrigin}
                 onPlaybackError={({ code }) => {

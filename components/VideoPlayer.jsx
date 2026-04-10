@@ -119,6 +119,7 @@ export default function VideoPlayer({
   subtitles = [],
   menuNavigation = null,
   seriesNavigation = null,
+  onBack = null,
 }) {
   const router = useRouter();
   const { session } = useSession();
@@ -1119,12 +1120,23 @@ export default function VideoPlayer({
     };
   }, [controlRef]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const goBack = async () => {
+  const exitFullscreenIfNeeded = async () => {
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
       }
     } catch {}
+  };
+
+  const goBack = async () => {
+    if (typeof onBack === 'function') {
+      try {
+        await onBack({ exitFullscreen: exitFullscreenIfNeeded });
+        return;
+      } catch {}
+    }
+
+    await exitFullscreenIfNeeded();
 
     try {
       if (window.history.length > 1) {
