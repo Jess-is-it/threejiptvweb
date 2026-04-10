@@ -635,6 +635,12 @@ export default function VideoPlayer({
       if (!isSame || !hasMediaAttached) {
         attachSrc(url, useHlsForCheck);
       }
+      const keepExistingPlayback = isSame && hasMediaAttached && !v.paused && !v.ended;
+      if (keepExistingPlayback) {
+        setAutoplayBlocked(false);
+        setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+        return;
+      }
 
       const tryPlay = async () => {
         if (!autoPlayOnLoad) return;
@@ -1134,6 +1140,8 @@ export default function VideoPlayer({
       if (withSound) {
         v.muted = false;
         if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
+        setNeedsUnmute(false);
+        setAutoplayBlocked(false);
       } else {
         v.muted = true;
       }
