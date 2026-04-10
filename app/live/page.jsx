@@ -840,10 +840,14 @@ export default function LivePage() {
         {/* Hero */}
         <div
           ref={heroWrapRef}
-          className="group relative -mx-4 sm:-mx-6 lg:-mx-10 mb-6 h-[68vh] md:h-[72vh] lg:h-[74vh] w-auto overflow-hidden bg-black"
+          className={
+            heroFs
+              ? 'group relative h-screen w-screen overflow-hidden bg-black'
+              : 'group relative -mx-4 sm:-mx-6 lg:-mx-10 mb-6 h-[68vh] md:h-[72vh] lg:h-[74vh] w-auto overflow-hidden bg-black'
+          }
           style={{
-            marginTop: `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
-            paddingTop: `${headerH}px`,
+            marginTop: heroFs ? '0px' : `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
+            paddingTop: heroFs ? '0px' : `${headerH}px`,
             touchAction: 'pan-y',
           }}
           onMouseEnter={() => setHeroControlsHovered(true)}
