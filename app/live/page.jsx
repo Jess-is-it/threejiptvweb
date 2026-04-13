@@ -277,27 +277,30 @@ function LiveCategoryRow({ group, activeId, onSelect }) {
             const id = String(ch?.id || '').trim();
             const active = activeId ? String(activeId) === id : false;
             const logo = String(ch?.logo || '').trim();
+            const name = String(ch?.name || '').trim() || `CH ${id}`;
             return (
-              <button
-                key={id || ch.id}
-                type="button"
-                onClick={() => onSelect?.(id)}
-                className={
-                  'group/card relative h-20 w-32 flex-none snap-start overflow-hidden rounded-xl border bg-neutral-900/40 sm:h-24 sm:w-40 ' +
-                  (active ? 'border-white ring-2 ring-white/30' : 'border-neutral-800 hover:border-neutral-600')
-                }
-                title={ch?.name || `CH ${id}`}
-                aria-label={ch?.name || `Channel ${id}`}
-              >
-                <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 transition group-hover/card:opacity-100" />
-                <div className="flex h-full w-full items-center justify-center bg-neutral-950/40">
-                  {logo ? (
-                    <img src={logo} alt="" className="h-full w-full object-contain p-2" loading="lazy" />
-                  ) : (
-                    <span className="text-xs text-neutral-500">No Logo</span>
-                  )}
-                </div>
-              </button>
+              <div key={id || ch.id} className="w-32 flex-none snap-start sm:w-40">
+                <button
+                  type="button"
+                  onClick={() => onSelect?.(id)}
+                  className={
+                    'group/card relative h-20 w-full overflow-hidden rounded-xl border bg-neutral-900/40 sm:h-24 ' +
+                    (active ? 'border-white ring-2 ring-white/30' : 'border-neutral-800 hover:border-neutral-600')
+                  }
+                  title={name}
+                  aria-label={name}
+                >
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 transition group-hover/card:opacity-100" />
+                  <div className="flex h-full w-full items-center justify-center bg-neutral-950/40">
+                    {logo ? (
+                      <img src={logo} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    ) : (
+                      <span className="text-xs text-neutral-500">No Logo</span>
+                    )}
+                  </div>
+                </button>
+                <div className="mt-1 line-clamp-1 text-[11px] font-medium text-neutral-200">{name}</div>
+              </div>
             );
           })}
         </div>
