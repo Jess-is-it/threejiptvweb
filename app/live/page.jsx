@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Play } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Play, Volume2, VolumeX } from 'lucide-react';
 import { flushSync } from 'react-dom';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
@@ -379,6 +379,8 @@ export default function LivePage() {
   const [heroPlayerMode, setHeroPlayerMode] = useState(false);
   const [heroMsg, setHeroMsg] = useState('');
   const [heroControlsHovered, setHeroControlsHovered] = useState(false);
+  const [heroVideoLoading, setHeroVideoLoading] = useState(false);
+  const [heroMuted, setHeroMuted] = useState(true);
   const heroTimerRef = useRef(null);
   const heroTouchRef = useRef({ active: false, x: 0, y: 0 });
   const servers = useMemo(() => (sessionOrigin ? [{ label: 'Current server', origin: sessionOrigin }] : []), [sessionOrigin]);
@@ -784,6 +786,96 @@ export default function LivePage() {
     return host.querySelector('video');
   };
 
+  useEffect(() => {
+    const channelId = String(activeHero?.id || '').trim();
+    if (!channelId) {
+      setHeroVideoLoading(false);
+      return undefined;
+    }
+
+    let alive = true;
+    let retryTimer = null;
+    let cleanupVideo = null;
+    setHeroVideoLoading(true);
+
+    const attachVideoListeners = (attempt = 0) => {
+      if (!alive) return;
+      const video = heroVideoEl();
+      if (!video) {
+        if (attempt < 20) retryTimer = setTimeout(() => attachVideoListeners(attempt + 1), 50);
+        return;
+      }
+
+      const markLoading = () => {
+        if (alive) setHeroVideoLoading(true);
+      };
+      const markReady = () => {
+        if (alive) setHeroVideoLoading(false);
+      };
+      const syncMuted = () => {
+        if (!alive) return;
+        try {
+          setHeroMuted(Boolean(video.muted || video.volume === 0));
+        } catch {}
+      };
+
+      syncMuted();
+      if (video.readyState >= 2) markReady();
+      else markLoading();
+
+      video.addEventListener('loadstart', markLoading);
+      video.addEventListener('waiting', markLoading);
+      video.addEventListener('stalled', markLoading);
+      video.addEventListener('emptied', markLoading);
+      video.addEventListener('loadeddata', markReady);
+      video.addEventListener('canplay', markReady);
+      video.addEventListener('playing', markReady);
+      video.addEventListener('error', markLoading);
+      video.addEventListener('volumechange', syncMuted);
+
+      cleanupVideo = () => {
+        video.removeEventListener('loadstart', markLoading);
+        video.removeEventListener('waiting', markLoading);
+        video.removeEventListener('stalled', markLoading);
+        video.removeEventListener('emptied', markLoading);
+        video.removeEventListener('loadeddata', markReady);
+        video.removeEventListener('canplay', markReady);
+        video.removeEventListener('playing', markReady);
+        video.removeEventListener('error', markLoading);
+        video.removeEventListener('volumechange', syncMuted);
+      };
+    };
+
+    attachVideoListeners();
+
+    return () => {
+      alive = false;
+      if (retryTimer) clearTimeout(retryTimer);
+      cleanupVideo?.();
+    };
+  }, [activeHero?.id, playback.mp4, playback.hls]);
+
+  const toggleHeroMute = () => {
+    const shouldUnmute = heroMuted;
+    try {
+      if (shouldUnmute) heroPlayerRef.current?.unmute?.();
+      else heroPlayerRef.current?.mute?.();
+    } catch {}
+
+    try {
+      const video = heroVideoEl();
+      if (!video) return;
+      video.defaultMuted = !shouldUnmute;
+      video.muted = !shouldUnmute;
+      if (shouldUnmute && typeof video.volume === 'number' && video.volume === 0) video.volume = 1;
+      if (shouldUnmute) {
+        const p = video.play?.();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
+      setHeroMuted(Boolean(video.muted || video.volume === 0));
+    } catch {}
+  };
+
   const playHeroFullscreen = () => {
     const host = heroWrapRef.current;
     flushSync(() => setHeroPlayerMode(true));
@@ -922,7 +1014,7 @@ export default function LivePage() {
           }}
         >
           {/* background */}
-              <div className="absolute inset-0">
+          <div className="absolute inset-0">
             {activeHero ? (
               <VideoPlayer
                 mp4={playback.mp4}
@@ -936,6 +1028,9 @@ export default function LivePage() {
                 startMuted={heroPlayerMode ? false : true}
                 chrome={heroPlayerMode ? 'default' : 'background'}
                 controlRef={heroPlayerRef}
+                onMutedChange={(muted, volume) => {
+                  setHeroMuted(Boolean(muted || Number(volume || 0) === 0));
+                }}
                 menuNavigation={heroPlayerMode ? menuNavigation : null}
                 onBack={handleHeroPlayerBack}
                 servers={servers}
@@ -954,25 +1049,45 @@ export default function LivePage() {
               <div className="absolute inset-0 bg-neutral-900" />
             )}
 
+            {!heroFs && activeHero?.logo && heroVideoLoading ? (
+              <div className="pointer-events-none absolute inset-0 z-[1] bg-black">
+                <img
+                  src={activeHero.logo}
+                  alt=""
+                  className="h-full w-full object-cover opacity-80 blur-[1px]"
+                  loading="eager"
+                />
+                <div className="absolute inset-0 bg-black/45" />
+              </div>
+            ) : null}
+
             {!heroFs ? (
               <>
                 {/* TOP gradient under the header so nav stays readable */}
-                <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-20 sm:h-24 lg:h-28 bg-gradient-to-b from-black/75 via-black/40 to-transparent" />
+                <div className="pointer-events-none absolute inset-x-0 top-0 z-[3] h-20 sm:h-24 lg:h-28 bg-gradient-to-b from-black/75 via-black/40 to-transparent" />
                 {/* BOTTOM vignette to darken the lower area over cards */}
-                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent z-[1]" />
+                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent z-[2]" />
               </>
             ) : null}
           </div>
 
-          {/* Total channels badge (movies hero release-date style) */}
+          {/* Total channels + loading badge (movies hero release-date style) */}
           {!heroFs ? (
             <div
-              className="absolute right-4 z-20 inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md sm:right-6 lg:right-10"
+              className="absolute right-4 z-20 flex flex-col items-end gap-2 sm:right-6 lg:right-10"
               style={{ top: `${headerH + 18}px` }}
             >
-              <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
-              <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
-              <span className="text-white">{visibleChannels.length}</span>
+              <div className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md">
+                <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
+                <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
+                <span className="text-white">{visibleChannels.length}</span>
+              </div>
+              {activeHero && heroVideoLoading ? (
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/55 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white shadow-2xl backdrop-blur-md">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
+                  <span className="text-neutral-200">Loading video…</span>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -1006,6 +1121,18 @@ export default function LivePage() {
                 </div>
               </div>
             </div>
+          ) : null}
+
+          {!heroFs && activeHero ? (
+            <button
+              type="button"
+              onClick={toggleHeroMute}
+              className="absolute bottom-6 right-4 z-20 inline-flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-black/55 text-white shadow-2xl backdrop-blur-md transition hover:bg-black/75 sm:right-6 lg:right-10"
+              aria-label={heroMuted ? 'Unmute live preview' : 'Mute live preview'}
+              title={heroMuted ? 'Unmute live preview' : 'Mute live preview'}
+            >
+              {heroMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+            </button>
           ) : null}
 
           {/* arrows */}

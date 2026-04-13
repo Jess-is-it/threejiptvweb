@@ -7,6 +7,7 @@ import {
   warmCatalogImageCache,
 } from '../../../../lib/server/publicCatalogArtwork';
 import { loadPublicCatalogData } from '../../../../lib/server/publicCatalogDataCache';
+import { applyKidsCatalogTags, ensureKidsCatalogTags, warmKidsCatalogTags } from '../../../../lib/server/kidsCatalogService';
 
 export const dynamic = 'force-dynamic';
 const SERIES_CATALOG_TTL_MS = 60 * 1000;
@@ -34,11 +35,25 @@ function normalizeAddedMs(...values) {
 export async function GET(req) {
   const { searchParams } = new URL(req.url);
   const streamBase = searchParams.get('streamBase') || '';
+  const resolveKids = searchParams.get('resolveKids') === '1';
   try {
     const payload = await loadPublicCatalogData(
       `series:${String(streamBase || '').trim()}`,
       async () => {
         const { server, username, password } = parseStreamBase(streamBase);
+        const categoriesRaw = await xtreamWithFallback({
+          server,
+          username,
+          password,
+          action: 'get_series_categories',
+        }).catch(() => []);
+        const categoryNameById = new Map(
+          (Array.isArray(categoriesRaw) ? categoriesRaw : []).map((c) => [
+            String(c?.category_id ?? c?.id ?? '').trim(),
+            String(c?.category_name || c?.name || '').trim(),
+          ])
+        );
+
         const series = await xtreamWithFallback({
           server, username, password, action: 'get_series'
         });
@@ -62,6 +77,13 @@ export async function GET(req) {
             server,
             kind: 'poster',
           });
+          const categoryId = String(s?.category_id ?? s?.categoryId ?? '').trim();
+          const categoryName = String(
+            s?.category_name ||
+              categoryNameById.get(categoryId) ||
+              ''
+          ).trim();
+          const genre = String(s?.genre || categoryName || '').trim();
 
           return {
             id,
@@ -77,8 +99,9 @@ export async function GET(req) {
             imageFallback: imageSources.imageFallback,
             plot: s?.plot || s?.overview || '',
             year,
-            genre: s?.genre || s?.category_name || '',
-            category_id: String(s?.category_id ?? s?.categoryId ?? '').trim(),
+            genre,
+            categoryName,
+            category_id: categoryId,
             rating: s?.rating ?? null,
             added,
             kind: 'series',
@@ -101,8 +124,19 @@ export async function GET(req) {
       { ttlMs: SERIES_CATALOG_TTL_MS }
     );
 
+    const baseItems = Array.isArray(payload?.items) ? payload.items : [];
+    const taggedItems = resolveKids
+      ? await ensureKidsCatalogTags(baseItems, { mediaType: 'tv' })
+      : await applyKidsCatalogTags(baseItems, { mediaType: 'tv' });
+    if (!resolveKids) {
+      void warmKidsCatalogTags(baseItems, {
+        mediaType: 'tv',
+        backgroundLimit: Array.isArray(baseItems) ? baseItems.length : undefined,
+      }).catch(() => {});
+    }
+
     return NextResponse.json(
-      payload,
+      { ...payload, items: taggedItems },
       {
         status: 200,
         headers: { 'Cache-Control': 'no-store, max-age=0, must-revalidate' },

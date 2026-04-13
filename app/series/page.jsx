@@ -20,7 +20,6 @@ import {
   parseCatalogRowToken,
   selectRotatingCategory,
 } from '../../lib/catalogSettings';
-import { filterKidsCatalogItems, filterKidsUpcomingItems } from '../../lib/kidsMode';
 
 export default function SeriesPage() {
   const { session } = useSession();
@@ -39,7 +38,7 @@ export default function SeriesPage() {
   useEffect(() => {
     if (!session?.streamBase) return;
     let alive = true;
-    const cached = readSeriesCatalog(session.streamBase);
+    const cached = readSeriesCatalog(session.streamBase, { resolveKids: kidsMode });
     if (cached?.ok && Array.isArray(cached.items)) {
       setAll(cached.items.map((s) => ({ ...s, href: `/series/${s.id}` })));
       setErr('');
@@ -49,7 +48,7 @@ export default function SeriesPage() {
     }
     (async () => {
       try {
-        const sRes = await prefetchSeriesCatalog(session.streamBase);
+        const sRes = await prefetchSeriesCatalog(session.streamBase, { resolveKids: kidsMode });
         if (!alive) return;
         if (!sRes.ok) throw new Error(sRes.error || 'Failed to load series');
         setAll((sRes.items || []).map(s => ({ ...s, href: `/series/${s.id}` })));
@@ -62,7 +61,7 @@ export default function SeriesPage() {
       }
     })();
     return () => { alive = false; };
-  }, [session?.streamBase]);
+  }, [session?.streamBase, kidsMode]);
 
   useEffect(() => {
     let alive = true;
@@ -107,15 +106,18 @@ export default function SeriesPage() {
     };
   }, [username]);
 
-  const allView = useMemo(() => (kidsMode ? filterKidsCatalogItems(all) : all), [all, kidsMode]);
-  const worthToWaitView = useMemo(
-    () => (kidsMode ? filterKidsUpcomingItems(worthToWait) : worthToWait),
-    [worthToWait, kidsMode]
-  );
-  const leavingSoonView = useMemo(
-    () => (kidsMode ? filterKidsUpcomingItems(leavingSoon) : leavingSoon),
-    [leavingSoon, kidsMode]
-  );
+  const allView = useMemo(() => {
+    if (!kidsMode) return all;
+    return all.filter((item) => item?.kidsSafe === true);
+  }, [all, kidsMode]);
+  const worthToWaitView = useMemo(() => {
+    if (!kidsMode) return worthToWait;
+    return worthToWait.filter((item) => item?.kidsSafe === true);
+  }, [worthToWait, kidsMode]);
+  const leavingSoonView = useMemo(() => {
+    if (!kidsMode) return leavingSoon;
+    return leavingSoon.filter((item) => item?.kidsSafe === true);
+  }, [leavingSoon, kidsMode]);
 
   const catalog = useMemo(() => getCatalogSettings(settings || {}), [settings]);
   const ranked = useMemo(() => [...allView].sort((a, b) => (b.rating || 0) - (a.rating || 0)), [allView]);
@@ -157,6 +159,7 @@ export default function SeriesPage() {
 
         <CatalogHero
           pageKey="seriesPage"
+          storageKey={`seriesPage:${kidsMode ? 'kids' : 'adult'}`}
           catalog={catalog}
           sourceItems={{
             top,
@@ -166,6 +169,12 @@ export default function SeriesPage() {
           }}
           loading={loading}
         />
+
+        {kidsMode && !loading && !allView.length ? (
+          <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-950/60 px-4 py-3 text-sm text-neutral-200">
+            No kids-safe series found in the library.
+          </div>
+        ) : null}
 
         {seriesLayoutRows.map((token) => {
           const row = parseCatalogRowToken(token);

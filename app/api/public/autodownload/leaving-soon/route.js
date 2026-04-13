@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { listLeavingSoonItems } from '../../../../../lib/server/autodownload/deletionService';
 import { warmCatalogImageCache } from '../../../../../lib/server/publicCatalogArtwork';
 import { loadPublicCatalogData } from '../../../../../lib/server/publicCatalogDataCache';
+import { ensureKidsCatalogTagsMixed } from '../../../../../lib/server/kidsCatalogService';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,8 +19,9 @@ export async function GET(req) {
       `public-leaving:${type}:${limit}`,
       async () => {
         const items = await listLeavingSoonItems({ type, limit });
-        void warmCatalogImageCache(items, { posterCount: 10, backdropCount: 2, concurrency: 2 }).catch(() => {});
-        return { ok: true, items };
+        const taggedItems = await ensureKidsCatalogTagsMixed(items);
+        void warmCatalogImageCache(taggedItems, { posterCount: 10, backdropCount: 2, concurrency: 2 }).catch(() => {});
+        return { ok: true, items: taggedItems };
       },
       { ttlMs: LEAVING_SOON_TTL_MS }
     );

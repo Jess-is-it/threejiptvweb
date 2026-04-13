@@ -201,6 +201,7 @@ function HeroSkeleton({ headerH = HEADER_H }) {
 
 export default function CatalogHero({
   pageKey,
+  storageKey,
   catalog,
   sourceItems = {},
   loading = false,
@@ -256,11 +257,12 @@ export default function CatalogHero({
   }, [rules, normalizedSources]);
 
   const [detailsMap, setDetailsMap] = useState({});
-  const [storedSlides, setStoredSlides] = useState(() => readStoredHeroSlides(pageKey));
+  const effectiveStorageKey = String(storageKey || pageKey || '').trim() || pageKey;
+  const [storedSlides, setStoredSlides] = useState(() => readStoredHeroSlides(effectiveStorageKey));
 
   useEffect(() => {
-    setStoredSlides(readStoredHeroSlides(pageKey));
-  }, [pageKey]);
+    setStoredSlides(readStoredHeroSlides(effectiveStorageKey));
+  }, [effectiveStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -357,8 +359,8 @@ export default function CatalogHero({
     // Only persist once the hero has reached its expected size, so we don't overwrite a
     // previously complete list with a partial "worthToWait-only" list during refresh.
     if (desiredHeroCount > 0 && heroSlides.length < desiredHeroCount) return;
-    writeStoredHeroSlides(pageKey, heroSlides);
-  }, [heroSlides, pageKey, desiredHeroCount]);
+    writeStoredHeroSlides(effectiveStorageKey, heroSlides);
+  }, [heroSlides, effectiveStorageKey, desiredHeroCount]);
 
   const slidesToRender = heroSlides.length ? heroSlides : storedSlides;
 

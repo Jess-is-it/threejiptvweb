@@ -24,7 +24,6 @@ import {
   readUpcomingCatalog,
 } from '../../lib/publicCatalogCache';
 import { getCardPosterFallbackSrc, getCardPosterSrc } from '../../lib/catalogPoster';
-import { filterKidsCatalogItems, filterKidsUpcomingItems } from '../../lib/kidsMode';
 
 const ALL_MOVIES_VISIBILITY_TOP_OFFSET = 120;
 const ALL_MOVIES_VISIBILITY_BOTTOM_OFFSET = 120;
@@ -78,15 +77,18 @@ export default function MoviesPage() {
   const prefetchedAllMoviePosterSrcsRef = useRef(new Set());
   const restoreAppliedRef = useRef(false);
 
-  const allView = useMemo(() => (kidsMode ? filterKidsCatalogItems(all) : all), [all, kidsMode]);
-  const worthToWaitView = useMemo(
-    () => (kidsMode ? filterKidsUpcomingItems(worthToWait) : worthToWait),
-    [worthToWait, kidsMode]
-  );
-  const leavingSoonView = useMemo(
-    () => (kidsMode ? filterKidsUpcomingItems(leavingSoon) : leavingSoon),
-    [leavingSoon, kidsMode]
-  );
+  const allView = useMemo(() => {
+    if (!kidsMode) return all;
+    return all.filter((item) => item?.kidsSafe === true);
+  }, [all, kidsMode]);
+  const worthToWaitView = useMemo(() => {
+    if (!kidsMode) return worthToWait;
+    return worthToWait.filter((item) => item?.kidsSafe === true);
+  }, [worthToWait, kidsMode]);
+  const leavingSoonView = useMemo(() => {
+    if (!kidsMode) return leavingSoon;
+    return leavingSoon.filter((item) => item?.kidsSafe === true);
+  }, [leavingSoon, kidsMode]);
 
   useEffect(() => {
     const currentHref =
@@ -115,7 +117,7 @@ export default function MoviesPage() {
     let alive = true;
     let pollTimer = null;
 
-    const cachedCatalog = readMovieCatalog(session.streamBase);
+    const cachedCatalog = readMovieCatalog(session.streamBase, { resolveKids: kidsMode });
     if (cachedCatalog?.ok) {
       setAll(normalizeMovieItems(cachedCatalog.items));
       setErr('');
@@ -125,7 +127,7 @@ export default function MoviesPage() {
     const loadMovies = async ({ silent = false } = {}) => {
       if (!silent && !cachedCatalog?.ok) setLoading(true);
       try {
-        const vodRes = await prefetchMovieCatalog(session.streamBase);
+        const vodRes = await prefetchMovieCatalog(session.streamBase, { resolveKids: kidsMode });
         if (!alive) return;
         if (!vodRes.ok) throw new Error(vodRes.error || 'Failed to load movies');
         setAll(normalizeMovieItems(vodRes.items));
@@ -145,7 +147,7 @@ export default function MoviesPage() {
       alive = false;
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [session?.streamBase]);
+  }, [session?.streamBase, kidsMode]);
 
   useEffect(() => {
     let alive = true;
@@ -405,6 +407,7 @@ export default function MoviesPage() {
 
         <CatalogHero
           pageKey="moviesPage"
+          storageKey={`moviesPage:${kidsMode ? 'kids' : 'adult'}`}
           catalog={catalog}
           sourceItems={{
             top: topMovies,
@@ -415,6 +418,12 @@ export default function MoviesPage() {
           }}
           loading={loading}
         />
+
+        {kidsMode && !loading && !allView.length ? (
+          <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-950/60 px-4 py-3 text-sm text-neutral-200">
+            No kids-safe movies found in the library.
+          </div>
+        ) : null}
 
         {movieLayoutRows.map((token) => {
           const row = parseCatalogRowToken(token);
@@ -442,6 +451,7 @@ export default function MoviesPage() {
             return <Row key={token} title={catalog.labels.moviesPage.worthToWait} items={worthToWaitView} loading={loading || worthToWaitLoading} kind="movie" priority={true} />;
           }
           if (row.key === 'allMovies') {
+            if (!loading && !allView.length) return null;
             return (
               <section
                 ref={allMoviesSectionRef}

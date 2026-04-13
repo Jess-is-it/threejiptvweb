@@ -7,6 +7,7 @@ import {
 } from '../../../../../lib/server/autodownload/releaseService';
 import { warmCatalogImageCache } from '../../../../../lib/server/publicCatalogArtwork';
 import { loadPublicCatalogData } from '../../../../../lib/server/publicCatalogDataCache';
+import { ensureKidsCatalogTagsMixed } from '../../../../../lib/server/kidsCatalogService';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,8 +27,9 @@ export async function GET(req) {
           state === 'released'
             ? await listReleasedItems({ limit, mediaType })
             : await listUpcomingItems({ username, limit, mediaType });
-        void warmCatalogImageCache(items, { posterCount: 12, backdropCount: 3, concurrency: 2 }).catch(() => {});
-        return { ok: true, items };
+        const taggedItems = await ensureKidsCatalogTagsMixed(items);
+        void warmCatalogImageCache(taggedItems, { posterCount: 12, backdropCount: 3, concurrency: 2 }).catch(() => {});
+        return { ok: true, items: taggedItems };
       },
       { ttlMs: UPCOMING_TTL_MS }
     );

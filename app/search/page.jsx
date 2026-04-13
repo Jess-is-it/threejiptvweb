@@ -9,7 +9,7 @@ import HoverMovieCard from '../../components/HoverMovieCard';
 import { useSession } from '../../components/SessionProvider';
 import { useProfileMode } from '../../components/useProfileMode';
 import { readJsonSafe } from '../../lib/readJsonSafe';
-import { filterKidsCatalogItems, isKidsCategoryName, pickKidsCategoryIds } from '../../lib/kidsMode';
+import { isKidsCategoryName, pickKidsCategoryIds } from '../../lib/kidsMode';
 
 const GENRE_ALL_TOKEN = '__all__';
 const LIVE_ALL_TOKEN = '__all__';
@@ -372,12 +372,15 @@ export default function SearchPage() {
 
     (async () => {
       try {
-        const qs = `?streamBase=${encodeURIComponent(session.streamBase)}`;
+        const catalogParams = new URLSearchParams();
+        catalogParams.set('streamBase', session.streamBase);
+        if (kidsMode) catalogParams.set('resolveKids', '1');
+        const qs = `?${catalogParams.toString()}`;
         const [moviesRes, movieCatsRes, seriesRes, seriesCatsRes, liveRes] = await Promise.all([
           fetch(`/api/xuione/vod${qs}`, { cache: 'no-store' }).then(readJsonSafe),
-          fetch(`/api/xuione/vod/categories${qs}`, { cache: 'no-store' }).then(readJsonSafe),
+          fetch(`/api/xuione/vod/categories?streamBase=${encodeURIComponent(session.streamBase)}`, { cache: 'no-store' }).then(readJsonSafe),
           fetch(`/api/xuione/series${qs}`, { cache: 'no-store' }).then(readJsonSafe),
-          fetch(`/api/xuione/series/categories${qs}`, { cache: 'no-store' }).then(readJsonSafe),
+          fetch(`/api/xuione/series/categories?streamBase=${encodeURIComponent(session.streamBase)}`, { cache: 'no-store' }).then(readJsonSafe),
           fetch('/api/xuione/live', { cache: 'no-store' }).then(readJsonSafe),
         ]);
         if (!alive) return;
@@ -447,7 +450,7 @@ export default function SearchPage() {
     return () => {
       alive = false;
     };
-  }, [session?.streamBase]);
+  }, [session?.streamBase, kidsMode]);
 
   useEffect(() => {
     if (!deferredGenre) {
@@ -492,8 +495,14 @@ export default function SearchPage() {
     () => (kidsMode ? categories.filter((c) => isKidsCategoryName(c?.name)) : categories),
     [kidsMode, categories]
   );
-  const moviesView = useMemo(() => (kidsMode ? filterKidsCatalogItems(movies) : movies), [kidsMode, movies]);
-  const seriesView = useMemo(() => (kidsMode ? filterKidsCatalogItems(series) : series), [kidsMode, series]);
+  const moviesView = useMemo(() => {
+    if (!kidsMode) return movies;
+    return movies.filter((item) => item?.kidsSafe === true);
+  }, [kidsMode, movies]);
+  const seriesView = useMemo(() => {
+    if (!kidsMode) return series;
+    return series.filter((item) => item?.kidsSafe === true);
+  }, [kidsMode, series]);
   const liveCategoryIdsView = useMemo(() => (kidsMode ? pickKidsCategoryIds(liveCategories) : new Set()), [kidsMode, liveCategories]);
   const liveCategoriesView = useMemo(() => {
     if (!kidsMode) return liveCategories;

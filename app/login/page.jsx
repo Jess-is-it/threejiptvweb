@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useSession } from '../../components/SessionProvider';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
-import { prefetchMovieCatalog } from '../../lib/publicCatalogCache';
+import { prefetchMovieCatalog, prefetchSeriesCatalog } from '../../lib/publicCatalogCache';
 
 export default function LoginPage() {
   const { session, ready, login } = useSession();
@@ -17,6 +17,7 @@ export default function LoginPage() {
     if (!session?.user) return;
     if (session?.streamBase) {
       void prefetchMovieCatalog(session.streamBase).catch(() => {});
+      void prefetchSeriesCatalog(session.streamBase).catch(() => {});
     }
     router.replace('/movies');
   }, [ready, session, router]);
@@ -44,6 +45,7 @@ export default function LoginPage() {
       if (!ok) throw new Error(error || 'Login failed.');
       if (streamBase) {
         void prefetchMovieCatalog(streamBase).catch(() => {});
+        void prefetchSeriesCatalog(streamBase).catch(() => {});
       }
       router.replace('/movies');
     } catch (e) {

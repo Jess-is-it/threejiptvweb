@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
-import { Bell, Info, Play, Star } from 'lucide-react';
+import { Bell, Info, Play, Star, X } from 'lucide-react';
 import { useSession } from './SessionProvider';
 import { readJsonSafe } from '../lib/readJsonSafe';
 import { useUserPreferences } from './UserPreferencesProvider';
@@ -16,7 +16,8 @@ function ytSrc(key) {
   if (!k) return '';
   // loop=1 requires playlist=<id>
   // Note: YouTube embed UI cannot be fully removed; these params minimize branding/overlays.
-  return `https://www.youtube-nocookie.com/embed/${k}?autoplay=1&mute=1&controls=0&modestbranding=1&rel=0&playsinline=1&loop=1&playlist=${k}&iv_load_policy=3&disablekb=1&fs=0&cc_load_policy=0`;
+  // Trailer previews are opened by an explicit card click, so they should start with audio.
+  return `https://www.youtube-nocookie.com/embed/${k}?autoplay=1&mute=0&controls=0&modestbranding=1&rel=0&playsinline=1&loop=1&playlist=${k}&iv_load_policy=3&disablekb=1&fs=0&cc_load_policy=0`;
 }
 
 function fmtDuration(d) {
@@ -74,6 +75,15 @@ function formatReleaseDate(dateValue, { includeYear = true } = {}) {
   } catch {
     return raw;
   }
+}
+
+function castNamesFromEntries(entries = []) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry) => {
+      if (typeof entry === 'string') return String(entry).trim();
+      return String(entry?.name || '').trim();
+    })
+    .filter(Boolean);
 }
 
 export default function HoverMovieCard({
@@ -373,6 +383,15 @@ export default function HoverMovieCard({
         />
 
         <div className="absolute left-1/2 top-1/2 w-[min(820px,92vw)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-white/10 bg-neutral-950 shadow-2xl">
+          <button
+            type="button"
+            onClick={() => closeModal()}
+            className="absolute right-4 top-4 z-20 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-black/55 text-white transition hover:bg-black/75"
+            aria-label="Close preview"
+            title="Close preview"
+          >
+            <X size={18} />
+          </button>
           <div className="relative aspect-video bg-black">
             {trailerUrl ? (
               <iframe
@@ -435,7 +454,7 @@ export default function HoverMovieCard({
                 ) : null}
                 {Array.isArray(tmdb?.cast) && tmdb.cast.length ? (
                   <p className="mt-2 line-clamp-2 text-xs text-neutral-300">
-                    <span className="font-semibold text-neutral-200">Cast:</span> {tmdb.cast.slice(0, 8).join(', ')}
+                    <span className="font-semibold text-neutral-200">Cast:</span> {castNamesFromEntries(tmdb.cast).slice(0, 8).join(', ')}
                   </p>
                 ) : null}
                 <div className="mt-4 flex flex-wrap items-center gap-2">

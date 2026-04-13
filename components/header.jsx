@@ -8,8 +8,19 @@ import { useSession } from './SessionProvider';
 import { usePublicSettings } from './PublicSettingsProvider';
 import { useUserPreferences } from './UserPreferencesProvider';
 import { useProfileMode } from './useProfileMode';
-import { prefetchMovieCatalog, prefetchSeriesCatalog } from '../lib/publicCatalogCache';
-import { isKidsCategoryName } from '../lib/kidsMode';
+import {
+  prefetchLeavingSoonCatalog,
+  prefetchMovieCatalog,
+  prefetchUpcomingCatalog,
+  prefetchSeriesCatalog,
+  readLeavingSoonCatalog,
+  readUpcomingCatalog,
+  readSeriesCatalog,
+} from '../lib/publicCatalogCache';
+import {
+  isKidsCategoryName,
+  isKidsLiveCategoryName,
+} from '../lib/kidsMode';
 
 // icons
 import {
@@ -159,7 +170,7 @@ function SearchModal({ open, onClose }) {
         setCategories(isKids ? deduped.filter((c) => isKidsCategoryName(c?.name)) : deduped);
         setLiveCategories(
           isKids
-            ? (Array.isArray(live?.categories) ? live.categories : []).filter((c) => isKidsCategoryName(c?.name))
+            ? (Array.isArray(live?.categories) ? live.categories : []).filter((c) => isKidsLiveCategoryName(c?.name))
             : Array.isArray(live?.categories)
               ? live.categories
               : []
@@ -396,7 +407,7 @@ function ProfileMenu({ open, onClose }) {
 }
 
 // ---------- Mobile Drawer ----------
-function MobileMenu({ open, onClose, onOpenSearch, requestCta, requestEnabled }) {
+function MobileMenu({ open, onClose, onOpenSearch, requestCta, requestEnabled, showSeriesNav }) {
   const pathname = usePathname() || '/';
   const router = useRouter();
   if (!open) return null;
@@ -423,7 +434,7 @@ function MobileMenu({ open, onClose, onOpenSearch, requestCta, requestEnabled })
         <nav className="flex flex-col gap-1">
           {[
             ['/movies', 'Movies'],
-            ['/series', 'Series'],
+            ...(showSeriesNav ? [['/series', 'Series']] : []),
             ['/live', 'Live TV'],
             ['/bookmarks', 'My watchlist'],
           ].map(([href, label]) => (
@@ -512,10 +523,12 @@ export default function Header() {
   const { ready, settings } = usePublicSettings();
   const { mode: profileMode } = useProfileMode();
   const pathname = usePathname() || '/';
+  const username = String(session?.user?.username || '').trim();
   const [scrolled, setScrolled] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [kidsHasSeries, setKidsHasSeries] = useState(true);
 
   const logoUrl = settings?.brand?.logoUrl || '/brand/logo.svg';
   const requestCta = requestCtaForPath(pathname);
@@ -573,6 +586,56 @@ export default function Header() {
       }
     };
   }, [pathname, requestCta?.href, requestEnabled, router, session?.streamBase]);
+
+  useEffect(() => {
+    if (profileMode !== 'kids') {
+      setKidsHasSeries(true);
+      return;
+    }
+    if (!session?.streamBase) return;
+
+    let alive = true;
+    (async () => {
+      try {
+        const cached = readSeriesCatalog(session.streamBase, { resolveKids: true });
+        const items = cached?.ok && Array.isArray(cached.items)
+          ? cached.items
+          : (await prefetchSeriesCatalog(session.streamBase, { resolveKids: true })).items || [];
+        const cachedUpcoming = readUpcomingCatalog({ username, mediaType: 'series', limit: 120 });
+        const cachedLeaving = readLeavingSoonCatalog({ mediaType: 'series', limit: 120 });
+        const upcomingHasKidsTags =
+          cachedUpcoming?.ok &&
+          Array.isArray(cachedUpcoming.items) &&
+          cachedUpcoming.items.every((item) => !String(item?.title || '').trim() || typeof item?.kidsSafe === 'boolean');
+        const leavingHasKidsTags =
+          cachedLeaving?.ok &&
+          Array.isArray(cachedLeaving.items) &&
+          cachedLeaving.items.every((item) => !String(item?.title || '').trim() || typeof item?.kidsSafe === 'boolean');
+        const [upcomingRes, leavingRes] = await Promise.all([
+          upcomingHasKidsTags ? cachedUpcoming : prefetchUpcomingCatalog({ username, mediaType: 'series', limit: 120 }),
+          leavingHasKidsTags ? cachedLeaving : prefetchLeavingSoonCatalog({ mediaType: 'series', limit: 120 }),
+        ]);
+        const combined = [
+          ...(Array.isArray(items) ? items : []),
+          ...(Array.isArray(upcomingRes?.items) ? upcomingRes.items : []),
+          ...(Array.isArray(leavingRes?.items) ? leavingRes.items : []),
+        ];
+        if (!alive) return;
+
+        setKidsHasSeries(combined.some((item) => item?.kidsSafe === true));
+      } catch {
+        if (!alive) return;
+        // Don't hide Series if we can't verify.
+        setKidsHasSeries(true);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [profileMode, session?.streamBase, username]);
+
+  const showSeriesNav = profileMode !== 'kids' || kidsHasSeries;
 
   useEffect(() => {
     if (!session?.streamBase) return;
@@ -654,7 +717,7 @@ export default function Header() {
 
             <nav className="hidden md:flex items-center gap-2">
               <NavLink href="/movies" onWarm={warmMovieCatalog}>Movies</NavLink>
-              <NavLink href="/series" onWarm={warmSeriesCatalog}>Series</NavLink>
+              {showSeriesNav ? <NavLink href="/series" onWarm={warmSeriesCatalog}>Series</NavLink> : null}
               <NavLink href="/live">Live TV</NavLink>
               <NavLink href="/bookmarks">My watchlist</NavLink>
             </nav>
@@ -664,9 +727,10 @@ export default function Header() {
           <div className="relative flex items-center gap-1">
             {profileMode === 'kids' ? (
               <span
-                className="hidden sm:inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
+                className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
                 title="Kids mode is enabled"
               >
+                <Check size={14} />
                 KIDS Selected
               </span>
             ) : null}
@@ -750,6 +814,7 @@ export default function Header() {
         onOpenSearch={() => setSearchOpen(true)}
         requestCta={requestCta}
         requestEnabled={requestEnabled}
+        showSeriesNav={showSeriesNav}
       />
     </>
   );

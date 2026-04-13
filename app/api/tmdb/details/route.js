@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSecret } from '../../../../lib/server/secrets';
+import { computeKidsSafe, pickUsMovieCertification, pickUsTvContentRating } from '../../../../lib/server/tmdbKids';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 
@@ -120,7 +121,11 @@ export async function GET(req) {
 
       if (!pick || !mediaType) return { ok: false, notFound: true };
 
-      const details = await tmdb(`/${mediaType}/${pick.id}`, apiKey, { append_to_response: 'credits' });
+      const appendToResponse = mediaType === 'movie' ? 'credits,release_dates' : 'credits,content_ratings';
+      const details = await tmdb(`/${mediaType}/${pick.id}`, apiKey, {
+        append_to_response: appendToResponse,
+        language: 'en-US',
+      });
       const genres = Array.isArray(details?.genres) ? details.genres.map((g) => g.name) : [];
       const runtime =
         mediaType === 'movie'
@@ -130,10 +135,19 @@ export async function GET(req) {
             : null;
       const cast = Array.isArray(details?.credits?.cast)
         ? details.credits.cast
-            .map((c) => String(c?.name || '').trim())
-            .filter(Boolean)
+            .map((c, index) => ({
+              id: Number(c?.id || 0) || `cast-${index}`,
+              name: String(c?.name || '').trim(),
+              character: String(c?.character || '').trim(),
+              profilePath: String(c?.profile_path || '').trim(),
+            }))
+            .filter((c) => c.name)
             .slice(0, 12)
         : [];
+
+      const certification = mediaType === 'movie' ? pickUsMovieCertification(details) : '';
+      const contentRating = mediaType === 'tv' ? pickUsTvContentRating(details) : '';
+      const kids = computeKidsSafe({ mediaType, certification, contentRating, genres });
 
       return {
         ok: true,
@@ -146,6 +160,10 @@ export async function GET(req) {
         voteCount: details?.vote_count ?? null,
         popularity: details?.popularity ?? null,
         genres,
+        certification,
+        contentRating,
+        kidsSafe: kids.kidsSafe,
+        kidsReason: kids.reason,
         runtime,
         cast,
         posterPath: String(details?.poster_path || pick?.poster_path || '').trim(),

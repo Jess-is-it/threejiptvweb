@@ -7,6 +7,7 @@ import {
   warmCatalogImageCache,
 } from '../../../../lib/server/publicCatalogArtwork';
 import { loadPublicCatalogData } from '../../../../lib/server/publicCatalogDataCache';
+import { applyKidsCatalogTags, ensureKidsCatalogTags, warmKidsCatalogTags } from '../../../../lib/server/kidsCatalogService';
 
 export const dynamic = 'force-dynamic';
 const MOVIE_CATALOG_TTL_MS = 60 * 1000;
@@ -44,11 +45,25 @@ function normalizeAddedMs(...values) {
 export async function GET(req) {
   const { searchParams } = new URL(req.url);
   const streamBase = searchParams.get('streamBase') || '';
+  const resolveKids = searchParams.get('resolveKids') === '1';
   try {
     const payload = await loadPublicCatalogData(
       `movies:${String(streamBase || '').trim()}`,
       async () => {
         const { server, username, password } = parseStreamBase(streamBase);
+        const categoriesRaw = await xtreamWithFallback({
+          server,
+          username,
+          password,
+          action: 'get_vod_categories',
+        }).catch(() => []);
+        const categoryNameById = new Map(
+          (Array.isArray(categoriesRaw) ? categoriesRaw : []).map((c) => [
+            String(c?.category_id ?? c?.id ?? '').trim(),
+            String(c?.category_name || c?.name || '').trim(),
+          ])
+        );
+
         const vod = await xtreamWithFallback({
           server, username, password, action: 'get_vod_streams'
         });
@@ -69,6 +84,13 @@ export async function GET(req) {
             server,
             kind: 'poster',
           });
+          const categoryId = String(v?.category_id ?? v?.categoryId ?? '').trim();
+          const categoryName = String(
+            v?.category_name ||
+              categoryNameById.get(categoryId) ||
+              ''
+          ).trim();
+          const genre = String(v?.genre || categoryName || '').trim();
           return {
             id,
             title: v?.name || `Movie #${id}`,
@@ -84,8 +106,9 @@ export async function GET(req) {
             imageFallback: imageSources.imageFallback,
             plot: v?.plot || v?.overview || '',
             year: v?.year || String(props?.release_date || '').trim().slice(0, 4) || null,
-            genre: v?.genre || v?.category_name || '',
-            category_id: String(v?.category_id ?? v?.categoryId ?? '').trim(),
+            genre,
+            categoryName,
+            category_id: categoryId,
             rating: v?.rating ?? null,
             duration: v?.duration || v?.duration_secs || null,
             ext: v?.container_extension || v?.containerExtension || null,
@@ -110,8 +133,19 @@ export async function GET(req) {
       { ttlMs: MOVIE_CATALOG_TTL_MS }
     );
 
+    const baseItems = Array.isArray(payload?.items) ? payload.items : [];
+    const taggedItems = resolveKids
+      ? await ensureKidsCatalogTags(baseItems, { mediaType: 'movie' })
+      : await applyKidsCatalogTags(baseItems, { mediaType: 'movie' });
+    if (!resolveKids) {
+      void warmKidsCatalogTags(baseItems, {
+        mediaType: 'movie',
+        backgroundLimit: Array.isArray(baseItems) ? baseItems.length : undefined,
+      }).catch(() => {});
+    }
+
     return NextResponse.json(
-      payload,
+      { ...payload, items: taggedItems },
       {
         status: 200,
         headers: { 'Cache-Control': 'no-store, max-age=0, must-revalidate' },
