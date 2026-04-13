@@ -346,7 +346,6 @@ export default function SearchPage() {
   const [genreRanking, setGenreRanking] = useState(null);
   const [genreRankingLoading, setGenreRankingLoading] = useState(false);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const [showAllGenres, setShowAllGenres] = useState(false);
 
   useEffect(() => {
     setDraft(query);
@@ -580,12 +579,6 @@ export default function SearchPage() {
       ? `Results for "${query}"`
       : 'Start a search';
 
-  const visibleGenreCategories = useMemo(() => {
-    if (!categories.length) return [];
-    if (showAllGenres) return categories.slice();
-    return categories.slice(0, 5);
-  }, [categories, showAllGenres]);
-
   const liveCategoryNameById = useMemo(() => {
     const map = new Map();
     for (const category of liveCategories || []) {
@@ -722,7 +715,7 @@ export default function SearchPage() {
                   All
                 </button>
 
-                {visibleGenreCategories.map((category) => {
+                {categories.map((category) => {
                   const active = normalizeGenreText(category.name) === normalizeGenreText(genre);
                   return (
                     <button
@@ -739,16 +732,6 @@ export default function SearchPage() {
                     </button>
                   );
                 })}
-
-                {categories.length > 5 ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowAllGenres((prev) => !prev)}
-                    className="rounded-full border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:border-neutral-500 hover:text-white"
-                  >
-                    {showAllGenres ? 'Less' : 'More'}
-                  </button>
-                ) : null}
               </div>
             </div>
           ) : null}

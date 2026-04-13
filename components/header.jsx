@@ -122,6 +122,8 @@ function SearchModal({ open, onClose }) {
   const { session } = useSession();
   const [q, setQ] = useState('');
   const [categories, setCategories] = useState([]);
+  const [liveCategories, setLiveCategories] = useState([]);
+  const [showAllGenres, setShowAllGenres] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -129,9 +131,10 @@ function SearchModal({ open, onClose }) {
     const load = async () => {
       try {
         const qs = `?streamBase=${encodeURIComponent(session?.streamBase || '')}`;
-        const [m, s] = await Promise.all([
+        const [m, s, live] = await Promise.all([
           fetch(`/api/xuione/vod/categories${qs}`).then((r) => r.json()).catch(() => ({})),
           fetch(`/api/xuione/series/categories${qs}`).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/xuione/live`, { cache: 'no-store' }).then((r) => r.json()).catch(() => ({})),
         ]);
         const merged = [...(m?.categories || []), ...(s?.categories || [])]
           .map((category) => ({
@@ -150,8 +153,10 @@ function SearchModal({ open, onClose }) {
         }
         deduped.sort((a, b) => a.name.localeCompare(b.name));
         setCategories(deduped);
+        setLiveCategories(Array.isArray(live?.categories) ? live.categories : []);
       } catch {
         setCategories([]);
+        setLiveCategories([]);
       }
     };
     load();
@@ -167,6 +172,13 @@ function SearchModal({ open, onClose }) {
   const goCategorySearch = (name) => {
     if (!String(name || '').trim()) return;
     router.push(`/search?genre=${encodeURIComponent(String(name).trim())}`);
+    onClose();
+  };
+
+  const goLiveCategorySearch = (id) => {
+    const cid = String(id || '').trim();
+    if (!cid) return;
+    router.push(`/search?liveCat=${encodeURIComponent(cid)}`);
     onClose();
   };
 
@@ -199,7 +211,7 @@ function SearchModal({ open, onClose }) {
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search movies, series…"
+              placeholder="Search movies, series, live TV…"
               className="w-full bg-neutral-900 px-3 py-3 outline-none"
             />
             <button
@@ -215,10 +227,10 @@ function SearchModal({ open, onClose }) {
         <div className="mt-6">
           <div className="mb-2 flex items-center gap-2">
             <Search size={16} className="text-neutral-300" />
-            <h4 className="text-sm font-semibold">Categories</h4>
+            <h4 className="text-sm font-semibold">Movie Genres</h4>
           </div>
           <div className="flex flex-wrap gap-2">
-            {categories.map((category) => (
+            {(showAllGenres ? categories : categories.slice(0, 5)).map((category) => (
               <button
                 key={`cat-${category.name.toLowerCase()}`}
                 onClick={() => goCategorySearch(category.name)}
@@ -228,8 +240,43 @@ function SearchModal({ open, onClose }) {
                 {category.name}
               </button>
             ))}
+            {categories.length > 5 ? (
+              <button
+                type="button"
+                onClick={() => setShowAllGenres((prev) => !prev)}
+                className="rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500"
+              >
+                {showAllGenres ? 'Less' : 'More'}
+              </button>
+            ) : null}
           </div>
         </div>
+
+        {liveCategories.length ? (
+          <div className="mt-6">
+            <div className="mb-2 flex items-center gap-2">
+              <Search size={16} className="text-neutral-300" />
+              <h4 className="text-sm font-semibold">Live TV Categories</h4>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {liveCategories.map((category) => {
+                const id = String(category?.id || '').trim();
+                const name = String(category?.name || '').trim();
+                if (!id || !name) return null;
+                return (
+                  <button
+                    key={`livecat-${id}`}
+                    onClick={() => goLiveCategorySearch(id)}
+                    className="rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500"
+                    title={`Browse ${name}`}
+                  >
+                    {name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
