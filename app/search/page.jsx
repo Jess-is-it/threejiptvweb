@@ -9,6 +9,9 @@ import HoverMovieCard from '../../components/HoverMovieCard';
 import { useSession } from '../../components/SessionProvider';
 import { readJsonSafe } from '../../lib/readJsonSafe';
 
+const GENRE_ALL_TOKEN = '__all__';
+const LIVE_ALL_TOKEN = '__all__';
+
 function normalizeSearchText(value) {
   return String(value || '')
     .toLowerCase()
@@ -331,8 +334,11 @@ export default function SearchPage() {
   const query = String(searchParams?.get('q') || '').trim();
   const genre = String(searchParams?.get('genre') || '').trim();
   const liveCat = String(searchParams?.get('liveCat') || '').trim();
+  const genreIsAll = genre === GENRE_ALL_TOKEN;
+  const liveCatIsAll = liveCat === LIVE_ALL_TOKEN;
+  const effectiveGenre = genreIsAll ? '' : genre;
   const deferredQuery = useDeferredValue(query);
-  const deferredGenre = useDeferredValue(genre);
+  const deferredGenre = useDeferredValue(effectiveGenre);
   const deferredLiveCat = useDeferredValue(liveCat);
 
   const [draft, setDraft] = useState(query);
@@ -510,7 +516,7 @@ export default function SearchPage() {
     return sortTextResults(seriesMatches, deferredQuery);
   }, [seriesMatches, deferredGenre, deferredQuery, seriesRankingLookup]);
 
-  const hasLibrarySearch = Boolean(query || genre);
+  const hasLibrarySearch = Boolean(query || effectiveGenre || genreIsAll);
   const baseResults = hasLibrarySearch ? movieResults.length + seriesResults.length : 0;
   const hasActiveSearch = Boolean(query || genre || liveCat);
   const trimmedDraft = draft.trim();
@@ -571,10 +577,10 @@ export default function SearchPage() {
     });
   };
 
-  const heading = genre
+  const heading = effectiveGenre
     ? query
-      ? `Results for "${query}" in ${genre}`
-      : `${genre}`
+      ? `Results for "${query}" in ${effectiveGenre}`
+      : `${effectiveGenre}`
     : query
       ? `Results for "${query}"`
       : 'Start a search';
@@ -610,9 +616,8 @@ export default function SearchPage() {
   }, [liveChannels, liveCategoryNameById]);
 
   const liveResults = useMemo(() => {
-    const pool = deferredLiveCat
-      ? liveItems.filter((item) => String(item.categoryId) === String(deferredLiveCat))
-      : liveItems;
+    const catFilter = deferredLiveCat && deferredLiveCat !== LIVE_ALL_TOKEN ? deferredLiveCat : '';
+    const pool = catFilter ? liveItems.filter((item) => String(item.categoryId) === String(catFilter)) : liveItems;
     const matched = deferredQuery ? matchItems(pool, deferredQuery) : pool;
     return sortTextResults(matched, deferredQuery);
   }, [liveItems, deferredQuery, deferredLiveCat]);
@@ -676,11 +681,11 @@ export default function SearchPage() {
             </button>
           </form>
 
-          {genre ? (
+          {effectiveGenre ? (
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <div className="inline-flex items-center gap-2 rounded-full border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200">
                 <span className="text-neutral-400">Genre</span>
-                <span className="font-medium text-white">{genre}</span>
+                <span className="font-medium text-white">{effectiveGenre}</span>
               </div>
               <button
                 type="button"
@@ -705,18 +710,21 @@ export default function SearchPage() {
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={clearGenreFilter}
+                  onClick={() => {
+                    if (genreIsAll) clearGenreFilter();
+                    else applyGenreFilter(GENRE_ALL_TOKEN);
+                  }}
                   className={`rounded-full border px-3 py-1.5 text-xs transition ${
-                    genre
-                      ? 'border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white'
-                      : 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                    genreIsAll
+                      ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                      : 'border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white'
                   }`}
                 >
                   All
                 </button>
 
                 {categories.map((category) => {
-                  const active = normalizeGenreText(category.name) === normalizeGenreText(genre);
+                  const active = normalizeGenreText(category.name) === normalizeGenreText(effectiveGenre);
                   return (
                     <button
                       key={`search-genre-${category.name.toLowerCase()}`}
@@ -746,11 +754,14 @@ export default function SearchPage() {
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={clearLiveCategoryFilter}
+                  onClick={() => {
+                    if (liveCatIsAll) clearLiveCategoryFilter();
+                    else applyLiveCategoryFilter(LIVE_ALL_TOKEN);
+                  }}
                   className={`rounded-full border px-3 py-1.5 text-xs transition ${
-                    liveCat
-                      ? 'border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white'
-                      : 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                    liveCatIsAll
+                      ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                      : 'border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white'
                   }`}
                 >
                   All
@@ -760,7 +771,7 @@ export default function SearchPage() {
                   const id = String(category?.id || '').trim();
                   const name = String(category?.name || '').trim();
                   if (!id || !name) return null;
-                  const active = String(id) === String(liveCat);
+                  const active = !liveCatIsAll && String(id) === String(liveCat);
                   return (
                     <button
                       key={`search-livecat-${id}`}
@@ -797,9 +808,9 @@ export default function SearchPage() {
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h2 className="text-xl font-semibold text-white">
-                  {genre ? (
+                  {effectiveGenre ? (
                     <>
-                      Genre <span className="text-[var(--brand)]">{genre}</span>
+                      Genre <span className="text-[var(--brand)]">{effectiveGenre}</span>
                       {query ? (
                         <>
                           {' '}
@@ -816,7 +827,7 @@ export default function SearchPage() {
                       <>
                         Live TV{' '}
                         <span className="text-[var(--brand)]">
-                          {liveCategoryNameById.get(String(liveCat)) || 'Category'}
+                          {liveCatIsAll ? 'All' : liveCategoryNameById.get(String(liveCat)) || 'Category'}
                         </span>
                       </>
                     ) : (
@@ -830,7 +841,7 @@ export default function SearchPage() {
                     : `${totalResultsCount} result${totalResultsCount === 1 ? '' : 's'} found`}
                 </p>
               </div>
-              {genre ? (
+              {effectiveGenre ? (
                 <div className="text-right text-xs text-neutral-500">
                   {genreRankingLoading ? 'Sorting by TMDB popularity…' : 'Sorted by TMDB popularity'}
                 </div>
@@ -847,7 +858,7 @@ export default function SearchPage() {
               <div className="mt-5 rounded-2xl border border-neutral-800 bg-neutral-950/40 p-8 text-center">
                 <h3 className="text-lg font-semibold text-white">No results found</h3>
                 <p className="mt-2 text-sm text-neutral-400">
-                  {genre
+                  {effectiveGenre
                     ? 'Try a different genre, or search within this genre by title or year.'
                     : 'Try a different title, a shorter phrase, or a release year.'}
                 </p>
