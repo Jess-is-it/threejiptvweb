@@ -2,6 +2,7 @@
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Protected from '../../components/Protected';
 import HoverMovieCard from '../../components/HoverMovieCard';
@@ -219,6 +220,39 @@ function SearchResultsGrid({ items, kind = 'movie' }) {
   );
 }
 
+function LiveResultsGrid({ items }) {
+  return (
+    <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+      {items.map((item) => (
+        <div key={`live-${item.id}`} className="min-w-0">
+          <Link
+            href={item.href}
+            onClick={() => {
+              try {
+                sessionStorage.setItem('3jtv.playIntent', String(Date.now()));
+              } catch {}
+            }}
+            className="block"
+          >
+            <div className="h-16 w-full overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60 hover:border-neutral-600 sm:h-20">
+              {item?.image ? (
+                <img src={item.image} alt="" className="h-full w-full object-cover" loading="lazy" />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-[11px] text-neutral-500">
+                  No Logo
+                </div>
+              )}
+            </div>
+            <div className="mt-1 line-clamp-1 text-[11px] font-medium text-neutral-200">
+              {item?.title || 'Untitled'}
+            </div>
+          </Link>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SearchSkeletonGrid() {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
@@ -296,18 +330,23 @@ export default function SearchPage() {
 
   const query = String(searchParams?.get('q') || '').trim();
   const genre = String(searchParams?.get('genre') || '').trim();
+  const liveCat = String(searchParams?.get('liveCat') || '').trim();
   const deferredQuery = useDeferredValue(query);
   const deferredGenre = useDeferredValue(genre);
+  const deferredLiveCat = useDeferredValue(liveCat);
 
   const [draft, setDraft] = useState(query);
   const [movies, setMovies] = useState([]);
   const [series, setSeries] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [liveCategories, setLiveCategories] = useState([]);
+  const [liveChannels, setLiveChannels] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [genreRanking, setGenreRanking] = useState(null);
   const [genreRankingLoading, setGenreRankingLoading] = useState(false);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [showAllGenres, setShowAllGenres] = useState(false);
 
   useEffect(() => {
     setDraft(query);
@@ -325,11 +364,12 @@ export default function SearchPage() {
     (async () => {
       try {
         const qs = `?streamBase=${encodeURIComponent(session.streamBase)}`;
-        const [moviesRes, movieCatsRes, seriesRes, seriesCatsRes] = await Promise.all([
+        const [moviesRes, movieCatsRes, seriesRes, seriesCatsRes, liveRes] = await Promise.all([
           fetch(`/api/xuione/vod${qs}`, { cache: 'no-store' }).then(readJsonSafe),
           fetch(`/api/xuione/vod/categories${qs}`, { cache: 'no-store' }).then(readJsonSafe),
           fetch(`/api/xuione/series${qs}`, { cache: 'no-store' }).then(readJsonSafe),
           fetch(`/api/xuione/series/categories${qs}`, { cache: 'no-store' }).then(readJsonSafe),
+          fetch('/api/xuione/live', { cache: 'no-store' }).then(readJsonSafe),
         ]);
         if (!alive) return;
 
@@ -349,6 +389,14 @@ export default function SearchPage() {
           ])
         );
         setCategories(mergeCategories(movieCatsRes?.categories || [], seriesCatsRes?.categories || []));
+
+        if (liveRes?.ok) {
+          setLiveCategories(Array.isArray(liveRes?.categories) ? liveRes.categories : []);
+          setLiveChannels(Array.isArray(liveRes?.channels) ? liveRes.channels : []);
+        } else {
+          setLiveCategories([]);
+          setLiveChannels([]);
+        }
 
         setMovies(
           (moviesRes.items || []).map((item) => ({
@@ -378,6 +426,8 @@ export default function SearchPage() {
           setMovies([]);
           setSeries([]);
           setCategories([]);
+          setLiveCategories([]);
+          setLiveChannels([]);
           setErr(error?.message || 'Failed to load the library.');
         }
       } finally {
@@ -461,8 +511,9 @@ export default function SearchPage() {
     return sortTextResults(seriesMatches, deferredQuery);
   }, [seriesMatches, deferredGenre, deferredQuery, seriesRankingLookup]);
 
-  const totalResults = movieResults.length + seriesResults.length;
-  const hasActiveSearch = Boolean(query || genre);
+  const hasLibrarySearch = Boolean(query || genre);
+  const baseResults = hasLibrarySearch ? movieResults.length + seriesResults.length : 0;
+  const hasActiveSearch = Boolean(query || genre || liveCat);
   const trimmedDraft = draft.trim();
   const deferredDraftQuery = useDeferredValue(trimmedDraft);
 
@@ -471,16 +522,17 @@ export default function SearchPage() {
     return sortTextResults(matchItems([...movies, ...series], deferredDraftQuery), deferredDraftQuery).slice(0, 8);
   }, [movies, series, deferredDraftQuery]);
 
-  const buildSearchUrl = (nextQuery, nextGenre) => {
+  const buildSearchUrl = (nextQuery, nextGenre, nextLiveCat) => {
     const nextParams = new URLSearchParams();
     if (nextGenre) nextParams.set('genre', nextGenre);
+    if (nextLiveCat) nextParams.set('liveCat', nextLiveCat);
     if (nextQuery) nextParams.set('q', nextQuery);
     return nextParams.toString() ? `/search?${nextParams.toString()}` : '/search';
   };
 
   const submitDraftSearch = () => {
     setSuggestionsOpen(false);
-    router.replace(buildSearchUrl(trimmedDraft, trimmedDraft ? '' : genre));
+    router.replace(buildSearchUrl(trimmedDraft, trimmedDraft ? '' : genre, liveCat));
   };
 
   const onSubmit = (event) => {
@@ -490,11 +542,20 @@ export default function SearchPage() {
 
   const applyGenreFilter = (nextGenre) => {
     setSuggestionsOpen(false);
-    router.replace(buildSearchUrl(trimmedDraft, nextGenre));
+    router.replace(buildSearchUrl(trimmedDraft, nextGenre, liveCat));
   };
 
   const clearGenreFilter = () => {
     applyGenreFilter('');
+  };
+
+  const applyLiveCategoryFilter = (nextLiveCat) => {
+    setSuggestionsOpen(false);
+    router.replace(buildSearchUrl(trimmedDraft, genre, nextLiveCat));
+  };
+
+  const clearLiveCategoryFilter = () => {
+    applyLiveCategoryFilter('');
   };
 
   const onSelectSuggestion = (item) => {
@@ -519,13 +580,60 @@ export default function SearchPage() {
       ? `Results for "${query}"`
       : 'Start a search';
 
+  const visibleGenreCategories = useMemo(() => {
+    if (!categories.length) return [];
+    if (showAllGenres) return categories.slice();
+    return categories.slice(0, 5);
+  }, [categories, showAllGenres]);
+
+  const liveCategoryNameById = useMemo(() => {
+    const map = new Map();
+    for (const category of liveCategories || []) {
+      const id = String(category?.id || '').trim();
+      const name = String(category?.name || '').trim();
+      if (!id || !name) continue;
+      map.set(id, name);
+    }
+    return map;
+  }, [liveCategories]);
+
+  const liveItems = useMemo(() => {
+    return (liveChannels || [])
+      .map((channel) => {
+        const id = String(channel?.id || '').trim();
+        if (!id) return null;
+        const categoryId = String(channel?.category_id || channel?.categoryId || '').trim();
+        return {
+          id,
+          kind: 'live',
+          title: String(channel?.name || `CH ${id}`).trim(),
+          image: String(channel?.logo || '').trim(),
+          categoryId,
+          categoryName: categoryId ? String(liveCategoryNameById.get(categoryId) || '').trim() : '',
+          href: `/watch/live/${id}?auto=1`,
+        };
+      })
+      .filter(Boolean);
+  }, [liveChannels, liveCategoryNameById]);
+
+  const liveResults = useMemo(() => {
+    const pool = deferredLiveCat
+      ? liveItems.filter((item) => String(item.categoryId) === String(deferredLiveCat))
+      : liveItems;
+    const matched = deferredQuery ? matchItems(pool, deferredQuery) : pool;
+    return sortTextResults(matched, deferredQuery);
+  }, [liveItems, deferredQuery, deferredLiveCat]);
+
+  const liveShouldShow = Boolean(hasActiveSearch && (deferredQuery || deferredLiveCat) && liveResults.length);
+  const totalResultsCount = baseResults + (liveShouldShow ? liveResults.length : 0);
+
   return (
     <Protected>
       <section className="px-4 py-6 sm:px-6 lg:px-10">
         <div className="rounded-2xl border border-neutral-800 bg-neutral-950/70 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)] backdrop-blur sm:p-6">
           <div className="text-xs font-semibold uppercase tracking-[0.24em] text-neutral-400">Search</div>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-            Find Movies And Series
+            Find Movies, Series, And Live TV
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-neutral-400">
             Search across your current 3J TV library by title, year, or keywords.
@@ -551,7 +659,7 @@ export default function SearchPage() {
                       setSuggestionsOpen(false);
                     }
                   }}
-                  placeholder="Search movies, series..."
+                  placeholder="Search movies, series, live TV..."
                   className="w-full rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-white outline-none ring-2 ring-transparent placeholder:text-neutral-500 focus:border-neutral-700 focus:ring-white/10"
                 />
               </label>
@@ -595,7 +703,7 @@ export default function SearchPage() {
           {categories.length ? (
             <div className="mt-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-sm font-semibold text-white">Genres</div>
+                <div className="text-sm font-semibold text-white">Movie Genres</div>
                 <div className="text-xs text-neutral-500">
                   Select a genre to filter movies and series together
                 </div>
@@ -614,7 +722,7 @@ export default function SearchPage() {
                   All
                 </button>
 
-                {categories.map((category) => {
+                {visibleGenreCategories.map((category) => {
                   const active = normalizeGenreText(category.name) === normalizeGenreText(genre);
                   return (
                     <button
@@ -631,6 +739,60 @@ export default function SearchPage() {
                     </button>
                   );
                 })}
+
+                {categories.length > 5 ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllGenres((prev) => !prev)}
+                    className="rounded-full border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:border-neutral-500 hover:text-white"
+                  >
+                    {showAllGenres ? 'Less' : 'More'}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {liveCategories.length ? (
+            <div className="mt-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm font-semibold text-white">Live TV Categories</div>
+                <div className="text-xs text-neutral-500">Filter Live TV results below</div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={clearLiveCategoryFilter}
+                  className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                    liveCat
+                      ? 'border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white'
+                      : 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                  }`}
+                >
+                  All
+                </button>
+
+                {liveCategories.map((category) => {
+                  const id = String(category?.id || '').trim();
+                  const name = String(category?.name || '').trim();
+                  if (!id || !name) return null;
+                  const active = String(id) === String(liveCat);
+                  return (
+                    <button
+                      key={`search-livecat-${id}`}
+                      type="button"
+                      onClick={() => applyLiveCategoryFilter(id)}
+                      className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                        active
+                          ? 'border-[var(--brand)] bg-[var(--brand)]/15 text-white'
+                          : 'border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white'
+                      }`}
+                    >
+                      {name}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ) : null}
@@ -642,7 +804,7 @@ export default function SearchPage() {
           <section className="mt-8 rounded-2xl border border-dashed border-neutral-800 bg-neutral-950/40 p-8 text-center">
             <h2 className="text-lg font-semibold text-white">{heading}</h2>
             <p className="mt-2 text-sm text-neutral-400">
-              Use the box above to search your movies and series library.
+              Use the box above to search your movies, series, and live TV.
             </p>
           </section>
         ) : null}
@@ -663,15 +825,26 @@ export default function SearchPage() {
                       ) : null}
                     </>
                   ) : (
-                    <>
-                      Results for <span className="text-[var(--brand)]">&quot;{query}&quot;</span>
-                    </>
+                    query ? (
+                      <>
+                        Results for <span className="text-[var(--brand)]">&quot;{query}&quot;</span>
+                      </>
+                    ) : liveCat ? (
+                      <>
+                        Live TV{' '}
+                        <span className="text-[var(--brand)]">
+                          {liveCategoryNameById.get(String(liveCat)) || 'Category'}
+                        </span>
+                      </>
+                    ) : (
+                      <>Results</>
+                    )
                   )}
                 </h2>
                 <p className="mt-1 text-sm text-neutral-400">
                   {loading
                     ? 'Searching your library…'
-                    : `${totalResults} result${totalResults === 1 ? '' : 's'} found`}
+                    : `${totalResultsCount} result${totalResultsCount === 1 ? '' : 's'} found`}
                 </p>
               </div>
               {genre ? (
@@ -687,7 +860,7 @@ export default function SearchPage() {
               </div>
             ) : null}
 
-            {!loading && !totalResults ? (
+            {!loading && !totalResultsCount ? (
               <div className="mt-5 rounded-2xl border border-neutral-800 bg-neutral-950/40 p-8 text-center">
                 <h3 className="text-lg font-semibold text-white">No results found</h3>
                 <p className="mt-2 text-sm text-neutral-400">
@@ -698,17 +871,24 @@ export default function SearchPage() {
               </div>
             ) : null}
 
-            {!loading && movieResults.length ? (
+            {!loading && hasLibrarySearch && movieResults.length ? (
               <section className="mt-6">
                 <h3 className="mb-4 text-lg font-semibold text-white">Movies ({movieResults.length})</h3>
                 <SearchResultsGrid items={movieResults} kind="movie" />
               </section>
             ) : null}
 
-            {!loading && seriesResults.length ? (
+            {!loading && hasLibrarySearch && seriesResults.length ? (
               <section className="mt-8">
                 <h3 className="mb-4 text-lg font-semibold text-white">Series ({seriesResults.length})</h3>
                 <SearchResultsGrid items={seriesResults} kind="series" />
+              </section>
+            ) : null}
+
+            {!loading && liveShouldShow ? (
+              <section className="mt-8">
+                <h3 className="mb-4 text-lg font-semibold text-white">Live TV ({liveResults.length})</h3>
+                <LiveResultsGrid items={liveResults} />
               </section>
             ) : null}
           </section>
