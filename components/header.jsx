@@ -7,7 +7,9 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useSession } from './SessionProvider';
 import { usePublicSettings } from './PublicSettingsProvider';
 import { useUserPreferences } from './UserPreferencesProvider';
+import { useProfileMode } from './useProfileMode';
 import { prefetchMovieCatalog, prefetchSeriesCatalog } from '../lib/publicCatalogCache';
+import { isKidsCategoryName } from '../lib/kidsMode';
 
 // icons
 import {
@@ -120,6 +122,7 @@ function NavLink({ href, children, onWarm }) {
 function SearchModal({ open, onClose }) {
   const router = useRouter();
   const { session } = useSession();
+  const { mode: profileMode } = useProfileMode();
   const [q, setQ] = useState('');
   const [categories, setCategories] = useState([]);
   const [liveCategories, setLiveCategories] = useState([]);
@@ -152,15 +155,22 @@ function SearchModal({ open, onClose }) {
           deduped.push(category);
         }
         deduped.sort((a, b) => a.name.localeCompare(b.name));
-        setCategories(deduped);
-        setLiveCategories(Array.isArray(live?.categories) ? live.categories : []);
+        const isKids = profileMode === 'kids';
+        setCategories(isKids ? deduped.filter((c) => isKidsCategoryName(c?.name)) : deduped);
+        setLiveCategories(
+          isKids
+            ? (Array.isArray(live?.categories) ? live.categories : []).filter((c) => isKidsCategoryName(c?.name))
+            : Array.isArray(live?.categories)
+              ? live.categories
+              : []
+        );
       } catch {
         setCategories([]);
         setLiveCategories([]);
       }
     };
     load();
-  }, [open, session?.streamBase]);
+  }, [open, session?.streamBase, profileMode]);
 
   const goSearch = (e) => {
     e?.preventDefault?.();
@@ -287,13 +297,9 @@ function ProfileMenu({ open, onClose }) {
   const { logout } = useSession();
   const { movieCardClickAction, setMovieCardClickAction } = useUserPreferences();
   const router = useRouter();
-  const [mode, setMode] = useState('adult'); // 'adult' or 'kids'
+  const { mode, setMode } = useProfileMode(); // 'adult' or 'kids'
   const ref = useRef(null);
 
-  useEffect(() => {
-    const saved = typeof window !== 'undefined' && localStorage.getItem('profile.mode');
-    if (saved === 'kids' || saved === 'adult') setMode(saved);
-  }, []);
   useEffect(() => {
     const onClick = (e) => {
       if (!open) return;
@@ -325,7 +331,6 @@ function ProfileMenu({ open, onClose }) {
         <button
           onClick={() => {
             setMode('adult');
-            localStorage.setItem('profile.mode', 'adult');
           }}
           className={cx(
             'flex w-full items-center justify-between rounded-md px-3 py-2 text-left hover:bg-white/10',
@@ -338,7 +343,6 @@ function ProfileMenu({ open, onClose }) {
         <button
           onClick={() => {
             setMode('kids');
-            localStorage.setItem('profile.mode', 'kids');
           }}
           className={cx(
             'flex w-full items-center justify-between rounded-md px-3 py-2 text-left hover:bg-white/10',
@@ -506,6 +510,7 @@ export default function Header() {
   const router = useRouter();
   const { session } = useSession();
   const { ready, settings } = usePublicSettings();
+  const { mode: profileMode } = useProfileMode();
   const pathname = usePathname() || '/';
   const [scrolled, setScrolled] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -657,6 +662,14 @@ export default function Header() {
 
           {/* Right: actions */}
           <div className="relative flex items-center gap-1">
+            {profileMode === 'kids' ? (
+              <span
+                className="hidden sm:inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
+                title="Kids mode is enabled"
+              >
+                KIDS Selected
+              </span>
+            ) : null}
             {/* Request (contextual) */}
             {requestEnabled ? (
               <Link

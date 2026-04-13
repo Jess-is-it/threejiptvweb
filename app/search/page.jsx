@@ -7,7 +7,9 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Protected from '../../components/Protected';
 import HoverMovieCard from '../../components/HoverMovieCard';
 import { useSession } from '../../components/SessionProvider';
+import { useProfileMode } from '../../components/useProfileMode';
 import { readJsonSafe } from '../../lib/readJsonSafe';
+import { filterKidsCatalogItems, isKidsCategoryName, pickKidsCategoryIds } from '../../lib/kidsMode';
 
 const GENRE_ALL_TOKEN = '__all__';
 const LIVE_ALL_TOKEN = '__all__';
@@ -329,6 +331,8 @@ export default function SearchPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { session } = useSession();
+  const { mode: profileMode } = useProfileMode();
+  const kidsMode = profileMode === 'kids';
   const searchFieldRef = useRef(null);
 
   const query = String(searchParams?.get('q') || '').trim();
@@ -484,13 +488,31 @@ export default function SearchPage() {
   const movieRankingLookup = genreRanking?.movie || emptyRankingLookup;
   const seriesRankingLookup = genreRanking?.series || emptyRankingLookup;
 
+  const categoriesView = useMemo(
+    () => (kidsMode ? categories.filter((c) => isKidsCategoryName(c?.name)) : categories),
+    [kidsMode, categories]
+  );
+  const moviesView = useMemo(() => (kidsMode ? filterKidsCatalogItems(movies) : movies), [kidsMode, movies]);
+  const seriesView = useMemo(() => (kidsMode ? filterKidsCatalogItems(series) : series), [kidsMode, series]);
+  const liveCategoryIdsView = useMemo(() => (kidsMode ? pickKidsCategoryIds(liveCategories) : new Set()), [kidsMode, liveCategories]);
+  const liveCategoriesView = useMemo(() => {
+    if (!kidsMode) return liveCategories;
+    if (!liveCategoryIdsView.size) return [];
+    return (Array.isArray(liveCategories) ? liveCategories : []).filter((c) => liveCategoryIdsView.has(String(c?.id || '').trim()));
+  }, [kidsMode, liveCategories, liveCategoryIdsView]);
+  const liveChannelsView = useMemo(() => {
+    if (!kidsMode) return liveChannels;
+    if (!liveCategoryIdsView.size) return [];
+    return (Array.isArray(liveChannels) ? liveChannels : []).filter((c) => liveCategoryIdsView.has(String(c?.category_id ?? '').trim()));
+  }, [kidsMode, liveChannels, liveCategoryIdsView]);
+
   const moviePool = useMemo(
-    () => filterGenreItems(movies, deferredGenre, movieRankingLookup),
-    [movies, deferredGenre, movieRankingLookup]
+    () => filterGenreItems(moviesView, deferredGenre, movieRankingLookup),
+    [moviesView, deferredGenre, movieRankingLookup]
   );
   const seriesPool = useMemo(
-    () => filterGenreItems(series, deferredGenre, seriesRankingLookup),
-    [series, deferredGenre, seriesRankingLookup]
+    () => filterGenreItems(seriesView, deferredGenre, seriesRankingLookup),
+    [seriesView, deferredGenre, seriesRankingLookup]
   );
 
   const movieMatches = useMemo(
@@ -524,8 +546,8 @@ export default function SearchPage() {
 
   const suggestionItems = useMemo(() => {
     if (!deferredDraftQuery) return [];
-    return sortTextResults(matchItems([...movies, ...series], deferredDraftQuery), deferredDraftQuery).slice(0, 8);
-  }, [movies, series, deferredDraftQuery]);
+    return sortTextResults(matchItems([...moviesView, ...seriesView], deferredDraftQuery), deferredDraftQuery).slice(0, 8);
+  }, [moviesView, seriesView, deferredDraftQuery]);
 
   const buildSearchUrl = (nextQuery, nextGenre, nextLiveCat) => {
     const nextParams = new URLSearchParams();
@@ -587,17 +609,17 @@ export default function SearchPage() {
 
   const liveCategoryNameById = useMemo(() => {
     const map = new Map();
-    for (const category of liveCategories || []) {
+    for (const category of liveCategoriesView || []) {
       const id = String(category?.id || '').trim();
       const name = String(category?.name || '').trim();
       if (!id || !name) continue;
       map.set(id, name);
     }
     return map;
-  }, [liveCategories]);
+  }, [liveCategoriesView]);
 
   const liveItems = useMemo(() => {
-    return (liveChannels || [])
+    return (liveChannelsView || [])
       .map((channel) => {
         const id = String(channel?.id || '').trim();
         if (!id) return null;
@@ -613,7 +635,7 @@ export default function SearchPage() {
         };
       })
       .filter(Boolean);
-  }, [liveChannels, liveCategoryNameById]);
+  }, [liveChannelsView, liveCategoryNameById]);
 
   const liveResults = useMemo(() => {
     const catFilter = deferredLiveCat && deferredLiveCat !== LIVE_ALL_TOKEN ? deferredLiveCat : '';
@@ -698,7 +720,7 @@ export default function SearchPage() {
             </div>
           ) : null}
 
-          {categories.length ? (
+          {categoriesView.length ? (
             <div className="mt-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-sm font-semibold text-white">Movie Genres</div>
@@ -723,7 +745,7 @@ export default function SearchPage() {
                   All
                 </button>
 
-                {categories.map((category) => {
+                {categoriesView.map((category) => {
                   const active = normalizeGenreText(category.name) === normalizeGenreText(effectiveGenre);
                   return (
                     <button
@@ -744,7 +766,7 @@ export default function SearchPage() {
             </div>
           ) : null}
 
-          {liveCategories.length ? (
+          {liveCategoriesView.length ? (
             <div className="mt-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-sm font-semibold text-white">Live TV Categories</div>
@@ -767,7 +789,7 @@ export default function SearchPage() {
                   All
                 </button>
 
-                {liveCategories.map((category) => {
+                {liveCategoriesView.map((category) => {
                   const id = String(category?.id || '').trim();
                   const name = String(category?.name || '').trim();
                   if (!id || !name) return null;

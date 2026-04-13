@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
+import { useProfileMode } from '../../components/useProfileMode';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
 import Row from '../../components/Row';
 import CatalogHero from '../../components/CatalogHero';
@@ -19,9 +20,12 @@ import {
   parseCatalogRowToken,
   selectRotatingCategory,
 } from '../../lib/catalogSettings';
+import { filterKidsCatalogItems, filterKidsUpcomingItems } from '../../lib/kidsMode';
 
 export default function SeriesPage() {
   const { session } = useSession();
+  const { mode: profileMode } = useProfileMode();
+  const kidsMode = profileMode === 'kids';
   const { settings } = usePublicSettings();
   const username = String(session?.user?.username || '').trim();
   const [all, setAll] = useState([]);
@@ -103,8 +107,18 @@ export default function SeriesPage() {
     };
   }, [username]);
 
+  const allView = useMemo(() => (kidsMode ? filterKidsCatalogItems(all) : all), [all, kidsMode]);
+  const worthToWaitView = useMemo(
+    () => (kidsMode ? filterKidsUpcomingItems(worthToWait) : worthToWait),
+    [worthToWait, kidsMode]
+  );
+  const leavingSoonView = useMemo(
+    () => (kidsMode ? filterKidsUpcomingItems(leavingSoon) : leavingSoon),
+    [leavingSoon, kidsMode]
+  );
+
   const catalog = useMemo(() => getCatalogSettings(settings || {}), [settings]);
-  const ranked = useMemo(() => [...all].sort((a, b) => (b.rating || 0) - (a.rating || 0)), [all]);
+  const ranked = useMemo(() => [...allView].sort((a, b) => (b.rating || 0) - (a.rating || 0)), [allView]);
   const top = useMemo(
     () =>
       selectRotatingCategory(ranked, {
@@ -114,8 +128,8 @@ export default function SeriesPage() {
     [ranked, catalog]
   );
   const recent = useMemo(
-    () => [...all].sort((a,b)=>(b.added||0)-(a.added||0)).slice(0, catalog.categories.recentlyAddedSeries.displayCount),
-    [all, catalog]
+    () => [...allView].sort((a,b)=>(b.added||0)-(a.added||0)).slice(0, catalog.categories.recentlyAddedSeries.displayCount),
+    [allView, catalog]
   );
   const seriesLayoutRows = useMemo(
     () => (Array.isArray(catalog.layouts?.seriesPage?.rows) ? catalog.layouts.seriesPage.rows : []),
@@ -129,12 +143,12 @@ export default function SeriesPage() {
     for (const token of seriesLayoutRows) {
       const row = parseCatalogRowToken(token);
       if (!row || row.kind !== 'genre') continue;
-      const items = all.filter((item) => catalogItemMatchesGenre(item, row.name)).slice(0, displayCount);
+      const items = allView.filter((item) => catalogItemMatchesGenre(item, row.name)).slice(0, displayCount);
       if (!items.length) continue;
       out.set(row.name, items);
     }
     return out;
-  }, [all, seriesLayoutRows, catalog.categories.seriesGenreRows.displayCount]);
+  }, [allView, seriesLayoutRows, catalog.categories.seriesGenreRows.displayCount]);
 
   return (
     <Protected>
@@ -147,8 +161,8 @@ export default function SeriesPage() {
           sourceItems={{
             top,
             recentlyAdded: recent,
-            leavingSoon,
-            worthToWait,
+            leavingSoon: leavingSoonView,
+            worthToWait: worthToWaitView,
           }}
           loading={loading}
         />
@@ -170,10 +184,10 @@ export default function SeriesPage() {
             return <Row key={token} title={catalog.labels.seriesPage.recentlyAdded} items={recent} loading={loading} kind="series" />;
           }
           if (row.key === 'leavingSoon') {
-            return <Row key={token} title={catalog.labels.seriesPage.leavingSoon} items={leavingSoon} loading={loading || leavingSoonLoading} kind="series" priority={true} />;
+            return <Row key={token} title={catalog.labels.seriesPage.leavingSoon} items={leavingSoonView} loading={loading || leavingSoonLoading} kind="series" priority={true} />;
           }
           if (row.key === 'worthToWait') {
-            return <Row key={token} title={catalog.labels.seriesPage.worthToWait} items={worthToWait} loading={loading || worthToWaitLoading} kind="series" priority={true} />;
+            return <Row key={token} title={catalog.labels.seriesPage.worthToWait} items={worthToWaitView} loading={loading || worthToWaitLoading} kind="series" priority={true} />;
           }
 
           return null;

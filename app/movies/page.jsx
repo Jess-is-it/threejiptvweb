@@ -4,6 +4,7 @@ import { ArrowUp } from 'lucide-react';
 import Protected from '../../components/Protected';
 import Row from '../../components/Row';
 import { useSession } from '../../components/SessionProvider';
+import { useProfileMode } from '../../components/useProfileMode';
 import CatalogHero from '../../components/CatalogHero';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
 import {
@@ -23,6 +24,7 @@ import {
   readUpcomingCatalog,
 } from '../../lib/publicCatalogCache';
 import { getCardPosterFallbackSrc, getCardPosterSrc } from '../../lib/catalogPoster';
+import { filterKidsCatalogItems, filterKidsUpcomingItems } from '../../lib/kidsMode';
 
 const ALL_MOVIES_VISIBILITY_TOP_OFFSET = 120;
 const ALL_MOVIES_VISIBILITY_BOTTOM_OFFSET = 120;
@@ -56,6 +58,8 @@ function normalizeMovieItems(items = []) {
 
 export default function MoviesPage() {
   const { session } = useSession();
+  const { mode: profileMode } = useProfileMode();
+  const kidsMode = profileMode === 'kids';
   const { settings } = usePublicSettings();
   const username = String(session?.user?.username || '').trim();
   const [all, setAll] = useState([]);
@@ -73,6 +77,16 @@ export default function MoviesPage() {
   const allMoviesLoadMoreRef = useRef(null);
   const prefetchedAllMoviePosterSrcsRef = useRef(new Set());
   const restoreAppliedRef = useRef(false);
+
+  const allView = useMemo(() => (kidsMode ? filterKidsCatalogItems(all) : all), [all, kidsMode]);
+  const worthToWaitView = useMemo(
+    () => (kidsMode ? filterKidsUpcomingItems(worthToWait) : worthToWait),
+    [worthToWait, kidsMode]
+  );
+  const leavingSoonView = useMemo(
+    () => (kidsMode ? filterKidsUpcomingItems(leavingSoon) : leavingSoon),
+    [leavingSoon, kidsMode]
+  );
 
   useEffect(() => {
     const currentHref =
@@ -191,22 +205,22 @@ export default function MoviesPage() {
   }, [loading]);
 
   useEffect(() => {
-    if (loading || !all.length) return;
+    if (loading || !allView.length) return;
 
-    const baseCount = initialAllMoviesCount(all.length, allMoviesColumns);
+    const baseCount = initialAllMoviesCount(allView.length, allMoviesColumns);
     setAllMoviesRenderedCount((current) => {
       const targetIndex = Math.max(0, Number(restoreState?.allMoviesIndex || 0) || 0);
       const restoreCount = restoreState
-        ? Math.min(all.length, Math.max(baseCount, targetIndex + allMoviesBatchSize(allMoviesColumns, 2)))
+        ? Math.min(allView.length, Math.max(baseCount, targetIndex + allMoviesBatchSize(allMoviesColumns, 2)))
         : baseCount;
       const nextCount = Math.max(current, restoreCount);
       return nextCount === current ? current : nextCount;
     });
-  }, [all.length, allMoviesColumns, loading, restoreState]);
+  }, [allView.length, allMoviesColumns, loading, restoreState]);
 
   useEffect(() => {
     if (loading) return;
-    if (allMoviesRenderedCount >= all.length) return;
+    if (allMoviesRenderedCount >= allView.length) return;
     const loadMoreEl = allMoviesLoadMoreRef.current;
     if (!loadMoreEl) return;
 
@@ -214,8 +228,8 @@ export default function MoviesPage() {
       (entries) => {
         if (!entries[0]?.isIntersecting) return;
         setAllMoviesRenderedCount((current) => {
-          if (current >= all.length) return current;
-          return Math.min(all.length, current + allMoviesBatchSize(allMoviesColumns, ALL_MOVIES_BATCH_ROWS));
+          if (current >= allView.length) return current;
+          return Math.min(allView.length, current + allMoviesBatchSize(allMoviesColumns, ALL_MOVIES_BATCH_ROWS));
         });
       },
       { rootMargin: ALL_MOVIES_LOAD_MORE_ROOT_MARGIN }
@@ -223,10 +237,10 @@ export default function MoviesPage() {
 
     observer.observe(loadMoreEl);
     return () => observer.disconnect();
-  }, [all.length, allMoviesColumns, allMoviesRenderedCount, loading]);
+  }, [allView.length, allMoviesColumns, allMoviesRenderedCount, loading]);
 
   const catalog = useMemo(() => getCatalogSettings(settings || {}), [settings]);
-  const byRating = useMemo(() => [...all].sort((a, b) => (b.rating || 0) - (a.rating || 0)), [all]);
+  const byRating = useMemo(() => [...allView].sort((a, b) => (b.rating || 0) - (a.rating || 0)), [allView]);
   const topMovies = useMemo(
     () =>
       selectRotatingCategory(byRating, {
@@ -237,7 +251,7 @@ export default function MoviesPage() {
   );
   const byAdded  = useMemo(
     () =>
-      [...all]
+      [...allView]
         .sort((a, b) => {
           const aAdded = Number(a?.added || 0) || 0;
           const bAdded = Number(b?.added || 0) || 0;
@@ -249,7 +263,7 @@ export default function MoviesPage() {
           return String(b?.id || '').localeCompare(String(a?.id || ''));
         })
         .slice(0, catalog.categories.recentlyAddedMovies.displayCount),
-    [all, catalog]
+    [allView, catalog]
   );
   const recommended = useMemo(
     () =>
@@ -270,24 +284,24 @@ export default function MoviesPage() {
     for (const token of movieLayoutRows) {
       const row = parseCatalogRowToken(token);
       if (!row || row.kind !== 'genre') continue;
-      const items = all.filter((item) => catalogItemMatchesGenre(item, row.name)).slice(0, displayCount);
+      const items = allView.filter((item) => catalogItemMatchesGenre(item, row.name)).slice(0, displayCount);
       if (!items.length) continue;
       out.set(row.name, items);
     }
     return out;
-  }, [all, movieLayoutRows, catalog.categories.movieGenreRows.displayCount]);
+  }, [allView, movieLayoutRows, catalog.categories.movieGenreRows.displayCount]);
   const visibleItems = useMemo(
-    () => all.slice(0, allMoviesRenderedCount),
-    [all, allMoviesRenderedCount]
+    () => allView.slice(0, allMoviesRenderedCount),
+    [allView, allMoviesRenderedCount]
   );
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!all.length || !allMoviesColumns) return;
+    if (!allView.length || !allMoviesColumns) return;
 
-    const nextItems = all.slice(
+    const nextItems = allView.slice(
       allMoviesRenderedCount,
-      Math.min(all.length, allMoviesRenderedCount + allMoviesColumns * 2)
+      Math.min(allView.length, allMoviesRenderedCount + allMoviesColumns * 2)
     );
     const prefetched = prefetchedAllMoviePosterSrcsRef.current;
     const preloadedImages = [];
@@ -309,20 +323,20 @@ export default function MoviesPage() {
         img.onerror = null;
       }
     };
-  }, [all, allMoviesColumns, allMoviesRenderedCount]);
+  }, [allView, allMoviesColumns, allMoviesRenderedCount]);
 
   useEffect(() => {
     if (!restoreState || restoreAppliedRef.current || loading) return;
-    if (!all.length) return;
+    if (!allView.length) return;
 
     const targetScrollY = Math.max(0, Number(restoreState?.scrollY || 0) || 0);
     const targetIndex = Math.max(0, Number(restoreState?.allMoviesIndex || 0) || 0);
 
     const attemptRestore = () => {
       const minimumCount = Math.min(
-        all.length,
+        allView.length,
         Math.max(
-          initialAllMoviesCount(all.length, allMoviesColumns),
+          initialAllMoviesCount(allView.length, allMoviesColumns),
           targetIndex + allMoviesBatchSize(allMoviesColumns, 2)
         )
       );
@@ -351,7 +365,7 @@ export default function MoviesPage() {
       window.cancelAnimationFrame(raf1);
       if (raf2) window.cancelAnimationFrame(raf2);
     };
-  }, [all.length, allMoviesColumns, loading, restoreState]);
+  }, [allView.length, allMoviesColumns, loading, restoreState]);
 
   useEffect(() => {
     const updateAllMoviesVisibility = () => {
@@ -378,7 +392,7 @@ export default function MoviesPage() {
       window.removeEventListener('scroll', updateAllMoviesVisibility);
       window.removeEventListener('resize', updateAllMoviesVisibility);
     };
-  }, [loading, all.length, allMoviesRenderedCount, movieLayoutRows]);
+  }, [loading, allView.length, allMoviesRenderedCount, movieLayoutRows]);
 
   const scrollToHero = useCallback(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -395,9 +409,9 @@ export default function MoviesPage() {
           sourceItems={{
             top: topMovies,
             recentlyAdded: byAdded,
-            leavingSoon,
+            leavingSoon: leavingSoonView,
             recommended,
-            worthToWait,
+            worthToWait: worthToWaitView,
           }}
           loading={loading}
         />
@@ -419,13 +433,13 @@ export default function MoviesPage() {
             return <Row key={token} title={catalog.labels.moviesPage.recentlyAdded} items={byAdded} loading={loading} kind="movie" />;
           }
           if (row.key === 'leavingSoon') {
-            return <Row key={token} title={catalog.labels.moviesPage.leavingSoon} items={leavingSoon} loading={loading || leavingSoonLoading} kind="movie" priority={true} />;
+            return <Row key={token} title={catalog.labels.moviesPage.leavingSoon} items={leavingSoonView} loading={loading || leavingSoonLoading} kind="movie" priority={true} />;
           }
           if (row.key === 'recommended') {
             return <Row key={token} title={catalog.labels.moviesPage.recommended} items={recommended} loading={loading} kind="movie" />;
           }
           if (row.key === 'worthToWait') {
-            return <Row key={token} title={catalog.labels.moviesPage.worthToWait} items={worthToWait} loading={loading || worthToWaitLoading} kind="movie" priority={true} />;
+            return <Row key={token} title={catalog.labels.moviesPage.worthToWait} items={worthToWaitView} loading={loading || worthToWaitLoading} kind="movie" priority={true} />;
           }
           if (row.key === 'allMovies') {
             return (
@@ -460,7 +474,7 @@ export default function MoviesPage() {
                         />
                       ))}
                     </div>
-                    {allMoviesRenderedCount < all.length ? (
+                    {allMoviesRenderedCount < allView.length ? (
                       <div ref={allMoviesLoadMoreRef} className="h-px w-full" aria-hidden="true" />
                     ) : null}
                   </>

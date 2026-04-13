@@ -4,7 +4,9 @@ import { ChevronLeft, ChevronRight, Play } from 'lucide-react';
 import { flushSync } from 'react-dom';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
+import { useProfileMode } from '../../components/useProfileMode';
 import VideoPlayer from '../../components/VideoPlayer';
+import { pickKidsCategoryIds } from '../../lib/kidsMode';
 
 const LIVE_REFRESH_MS = 15_000;
 const BRAND = 'var(--brand)';
@@ -353,6 +355,8 @@ function LiveCategoryRow({ group, activeId, onSelect }) {
 
 export default function LivePage() {
   const { session } = useSession();
+  const { mode: profileMode } = useProfileMode();
+  const kidsMode = profileMode === 'kids';
   const [headerH, setHeaderH] = useState(HEADER_H);
   const [categories, setCategories] = useState([]);
   const [channels, setChannels] = useState([]);
@@ -521,9 +525,21 @@ export default function LivePage() {
     return shouldHideDown({ downAt });
   };
 
+  const kidsCategoryIds = useMemo(() => (kidsMode ? pickKidsCategoryIds(categories) : new Set()), [kidsMode, categories]);
+  const categoriesView = useMemo(() => {
+    if (!kidsMode) return categories;
+    if (!kidsCategoryIds.size) return [];
+    return (Array.isArray(categories) ? categories : []).filter((c) => kidsCategoryIds.has(String(c?.id || '').trim()));
+  }, [kidsMode, categories, kidsCategoryIds]);
+  const channelsView = useMemo(() => {
+    if (!kidsMode) return channels;
+    if (!kidsCategoryIds.size) return [];
+    return (Array.isArray(channels) ? channels : []).filter((c) => kidsCategoryIds.has(String(c?.category_id ?? '').trim()));
+  }, [kidsMode, channels, kidsCategoryIds]);
+
   const visibleChannels = useMemo(() => {
-    return channels.filter((c) => c?.isUp !== false).filter((c) => !isDownHidden(c?.id));
-  }, [channels, downMap]);
+    return channelsView.filter((c) => c?.isUp !== false).filter((c) => !isDownHidden(c?.id));
+  }, [channelsView, downMap]);
 
   const channelsByCategory = useMemo(() => {
     const pinnedSet = new Set(pinnedIds.map((id) => String(id || '').trim()).filter(Boolean));
@@ -558,7 +574,7 @@ export default function LivePage() {
 
     const ordered = [];
     const seen = new Set();
-    for (const c of Array.isArray(categories) ? categories : []) {
+    for (const c of Array.isArray(categoriesView) ? categoriesView : []) {
       const id = String(c?.id ?? '').trim();
       if (!id || seen.has(id)) continue;
       seen.add(id);
@@ -571,7 +587,7 @@ export default function LivePage() {
       ordered.push({ id, name: id === 'UNCAT' ? 'Other' : `Category ${id}`, channels: list });
     }
     return ordered;
-  }, [visibleChannels, categories, pinnedIds]);
+  }, [visibleChannels, categoriesView, pinnedIds]);
 
   // Hero slides: one channel per category (highest uptime first). If the user last viewed a
   // channel in a category, that channel becomes the representative slide for that category.
