@@ -2,7 +2,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Play, Plus, Info } from 'lucide-react';
+import { ArrowRight, ChevronLeft, ChevronRight, Play, Plus } from 'lucide-react';
 import TmdbBackdrop from './TmdbBackdrop';
 import { readJsonSafe } from '../lib/readJsonSafe';
 import { msUntilRelease } from '../lib/releaseTime';
@@ -127,8 +127,10 @@ export default function HeroCarousel({
   autoplayMs = 7000,
   onPlay,
   onAdd,
-  onDetails,
   initialDetailsMap = {},
+  behindHeader = true,
+  sectionLabel = '',
+  sectionCta = null,
 }) {
   const slides = useMemo(() => items.filter(Boolean), [items]);
   const defaultAutoplayMs = useMemo(() => normalizeAutoplayMs(autoplayMs), [autoplayMs]);
@@ -421,11 +423,19 @@ export default function HeroCarousel({
   return (
     <div
       className="group relative -mx-4 sm:-mx-6 lg:-mx-10 mb-6 h-[68vh] md:h-[72vh] lg:h-[74vh] w-auto overflow-hidden"
-      style={{
-        marginTop: `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
-        paddingTop: `${headerH}px`,
-        touchAction: 'pan-y',
-      }}
+      style={
+        behindHeader
+          ? {
+              marginTop: `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
+              paddingTop: `${headerH}px`,
+              touchAction: 'pan-y',
+            }
+          : {
+              marginTop: 0,
+              paddingTop: 0,
+              touchAction: 'pan-y',
+            }
+      }
       onMouseEnter={handleHeroMouseEnter}
       onMouseLeave={handleHeroMouseLeave}
       onTouchStart={handleTouchStart}
@@ -466,7 +476,7 @@ export default function HeroCarousel({
       {showWorthToWaitBadge && countdownText ? (
         <div
           className="absolute right-4 z-20 inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-amber-300/35 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md sm:right-6 lg:right-10"
-          style={{ top: `${headerH + 18}px` }}
+          style={{ top: `${behindHeader ? headerH + 18 : 18}px` }}
         >
           <span className="uppercase tracking-[0.2em] text-amber-200/85">Coming soon</span>
           <span aria-hidden className="h-1 w-1 rounded-full bg-amber-200/70" />
@@ -476,6 +486,9 @@ export default function HeroCarousel({
 
       <div className="relative z-10 flex h-full flex-col justify-end px-4 sm:px-6 lg:px-10 pb-10">
         <div className="max-w-[72ch] bg-gradient-to-r from-black/80 via-black/50 to-transparent p-5 sm:p-6">
+          {sectionLabel ? (
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-white/70">{sectionLabel}</div>
+          ) : null}
           <h2 className="mb-2 text-3xl font-extrabold leading-tight sm:text-4xl md:text-6xl">
             {title}
           </h2>
@@ -515,14 +528,14 @@ export default function HeroCarousel({
                 <Plus />
               </button>
             ) : null}
-            {onDetails ? (
-              <button
-                onClick={() => onDetails(active)}
-                className="inline-flex h-[44px] w-[44px] items-center justify-center rounded-lg bg-white/10 hover:bg-white/15"
-                title="Details"
+            {sectionCta?.href ? (
+              <a
+                href={sectionCta.href}
+                className="inline-flex h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-4 text-sm font-semibold text-white no-underline backdrop-blur-md transition hover:bg-white/15"
               >
-                <Info />
-              </button>
+                <span>{sectionCta.label || 'Browse'}</span>
+                <ArrowRight size={16} />
+              </a>
             ) : null}
           </div>
         </div>

@@ -163,6 +163,7 @@ export default function VideoPlayer({
   const liveRecoverRef = useRef({ lastAt: 0, tries: 0 });
   const livePlaylistRecoverRef = useRef({ lastAt: 0, windowStartAt: 0, tries: 0 });
   const liveHardResetRef = useRef({ lastAt: 0, windowStartAt: 0, resets: 0 });
+  const liveStallRecoverRef = useRef({ lastAt: 0 });
   const { push, View: Toasts } = useToasts();
   const onMutedChangeRef = useRef(null);
 
@@ -211,6 +212,13 @@ export default function VideoPlayer({
   const markAutoplayBlocked = () => {
     setAutoplayBlocked(true);
     setNeedsUnmute(true);
+  };
+  const safePlay = (player) => {
+    if (!player) return;
+    try {
+      const playPromise = player.play?.();
+      if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
+    } catch {}
   };
 
   const isHlsSource = (raw) => {
@@ -482,12 +490,33 @@ export default function VideoPlayer({
             if (!data) return;
             const detail = String(data?.details || '').toLowerCase();
             const msg = String(data?.err?.message || data?.error?.message || '');
+            const isLive = meta?.type === 'live';
             const isLiveRecoverablePlaylistNoise =
-              meta?.type === 'live' &&
+              isLive &&
               (msg.toLowerCase().includes('media sequence mismatch') ||
                 detail === 'levelparsingerror' ||
                 detail === 'levelloaderror' ||
                 detail === 'manifestloaderror');
+            const isLiveRecoverableBufferNoise =
+              isLive &&
+              !data?.fatal &&
+              data.type === Hls.ErrorTypes.MEDIA_ERROR &&
+              (detail === 'bufferstallederror' ||
+                detail === 'bufferseekoverhole' ||
+                detail === 'buffernudgeonstall');
+            if (isLiveRecoverableBufferNoise) {
+              if (detail === 'bufferstallederror') {
+                const now = Date.now();
+                if (now - (liveStallRecoverRef.current.lastAt || 0) > 2500) {
+                  liveStallRecoverRef.current.lastAt = now;
+                  try {
+                    hlsInst?.startLoad?.(-1);
+                  } catch {}
+                  safePlay(v);
+                }
+              }
+              return;
+            }
             try {
               // Live IPTV panels can emit transient playlist mismatches even while playback stays healthy.
               // The recovery path below handles those; avoid spamming the console with expected noise.
@@ -519,9 +548,7 @@ export default function VideoPlayer({
                   };
                   attachSrc(bust(srcs.hls));
                   setTimeout(() => {
-                    try {
-                      v.play?.();
-                    } catch {}
+                    safePlay(v);
                   }, 200);
                   return true;
                 } catch {
@@ -551,7 +578,7 @@ export default function VideoPlayer({
                   try { hlsInst?.stopLoad?.(); } catch {}
                   try { hlsInst?.startLoad?.(-1); } catch {}
                   setTimeout(() => {
-                    try { v.play?.(); } catch {}
+                    safePlay(v);
                   }, 120);
                   return true;
                 } catch {
@@ -576,7 +603,7 @@ export default function VideoPlayer({
                   try { hlsInst?.startLoad?.(-1); } catch {}
                   // Keep current audio state.
                   setTimeout(() => {
-                    try { v.play?.(); } catch {}
+                    safePlay(v);
                   }, 150);
                   return true;
                 } catch {
@@ -847,9 +874,7 @@ export default function VideoPlayer({
                 attachSrc(srcs.hls);
                 // Best-effort resume
                 setTimeout(() => {
-                  try {
-                    v.play?.();
-                  } catch {}
+                  safePlay(v);
                 }, 250);
                 return;
               } catch {}

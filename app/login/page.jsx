@@ -19,7 +19,7 @@ export default function LoginPage() {
       void prefetchMovieCatalog(session.streamBase).catch(() => {});
       void prefetchSeriesCatalog(session.streamBase).catch(() => {});
     }
-    router.replace('/movies');
+    router.replace('/');
   }, [ready, session, router]);
 
   const [username, setUsername] = useState('');
@@ -47,7 +47,7 @@ export default function LoginPage() {
         void prefetchMovieCatalog(streamBase).catch(() => {});
         void prefetchSeriesCatalog(streamBase).catch(() => {});
       }
-      router.replace('/movies');
+      router.replace('/');
     } catch (e) {
       setErr(e.message || 'Login failed.');
     } finally {

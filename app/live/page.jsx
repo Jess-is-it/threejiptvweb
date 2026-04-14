@@ -1,6 +1,6 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Play, Volume2, VolumeX } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Play, Volume2, VolumeX } from 'lucide-react';
 import { flushSync } from 'react-dom';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
@@ -13,8 +13,9 @@ const BRAND = 'var(--brand)';
 const HEADER_H = 64;
 const SHELL_HEADER_OFFSET = 64;
 const SECTION_TOP_GAP = 24;
-const HERO_AUTOPLAY_MS = 12_000;
 const SCROLL_EDGE_TOLERANCE = 4;
+const HERO_LOAD_TIMEOUT_MS = 10_000;
+const HERO_SKIP_TTL_MS = 5 * 60 * 1000;
 
 async function readJsonSafe(res) {
   const text = await res.text().catch(() => '');
@@ -61,12 +62,6 @@ function downKey({ username = '', origin = '' } = {}) {
   const u = normalizeUsername(username) || 'anon';
   const o = String(origin || '').trim() || 'origin';
   return `3jtv.liveDown:${u}:${o}`;
-}
-
-function lastHeroKey({ username = '', origin = '' } = {}) {
-  const u = normalizeUsername(username) || 'anon';
-  const o = String(origin || '').trim() || 'origin';
-  return `3jtv.liveLastHero:${u}:${o}`;
 }
 
 function liveCatalogCacheKey({ origin = '' } = {}) {
@@ -198,6 +193,26 @@ function uptimeSecondsOf(channel) {
   const n = Number(channel?.uptimeSeconds);
   // Treat 0 as unknown: some catalogs don't provide real uptime.
   return Number.isFinite(n) && n > 0 ? n : -1;
+}
+
+function compareLiveRuntime(a, b) {
+  const uptimeA = uptimeSecondsOf(a);
+  const uptimeB = uptimeSecondsOf(b);
+  if (uptimeA !== uptimeB) return uptimeB - uptimeA;
+  // Fallback: older-running processes tend to have smaller PIDs on this XUI host.
+  const pidA = Number(a?.xuiPid);
+  const pidB = Number(b?.xuiPid);
+  if (Number.isFinite(pidA) && Number.isFinite(pidB) && pidA !== pidB) return pidA - pidB;
+  const numberA = Number(a?.number || 0) || 0;
+  const numberB = Number(b?.number || 0) || 0;
+  if (numberA && numberB && numberA !== numberB) return numberA - numberB;
+  return String(a?.name || '').localeCompare(String(b?.name || ''));
+}
+
+function pickLongestRunningChannel(rows) {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!list.length) return null;
+  return [...list].sort(compareLiveRuntime)[0] || null;
 }
 
 function LiveCategoryRow({ group, activeId, onSelect }) {
@@ -373,16 +388,13 @@ export default function LivePage() {
   const [pinnedIds, setPinnedIds] = useState([]);
   const [restartMap, setRestartMap] = useState({});
   const [downMap, setDownMap] = useState({});
+  const [heroSkipMap, setHeroSkipMap] = useState({});
   const [heroId, setHeroId] = useState('');
-  const [heroIndex, setHeroIndex] = useState(0);
   const [heroFs, setHeroFs] = useState(false);
   const [heroPlayerMode, setHeroPlayerMode] = useState(false);
   const [heroMsg, setHeroMsg] = useState('');
-  const [heroControlsHovered, setHeroControlsHovered] = useState(false);
   const [heroVideoLoading, setHeroVideoLoading] = useState(false);
   const [heroMuted, setHeroMuted] = useState(true);
-  const heroTimerRef = useRef(null);
-  const heroTouchRef = useRef({ active: false, x: 0, y: 0 });
   const servers = useMemo(() => (sessionOrigin ? [{ label: 'Current server', origin: sessionOrigin }] : []), [sessionOrigin]);
 
   useEffect(() => {
@@ -500,16 +512,7 @@ export default function LivePage() {
     setPinnedIds(pins);
     setRestartMap(restarts);
     setDownMap(down);
-
-    const lastHero = String(readJsonStorage(lastHeroKey({ username, origin: sessionOrigin }), '') || '').trim();
-    if (lastHero) setHeroId((current) => (String(current || '').trim() ? current : lastHero));
   }, [username, sessionOrigin]);
-
-  useEffect(() => {
-    const id = String(heroId || '').trim();
-    if (!id || !username || !sessionOrigin) return;
-    writeJsonStorage(lastHeroKey({ username, origin: sessionOrigin }), id);
-  }, [heroId, username, sessionOrigin]);
 
   useEffect(() => {
     const onFs = () => {
@@ -521,11 +524,6 @@ export default function LivePage() {
     onFs();
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, []);
-
-  const isDownHidden = (id) => {
-    const downAt = downMap?.[String(id || '').trim()] || 0;
-    return shouldHideDown({ downAt });
-  };
 
   const kidsCategoryIds = useMemo(() => (kidsMode ? pickKidsCategoryIds(categories) : new Set()), [kidsMode, categories]);
   const categoriesView = useMemo(() => {
@@ -540,7 +538,9 @@ export default function LivePage() {
   }, [kidsMode, channels, kidsCategoryIds]);
 
   const visibleChannels = useMemo(() => {
-    return channelsView.filter((c) => c?.isUp !== false).filter((c) => !isDownHidden(c?.id));
+    return channelsView
+      .filter((c) => c?.isUp !== false)
+      .filter((c) => !shouldHideDown({ downAt: downMap?.[String(c?.id || '').trim()] || 0 }));
   }, [channelsView, downMap]);
 
   const channelsByCategory = useMemo(() => {
@@ -551,17 +551,7 @@ export default function LivePage() {
       const pa = pinnedSet.has(ida);
       const pb = pinnedSet.has(idb);
       if (pa !== pb) return pa ? -1 : 1;
-      const ua = uptimeSecondsOf(a);
-      const ub = uptimeSecondsOf(b);
-      if (ua >= 0 && ub >= 0 && ua !== ub) return ub - ua;
-      // Heuristic uptime ordering: on the XUI host, older running processes tend to have smaller PIDs.
-      const pida = Number(a?.xuiPid);
-      const pidb = Number(b?.xuiPid);
-      if (Number.isFinite(pida) && Number.isFinite(pidb) && pida !== pidb) return pida - pidb;
-      const na = Number(a?.number || 0) || 0;
-      const nb = Number(b?.number || 0) || 0;
-      if (na && nb && na !== nb) return na - nb;
-      return String(a?.name || '').localeCompare(String(b?.name || ''));
+      return compareLiveRuntime(a, b);
     };
 
     const map = new Map();
@@ -591,105 +581,53 @@ export default function LivePage() {
     return ordered;
   }, [visibleChannels, categoriesView, pinnedIds]);
 
-  // Hero slides: one channel per category (highest uptime first). If the user last viewed a
-  // channel in a category, that channel becomes the representative slide for that category.
-  const heroSlides = useMemo(() => {
-    const wanted = String(heroId || '').trim();
-    const pickLongestUptime = (rows) => {
-      const list = Array.isArray(rows) ? rows : [];
-      if (!list.length) return null;
-      let best = null;
-      let bestUptime = -1;
-      for (const ch of list) {
-        const u = uptimeSecondsOf(ch);
-        if (u >= 0 && u > bestUptime) {
-          bestUptime = u;
-          best = ch;
-        }
-      }
-      if (best) return best;
-      // Fallback: older-running processes tend to have smaller PIDs on this XUI host.
-      let bestPid = null;
-      for (const ch of list) {
-        const pid = Number(ch?.xuiPid);
-        if (!Number.isFinite(pid)) continue;
-        if (bestPid === null || pid < bestPid) {
-          bestPid = pid;
-          best = ch;
-        }
-      }
-      return best || list[0];
-    };
-    const out = [];
-    for (const group of channelsByCategory) {
-      const list = Array.isArray(group?.channels) ? group.channels : [];
-      if (!list.length) continue;
-      const override = wanted ? list.find((c) => String(c?.id || '').trim() === wanted) : null;
-      const channel = override || pickLongestUptime(list);
-      if (!channel) continue;
-      out.push({
-        categoryId: String(group?.id || '').trim(),
-        categoryName: String(group?.name || '').trim() || 'Channels',
-        channel,
-      });
-    }
-    return out;
-  }, [channelsByCategory, heroId]);
+  const heroCandidateChannels = useMemo(() => {
+    const nowTs = Date.now();
+    const list = visibleChannels.filter((channel) => {
+      const id = String(channel?.id || '').trim();
+      return !id || !shouldHideDown({ downAt: heroSkipMap?.[id] || 0, nowTs, ttlMs: HERO_SKIP_TTL_MS });
+    });
+    return list.length ? list : visibleChannels;
+  }, [visibleChannels, heroSkipMap]);
+
+  const longestRunningHero = useMemo(() => pickLongestRunningChannel(heroCandidateChannels), [heroCandidateChannels]);
 
   useEffect(() => {
-    if (!heroSlides.length) {
-      setHeroId('');
-      setHeroIndex(0);
+    const wanted = String(heroId || '').trim();
+    if (!visibleChannels.length) {
+      if (wanted) setHeroId('');
       return;
     }
-    const wanted = String(heroId || '').trim();
-    let idx = wanted ? heroSlides.findIndex((s) => String(s?.channel?.id || '').trim() === wanted) : -1;
-    if (idx < 0) idx = Math.min(heroSlides.length - 1, Math.max(0, heroIndex));
-    const nextId = String(heroSlides[idx]?.channel?.id || '').trim();
-    if (idx !== heroIndex) setHeroIndex(idx);
+    const wantedSkipped = wanted
+      ? shouldHideDown({ downAt: heroSkipMap?.[wanted] || 0, ttlMs: HERO_SKIP_TTL_MS })
+      : false;
+    if (wanted && !wantedSkipped && visibleChannels.some((channel) => String(channel?.id || '').trim() === wanted)) return;
+    const nextId = String(longestRunningHero?.id || '').trim();
     if (nextId && nextId !== wanted) setHeroId(nextId);
-  }, [heroSlides]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visibleChannels, heroId, heroSkipMap, longestRunningHero]);
 
-  const activeSlide = heroSlides.length ? heroSlides[Math.min(heroSlides.length - 1, Math.max(0, heroIndex))] : null;
-  const activeHero = activeSlide?.channel || null;
-
-  const clearHeroTimer = () => {
-    if (heroTimerRef.current) clearTimeout(heroTimerRef.current);
-    heroTimerRef.current = null;
-  };
-
-  const moveToHeroSlide = (idx, { manual = false } = {}) => {
-    if (!heroSlides.length) return;
-    clearHeroTimer();
-    const n = heroSlides.length;
-    const nextIdx = Math.min(n - 1, Math.max(0, Number(idx || 0)));
-    const next = heroSlides[nextIdx];
-    const nextId = String(next?.channel?.id || '').trim();
-    if (!nextId) return;
-    if (manual) setHeroControlsHovered(true);
-    flushSync(() => {
-      setHeroIndex(nextIdx);
-      setHeroId(nextId);
-    });
-    if (manual) {
-      setTimeout(() => setHeroControlsHovered(false), 800);
+  const activeHero = useMemo(() => {
+    const wanted = String(heroId || '').trim();
+    if (wanted) {
+      const selected = visibleChannels.find((channel) => String(channel?.id || '').trim() === wanted);
+      const selectedSkipped = shouldHideDown({ downAt: heroSkipMap?.[wanted] || 0, ttlMs: HERO_SKIP_TTL_MS });
+      if (selected && !selectedSkipped) return selected;
     }
-  };
+    return longestRunningHero || null;
+  }, [visibleChannels, heroId, heroSkipMap, longestRunningHero]);
 
-  const stepHeroSlide = (delta, { manual = false } = {}) => {
-    if (!heroSlides.length) return;
-    const n = heroSlides.length;
-    const cur = Math.min(n - 1, Math.max(0, heroIndex));
-    const nextIdx = (cur + (delta > 0 ? 1 : -1) + n) % n;
-    moveToHeroSlide(nextIdx, { manual });
-  };
-
-  useEffect(() => {
-    clearHeroTimer();
-    if (!HERO_AUTOPLAY_MS || heroSlides.length < 2 || heroControlsHovered || heroFs) return undefined;
-    heroTimerRef.current = setTimeout(() => stepHeroSlide(1), HERO_AUTOPLAY_MS);
-    return () => clearHeroTimer();
-  }, [heroSlides.length, heroIndex, heroControlsHovered, heroFs]); // eslint-disable-line react-hooks/exhaustive-deps
+  const activeSlide = useMemo(() => {
+    const activeId = String(activeHero?.id || '').trim();
+    if (!activeId) return null;
+    const group = channelsByCategory.find((row) =>
+      (Array.isArray(row?.channels) ? row.channels : []).some((channel) => String(channel?.id || '').trim() === activeId)
+    );
+    return {
+      categoryId: String(group?.id || activeHero?.category_id || '').trim(),
+      categoryName: String(group?.name || '').trim() || 'Channels',
+      channel: activeHero,
+    };
+  }, [activeHero, channelsByCategory]);
 
   // Keep meta stable across background refreshes; VideoPlayer re-attaches its media pipeline when `meta` changes.
   const playerMeta = useMemo(() => {
@@ -728,32 +666,53 @@ export default function LivePage() {
       return { mp4: directIsHls ? '' : directSource, hls: directIsHls ? directSource : defaultHls, preferHls: true };
     }
     return { mp4: normalizedExt === 'm3u8' ? '' : defaultDirect, hls: defaultHls, preferHls: true };
-  }, [session?.streamBase, sessionOrigin, activeHero?.id, activeHero?.ext, activeHero?.directSource, activeHero?.streamSources]);
+  }, [session?.streamBase, sessionOrigin, activeHero]);
 
-  const setHeroById = (id) => {
+  const forceHeroAudio = () => {
+    try {
+      heroPlayerRef.current?.unmute?.();
+    } catch {}
+    try {
+      const video = heroWrapRef.current?.querySelector('video');
+      if (!video) return;
+      video.defaultMuted = false;
+      video.muted = false;
+      if (typeof video.volume === 'number' && video.volume === 0) video.volume = 1;
+      const promise = video.play?.();
+      if (promise && typeof promise.catch === 'function') promise.catch(() => {});
+      setHeroMuted(false);
+    } catch {}
+  };
+
+  const forceHeroAudioAfterSwitch = () => {
+    forceHeroAudio();
+    for (const delay of [120, 400, 900]) {
+      setTimeout(forceHeroAudio, delay);
+    }
+  };
+
+  const setHeroById = (id, { fullscreen = false } = {}) => {
     const wanted = String(id || '').trim();
     if (!wanted) return;
-    const idx = channelsByCategory.findIndex((g) =>
-      (Array.isArray(g?.channels) ? g.channels : []).some((c) => String(c?.id || '').trim() === wanted)
-    );
-    if (idx < 0 || idx >= heroSlides.length) return;
-    flushSync(() => {
-      setHeroIndex(idx);
-      setHeroId(wanted);
+    const exists = visibleChannels.some((channel) => String(channel?.id || '').trim() === wanted);
+    if (!exists) return;
+    setHeroSkipMap((current) => {
+      if (!current?.[wanted]) return current;
+      const next = { ...(current && typeof current === 'object' ? current : {}) };
+      delete next[wanted];
+      return next;
     });
+    flushSync(() => setHeroId(wanted));
+    if (fullscreen) {
+      playHeroFullscreen();
+      return;
+    }
     try {
       if (!document.fullscreenElement) window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch {}
     try {
       if (heroPlayerMode || document.fullscreenElement) {
-        heroPlayerRef.current?.unmute?.();
-        const v = heroVideoEl();
-        if (v) {
-          v.muted = false;
-          if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
-          const p = v.play?.();
-          if (p && typeof p.catch === 'function') p.catch(() => {});
-        }
+        forceHeroAudioAfterSwitch();
       }
     } catch {}
   };
@@ -779,6 +738,32 @@ export default function LivePage() {
       return next;
     });
   };
+
+  const skipHeroChannel = useCallback(
+    (id, message = 'Channel is taking too long. Switching…') => {
+      const currentId = String(id || '').trim();
+      if (!currentId) return;
+      const nowTs = Date.now();
+      setHeroSkipMap((current) => ({
+        ...(current && typeof current === 'object' ? current : {}),
+        [currentId]: nowTs,
+      }));
+      if (message) {
+        setHeroMsg(message);
+        setTimeout(() => setHeroMsg(''), 2500);
+      }
+      const fallback = pickLongestRunningChannel(
+        visibleChannels.filter((channel) => {
+          const id = String(channel?.id || '').trim();
+          if (!id || id === currentId) return false;
+          return !shouldHideDown({ downAt: heroSkipMap?.[id] || 0, nowTs, ttlMs: HERO_SKIP_TTL_MS });
+        })
+      );
+      const nextId = String(fallback?.id || '').trim();
+      if (nextId) setHeroId(nextId);
+    },
+    [heroSkipMap, visibleChannels]
+  );
 
   const heroVideoEl = () => {
     const host = heroWrapRef.current;
@@ -806,11 +791,21 @@ export default function LivePage() {
         return;
       }
 
+      const hasStarted = () => {
+        try {
+          return video.readyState >= 2 || Number(video.currentTime || 0) > 0;
+        } catch {
+          return false;
+        }
+      };
       const markLoading = () => {
-        if (alive) setHeroVideoLoading(true);
+        if (alive && !hasStarted()) setHeroVideoLoading(true);
       };
       const markReady = () => {
         if (alive) setHeroVideoLoading(false);
+      };
+      const markReadyIfStarted = () => {
+        if (hasStarted()) markReady();
       };
       const syncMuted = () => {
         if (!alive) return;
@@ -820,7 +815,7 @@ export default function LivePage() {
       };
 
       syncMuted();
-      if (video.readyState >= 2) markReady();
+      if (hasStarted()) markReady();
       else markLoading();
 
       video.addEventListener('loadstart', markLoading);
@@ -830,6 +825,8 @@ export default function LivePage() {
       video.addEventListener('loadeddata', markReady);
       video.addEventListener('canplay', markReady);
       video.addEventListener('playing', markReady);
+      video.addEventListener('timeupdate', markReadyIfStarted);
+      video.addEventListener('progress', markReadyIfStarted);
       video.addEventListener('error', markLoading);
       video.addEventListener('volumechange', syncMuted);
 
@@ -841,6 +838,8 @@ export default function LivePage() {
         video.removeEventListener('loadeddata', markReady);
         video.removeEventListener('canplay', markReady);
         video.removeEventListener('playing', markReady);
+        video.removeEventListener('timeupdate', markReadyIfStarted);
+        video.removeEventListener('progress', markReadyIfStarted);
         video.removeEventListener('error', markLoading);
         video.removeEventListener('volumechange', syncMuted);
       };
@@ -854,6 +853,27 @@ export default function LivePage() {
       cleanupVideo?.();
     };
   }, [activeHero?.id, playback.mp4, playback.hls]);
+
+  useEffect(() => {
+    const channelId = String(activeHero?.id || '').trim();
+    if (!channelId || heroFs || heroPlayerMode || !heroVideoLoading) return undefined;
+    const timer = setTimeout(() => {
+      const video = heroVideoEl();
+      const ready = (() => {
+        try {
+          return Boolean(video && (video.readyState >= 2 || Number(video.currentTime || 0) > 0));
+        } catch {
+          return false;
+        }
+      })();
+      if (ready) {
+        setHeroVideoLoading(false);
+        return;
+      }
+      skipHeroChannel(channelId);
+    }, HERO_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [activeHero?.id, heroFs, heroPlayerMode, heroVideoLoading, playback.mp4, playback.hls, skipHeroChannel]);
 
   const toggleHeroMute = () => {
     const shouldUnmute = heroMuted;
@@ -882,18 +902,7 @@ export default function LivePage() {
     try {
       host?.requestFullscreen?.();
     } catch {}
-    try {
-      heroPlayerRef.current?.unmute?.();
-    } catch {}
-    try {
-      const v = heroVideoEl();
-      if (v) {
-        v.muted = false;
-        if (typeof v.volume === 'number' && v.volume === 0) v.volume = 1;
-        const p = v.play?.();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
-      }
-    } catch {}
+    forceHeroAudioAfterSwitch();
     setTimeout(() => {
       try {
         if (!document.fullscreenElement) setHeroPlayerMode(false);
@@ -987,36 +996,12 @@ export default function LivePage() {
             paddingTop: heroFs ? '0px' : `${headerH}px`,
             touchAction: 'pan-y',
           }}
-          onMouseEnter={() => setHeroControlsHovered(true)}
-          onMouseLeave={() => setHeroControlsHovered(false)}
-          onTouchStart={(e) => {
-            if (heroFs) return;
-            const touch = e.changedTouches?.[0];
-            if (!touch) return;
-            heroTouchRef.current = { active: true, x: touch.clientX, y: touch.clientY };
-          }}
-          onTouchEnd={(e) => {
-            if (heroFs) return;
-            const touch = e.changedTouches?.[0];
-            if (!touch) return;
-            const st = heroTouchRef.current;
-            if (!st?.active) return;
-            heroTouchRef.current = { active: false, x: 0, y: 0 };
-            const deltaX = touch.clientX - st.x;
-            const deltaY = touch.clientY - st.y;
-            const absX = Math.abs(deltaX);
-            const absY = Math.abs(deltaY);
-            if (absX < 48 || absX <= absY * 1.1) return;
-            stepHeroSlide(deltaX < 0 ? 1 : -1, { manual: true });
-          }}
-          onTouchCancel={() => {
-            heroTouchRef.current = { active: false, x: 0, y: 0 };
-          }}
         >
           {/* background */}
           <div className="absolute inset-0">
             {activeHero ? (
               <VideoPlayer
+                key={heroPlayerMode ? 'live-fullscreen-player' : String(activeHero?.id || '')}
                 mp4={playback.mp4}
                 hls={playback.hls}
                 preferHls={playback.preferHls}
@@ -1039,9 +1024,9 @@ export default function LivePage() {
                   bumpRestart(activeHero?.id);
                   if (Number(code || 0) === 4) {
                     markDown(activeHero?.id);
-                    setHeroMsg(`Channel seems down. Switching…`);
-                    setTimeout(() => setHeroMsg(''), 2500);
-                    stepHeroSlide(1, { manual: true });
+                    skipHeroChannel(activeHero?.id, 'Channel seems down. Switching…');
+                  } else if (!heroPlayerMode && !heroFs) {
+                    skipHeroChannel(activeHero?.id, 'Channel could not start. Switching…');
                   }
                 }}
               />
@@ -1135,59 +1120,6 @@ export default function LivePage() {
             </button>
           ) : null}
 
-          {/* arrows */}
-          {!heroFs && heroSlides.length > 1 ? (
-            <>
-              <button
-                type="button"
-                className="
-                  absolute left-3 top-1/2 z-20 hidden -translate-y-1/2 rounded-full bg-black/40 p-2 text-white
-                  sm:inline-flex hover:bg-black/60 cursor-pointer transition
-                "
-                onClick={() => stepHeroSlide(-1, { manual: true })}
-                onMouseEnter={() => setHeroControlsHovered(true)}
-                onMouseLeave={() => setHeroControlsHovered(false)}
-                onFocus={() => setHeroControlsHovered(true)}
-                onBlur={() => setHeroControlsHovered(false)}
-                aria-label="Previous"
-              >
-                <ChevronLeft />
-              </button>
-              <button
-                type="button"
-                className="
-                  absolute right-3 top-1/2 z-20 hidden -translate-y-1/2 rounded-full bg-black/40 p-2 text-white
-                  sm:inline-flex hover:bg-black/60 cursor-pointer transition
-                "
-                onClick={() => stepHeroSlide(1, { manual: true })}
-                onMouseEnter={() => setHeroControlsHovered(true)}
-                onMouseLeave={() => setHeroControlsHovered(false)}
-                onFocus={() => setHeroControlsHovered(true)}
-                onBlur={() => setHeroControlsHovered(false)}
-                aria-label="Next"
-              >
-                <ChevronRight />
-              </button>
-
-              {/* dots */}
-              <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/55 px-2 py-1">
-                <div className="flex items-center gap-1">
-                  {heroSlides.map((s, i) => (
-                    <button
-                      type="button"
-                      key={String(s?.categoryId || i)}
-                      onClick={() => moveToHeroSlide(i, { manual: true })}
-                      className={`h-2 w-3 cursor-pointer rounded-full transition-all ${
-                        i === heroIndex ? 'w-4 bg-[var(--brand)]' : 'bg-white/60'
-                      }`}
-                      style={{ ['--brand']: BRAND }}
-                      aria-label={`Go to slide ${i + 1}`}
-                    />
-                  ))}
-                </div>
-              </div>
-            </>
-          ) : null}
         </div>
 
         {/* Channels */}
@@ -1215,7 +1147,7 @@ export default function LivePage() {
                   key={group.id}
                   group={group}
                   activeId={activeHero ? String(activeHero?.id || '').trim() : ''}
-                  onSelect={(id) => setHeroById(id)}
+                  onSelect={(id) => setHeroById(id, { fullscreen: true })}
                 />
               ))
           )}

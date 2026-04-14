@@ -96,7 +96,7 @@ function normalizeHeroItem(item, pageKey, sourceKey = '') {
     genre:
       item?.genre ||
       (Array.isArray(item?.genres) ? item.genres.filter(Boolean).join(', ') : ''),
-    heroPrimaryLabel: canDirectPlay ? 'Play' : pageKey === 'moviesPage' ? 'Open Movie' : 'Open Series',
+    heroPrimaryLabel: 'Play',
     heroDirectPlayId: canDirectPlay ? playbackId : 0,
     heroSourceKey: String(sourceKey || '').trim(),
     heroHref:
@@ -185,14 +185,21 @@ function metadataWindowSize(count) {
   );
 }
 
-function HeroSkeleton({ headerH = HEADER_H }) {
+function HeroSkeleton({ headerH = HEADER_H, behindHeader = true }) {
   return (
     <div
       className="-mx-4 sm:-mx-6 lg:-mx-10 mb-6 min-h-[58vh] md:min-h-[62vh] overflow-hidden bg-neutral-950"
-      style={{
-        marginTop: `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
-        paddingTop: `${headerH}px`,
-      }}
+      style={
+        behindHeader
+          ? {
+              marginTop: `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
+              paddingTop: `${headerH}px`,
+            }
+          : {
+              marginTop: 0,
+              paddingTop: 0,
+            }
+      }
     >
       <div className="h-full w-full animate-pulse bg-gradient-to-br from-neutral-900 via-neutral-800/30 to-neutral-900" />
     </div>
@@ -205,6 +212,9 @@ export default function CatalogHero({
   catalog,
   sourceItems = {},
   loading = false,
+  behindHeader = true,
+  sectionLabel = '',
+  sectionCta = null,
 }) {
   const rules = useMemo(
     () => (Array.isArray(catalog?.hero?.[pageKey]?.rules) ? catalog.hero[pageKey].rules : []),
@@ -402,13 +412,8 @@ export default function CatalogHero({
     if (href) window.location.href = href;
   };
 
-  const handleDetails = (item) => {
-    const href = String(item?.heroHref || item?.href || '').trim();
-    if (href) window.location.href = href;
-  };
-
   if (!slidesToRender.length) {
-    return loading ? <HeroSkeleton headerH={headerH} /> : null;
+    return loading ? <HeroSkeleton headerH={headerH} behindHeader={behindHeader} /> : null;
   }
 
   return (
@@ -416,7 +421,9 @@ export default function CatalogHero({
       items={slidesToRender}
       initialDetailsMap={detailsMap}
       onPlay={handlePrimaryAction}
-      onDetails={handleDetails}
+      behindHeader={behindHeader}
+      sectionLabel={sectionLabel}
+      sectionCta={sectionCta}
     />
   );
 }

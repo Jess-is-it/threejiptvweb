@@ -38,7 +38,7 @@ const BRAND = 'var(--brand)';
 const HEADER_H = 64;
 const HERO_HEADER_SCROLL_RATIO = 0.45;
 const HERO_HEADER_SCROLL_MIN = 180;
-const PRIMARY_PUBLIC_ROUTES = ['/movies', '/series', '/live', '/bookmarks'];
+const PRIMARY_PUBLIC_ROUTES = ['/', '/movies', '/series', '/live', '/bookmarks'];
 const PRIMARY_SECTION_ROUTES = new Set(PRIMARY_PUBLIC_ROUTES);
 
 // ---------- helpers ----------
@@ -119,10 +119,10 @@ function NavLink({ href, children, onWarm }) {
         'relative rounded-md px-3 py-2 no-underline font-bold cursor-pointer',
         'text-[14px] md:text-[16px]',
         active
-          ? 'text-white border-b-2 border-[var(--brand)] pb-[6px]'
+          ? 'text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
           : 'text-neutral-300 hover:text-white hover:bg-white/10'
       )}
-      style={{ ['--brand']: BRAND }}
+      style={active ? { background: BRAND } : undefined}
     >
       {children}
     </Link>
@@ -433,6 +433,7 @@ function MobileMenu({ open, onClose, onOpenSearch, requestCta, requestEnabled, s
 
         <nav className="flex flex-col gap-1">
           {[
+            ['/', 'Home'],
             ['/movies', 'Movies'],
             ...(showSeriesNav ? [['/series', 'Series']] : []),
             ['/live', 'Live TV'],
@@ -465,9 +466,10 @@ function MobileMenu({ open, onClose, onOpenSearch, requestCta, requestEnabled, s
               className={cx(
                 'rounded-lg px-3 py-3 no-underline',
                 active
-                  ? 'bg-white/10 text-white'
+                  ? 'text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
                   : 'text-neutral-300 hover:bg-white/10 hover:text-white'
               )}
+              style={active ? { background: BRAND } : undefined}
             >
               {label}
             </Link>
@@ -534,7 +536,7 @@ export default function Header() {
   const requestCta = requestCtaForPath(pathname);
   const requestEnabled = ready ? settings?.requests?.enabled !== false : false;
   const heroBackdropEnabled =
-    pathname.startsWith('/movies') || pathname.startsWith('/series') || pathname.startsWith('/live');
+    pathname === '/' || pathname.startsWith('/movies') || pathname.startsWith('/series') || pathname.startsWith('/live');
   const heroHeaderActive = heroBackdropEnabled && !scrolled;
   const warmMovieCatalog = useCallback(() => {
     if (!session?.streamBase) return;
@@ -686,23 +688,29 @@ export default function Header() {
           {/* Left: logo + nav */}
           <div className="flex items-center gap-8">
             <Link
-              href="/movies"
+              href="/"
               prefetch
               onMouseEnter={() => {
+                prefetchRoute(router, '/');
                 prefetchRoute(router, '/movies');
                 warmMovieCatalog();
+                warmSeriesCatalog();
               }}
               onFocus={() => {
+                prefetchRoute(router, '/');
                 prefetchRoute(router, '/movies');
                 warmMovieCatalog();
+                warmSeriesCatalog();
               }}
               onTouchStart={() => {
+                prefetchRoute(router, '/');
                 prefetchRoute(router, '/movies');
                 warmMovieCatalog();
+                warmSeriesCatalog();
               }}
               onClick={(event) => {
-                if (pathname === '/movies' || pathname.startsWith('/movies/') || !isPlainLeftNavClick(event)) return;
-                announceRouteStart('/movies');
+                if (pathname === '/' || !isPlainLeftNavClick(event)) return;
+                announceRouteStart('/');
               }}
               className="flex items-center"
             >
@@ -716,6 +724,10 @@ export default function Header() {
             </Link>
 
             <nav className="hidden md:flex items-center gap-2">
+              <NavLink href="/" onWarm={() => {
+                warmMovieCatalog();
+                warmSeriesCatalog();
+              }}>Home</NavLink>
               <NavLink href="/movies" onWarm={warmMovieCatalog}>Movies</NavLink>
               {showSeriesNav ? <NavLink href="/series" onWarm={warmSeriesCatalog}>Series</NavLink> : null}
               <NavLink href="/live">Live TV</NavLink>
