@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, ExternalLink, FilterX, Loader2, Plus, RefreshCw, Search, Settings, Trash2, UploadCloud } from 'lucide-react';
 
 import { readJsonSafe } from '../../../lib/readJsonSafe';
@@ -119,8 +120,12 @@ function ManualStatus({ item }) {
 }
 
 function ModalShell({ title, children, onClose }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-2xl rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] shadow-xl">
         <div className="flex items-center justify-between gap-3 border-b border-[var(--admin-border)] px-5 py-4">
           <div className="text-base font-semibold">{title}</div>
@@ -134,7 +139,8 @@ function ModalShell({ title, children, onClose }) {
         </div>
         <div className="px-5 py-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
