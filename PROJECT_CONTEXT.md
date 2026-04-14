@@ -125,6 +125,7 @@ There is currently **no automated test suite**. Use:
   - `/admin/media-library/series` (logical series list merged from XUI + NAS snapshot with compact filters, pagination, and delete management)
   - `/admin/media-library/movies/logs` (recent movie deletion logs, usually opened from the `Recent Deletes` KPI)
   - `/admin/media-library/series/logs` (recent series deletion logs, usually opened from the `Recent Deletes` KPI)
+  - Both list pages also support **manual uploads** (Add Movie/Series): folder picker (preserves subfolders like Season dirs), pre-upload report (target stage path + predicted keep/delete counts), required TMDB selection for series uploads, progress/status during upload, and a post-upload report showing cleaner moved/deleted totals. Manual uploads show in the “Manual uploads” panel, allow editing release dates, and provide `Release now` to move cleaned assets into the final library and trigger XUI watch folders.
 - Admin request management:
   - `/admin/requests` (request queue + status workflow + archive controls)
   - `/admin/request-settings` (daily limits, default landing category, status labels)
@@ -151,8 +152,12 @@ There is currently **no automated test suite**. Use:
 - Admin auth + profile: `/api/admin/login`, `/api/admin/logout`, `/api/admin/me`, `/api/admin/setup`
 - Admin config: `/api/admin/settings`, `/api/admin/secrets`, `/api/admin/users`, `/api/admin/reports`
 - Media Library admin: `GET/POST /api/admin/media-library`
-  - `GET` returns the merged movie/series management list with presence filters (`both|xui_only|nas_only`), category/genre filters, sorting, pagination, source health, and recent delete counts; `GET ?view=logs` returns the recent deletion log feed only
+  - `GET` returns the merged movie/series management list with presence filters (`both|xui_only|nas_only`), category/genre filters, sorting, pagination, source health, and recent delete counts
+  - `GET ?view=logs` returns the recent deletion log feed only
+  - `GET ?view=manual` returns recent manual upload queue rows (`downloadsMovies` / `downloadsSeries` with `manualUpload=true`) for management on the Media Library pages
   - `POST` with `action=delete` deletes selected logical titles from XUI and/or NAS, treating missing targets as `not existing` while keeping unavailable/failed targets explicit in the result
+  - `POST` multipart form with `action=manual_upload` uploads one or more media files to the Engine Host qB stage `Downloaded and Processing` folder (resolved via `libraryFolders` settings). Clients should also send per-file `filePaths` values (in the same order as `files`) so folder uploads preserve subdirectories (for example Season folders). The server optionally runs cleaning immediately (via `processingService.processOneCompleted`) and/or triggers `Release now` (via `releaseService.releaseDueSelections`). `Release now` is blocked unless cleaning is enabled.
+  - `POST action=manual_update_release_date` updates the queued manual upload release date (`YYYY-MM-DD`) before/after cleaning; `POST action=manual_release_now` forces release date to today (in the configured release timezone) and runs the release pass
 - Public auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/health`
 - Playback proxy: `/api/proxy/hls` (rewrites playlists, proxies segments/keys, handles fallback)
 - Content APIs: `/api/xuione/*`, `/api/tmdb/*`

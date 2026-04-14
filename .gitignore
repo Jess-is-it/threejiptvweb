@@ -12,6 +12,7 @@
 /.next/
 /out/
 /.next-runtime/
+/.next-dev/
 
 # production
 /build

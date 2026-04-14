@@ -27,6 +27,7 @@
         "unique-names-generator": "^4.7.1"
     },
     "devDependencies": {
+        "@playwright/test": "^1.59.1",
         "@tailwindcss/postcss": "^4.0.15",
         "eslint": "8.57.1",
         "eslint-config-next": "15.4.6",
