@@ -73,6 +73,11 @@ const autodownloadSourcesItems = [
   { href: '/admin/autodownload/sources/series', label: 'Series', icon: Tv },
 ];
 
+const mediaLibraryItems = [
+  { href: '/admin/media-library/movies', label: 'Movie List', icon: Film },
+  { href: '/admin/media-library/series', label: 'Series List', icon: Tv },
+];
+
 function Nav({ href, icon: Icon, children, onClick }) {
   const path = usePathname() || '';
   const active = path === href || (href !== '/admin' && path.startsWith(href));
@@ -98,6 +103,7 @@ function Nav({ href, icon: Icon, children, onClick }) {
 function pageTitle(pathname) {
   if (!pathname) return 'Admin';
   if (pathname === '/admin') return 'Dashboard';
+  if (pathname.startsWith('/admin/media-library')) return 'Media Library';
   if (pathname.startsWith('/admin/autodownload/autodelete') || pathname.startsWith('/admin/autodownload/deletion-log')) return 'AutoDelete';
   if (pathname.startsWith('/admin/autodownload')) return 'AutoDownload';
   if (pathname.startsWith('/admin/category-settings')) return 'Category Settings';
@@ -137,10 +143,14 @@ export default function AdminShell({ admin, children }) {
       pathname.startsWith(`${it.href}/`) ||
       (Array.isArray(it.aliases) ? it.aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`)) : false)
   );
+  const mediaLibraryActive =
+    pathname === '/admin/media-library' ||
+    pathname.startsWith('/admin/media-library/');
   const [autodownloadOpen, setAutodownloadOpen] = useState(autodownloadActive);
   const [autodownloadSettingsOpen, setAutodownloadSettingsOpen] = useState(autodownloadSettingsActive);
   const [autodownloadSourcesOpen, setAutodownloadSourcesOpen] = useState(autodownloadSourcesActive);
   const [autodownloadSelectionOpen, setAutodownloadSelectionOpen] = useState(autodownloadSelectionActive);
+  const [mediaLibraryOpen, setMediaLibraryOpen] = useState(mediaLibraryActive);
   const [autoDeleteOpen, setAutoDeleteOpen] = useState(autodownloadAutoDeleteActive);
   const [autoDeleteLogsOpen, setAutoDeleteLogsOpen] = useState(autoDeleteLogsActive);
   const [sanitySummary, setSanitySummary] = useState({ passed: null, total: null, status: 'warn' });
@@ -173,6 +183,10 @@ export default function AdminShell({ admin, children }) {
   useEffect(() => {
     if (autodownloadSelectionActive) setAutodownloadSelectionOpen(true);
   }, [autodownloadSelectionActive]);
+
+  useEffect(() => {
+    if (mediaLibraryActive) setMediaLibraryOpen(true);
+  }, [mediaLibraryActive]);
 
   useEffect(() => {
     if (autodownloadAutoDeleteActive) setAutoDeleteOpen(true);
@@ -751,6 +765,70 @@ export default function AdminShell({ admin, children }) {
                         </div>
                       ) : null}
                     </div>
+                  </div>
+                ) : null}
+              </div>
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setMediaLibraryOpen((v) => !v)}
+                  aria-expanded={mediaLibraryOpen}
+                  aria-controls="media-library-subnav"
+                  className={cx(
+                    'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium transition',
+                    mediaLibraryActive
+                      ? 'bg-[var(--admin-active-bg)] text-[var(--admin-text)]'
+                      : 'text-[var(--admin-muted)] hover:bg-[var(--admin-hover-bg)] hover:text-[var(--admin-text)]'
+                  )}
+                >
+                  <span className="flex items-center gap-3">
+                    <LibraryBig
+                      size={18}
+                      className={mediaLibraryActive ? 'text-[var(--admin-text)]' : 'text-[var(--admin-muted)]'}
+                    />
+                    Media Library
+                  </span>
+                  {mediaLibraryOpen ? (
+                    <ChevronDown
+                      size={16}
+                      className={mediaLibraryActive ? 'text-[var(--admin-text)]' : 'text-[var(--admin-muted)]'}
+                    />
+                  ) : (
+                    <ChevronRight
+                      size={16}
+                      className={mediaLibraryActive ? 'text-[var(--admin-text)]' : 'text-[var(--admin-muted)]'}
+                    />
+                  )}
+                </button>
+
+                {mediaLibraryOpen ? (
+                  <div id="media-library-subnav" className="space-y-1 pl-5">
+                    {mediaLibraryItems.map((it) => {
+                      const active = pathname === it.href || pathname.startsWith(`${it.href}/`);
+                      const Icon = it.icon;
+                      return (
+                        <Link
+                          key={it.href}
+                          href={it.href}
+                          onClick={() => setSidebarOpen(false)}
+                          className={cx(
+                            'group flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium no-underline transition-colors hover:no-underline hover:opacity-100',
+                            active
+                              ? 'bg-primary/15 text-primary ring-1 ring-primary/35'
+                              : 'text-[var(--admin-muted)] hover:bg-[var(--admin-hover-bg)] hover:text-[var(--admin-text)]'
+                          )}
+                        >
+                          <Icon
+                            size={16}
+                            className={cx(
+                              'shrink-0',
+                              active ? 'text-primary' : 'text-[var(--admin-muted)] group-hover:text-[var(--admin-text)]'
+                            )}
+                          />
+                          <span>{it.label}</span>
+                        </Link>
+                      );
+                    })}
                   </div>
                 ) : null}
               </div>

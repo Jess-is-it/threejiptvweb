@@ -68,6 +68,10 @@ Tip: do **not** run Next commands as `root`—it can create root-owned `.next/` 
 There is currently **no automated test suite**. Use:
 - `npm run lint` and `npm run build` for CI-like validation.
 - Manual smoke checks for key flows (login, movies/series playback, `/admin` settings edits).
+- Headless browser smoke checks over SSH are supported and preferred for admin/public UI verification; use Playwright + Chromium in headless mode, no GUI required.
+- On a fresh machine, install browser deps with `npx -y playwright@latest install-deps chromium` and `npx -y playwright@latest install chromium`.
+- For isolated smoke runs, start a temporary app instance with `PORT=3300 npm run start` after `npm run build`; for the live systemd app on port `3000`, rebuild the runtime bundle with `npm run build:runtime` first.
+- For destructive admin flows, verify dialogs and status text in headless mode but dismiss the final browser confirmation unless the current chat explicitly asks for real deletion.
 
 ### Commit & Pull Request Guidelines
 - Follow Conventional Commits used in history (e.g., `feat(admin): …`, `fix(ui): …`, `chore(deps): …`).
@@ -116,6 +120,11 @@ There is currently **no automated test suite**. Use:
 - Watch: `/watch/movie/[id]`, `/watch/series/[seriesId]/[episodeId]`, `/watch/live/[id]`
 - Admin auth: `/admin/login`, `/admin/setup`
 - Admin protected: `/admin`, `/admin/settings`, `/admin/category-settings`, `/admin/secrets`, `/admin/admins`, `/admin/reports`
+- Media Library admin:
+  - `/admin/media-library/movies` (logical movie list merged from XUI + NAS snapshot with compact filters, pagination, and delete management)
+  - `/admin/media-library/series` (logical series list merged from XUI + NAS snapshot with compact filters, pagination, and delete management)
+  - `/admin/media-library/movies/logs` (recent movie deletion logs, usually opened from the `Recent Deletes` KPI)
+  - `/admin/media-library/series/logs` (recent series deletion logs, usually opened from the `Recent Deletes` KPI)
 - Admin request management:
   - `/admin/requests` (request queue + status workflow + archive controls)
   - `/admin/request-settings` (daily limits, default landing category, status labels)
@@ -141,6 +150,9 @@ There is currently **no automated test suite**. Use:
 ### Core APIs
 - Admin auth + profile: `/api/admin/login`, `/api/admin/logout`, `/api/admin/me`, `/api/admin/setup`
 - Admin config: `/api/admin/settings`, `/api/admin/secrets`, `/api/admin/users`, `/api/admin/reports`
+- Media Library admin: `GET/POST /api/admin/media-library`
+  - `GET` returns the merged movie/series management list with presence filters (`both|xui_only|nas_only`), category/genre filters, sorting, pagination, source health, and recent delete counts; `GET ?view=logs` returns the recent deletion log feed only
+  - `POST` with `action=delete` deletes selected logical titles from XUI and/or NAS, treating missing targets as `not existing` while keeping unavailable/failed targets explicit in the result
 - Public auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/health`
 - Playback proxy: `/api/proxy/hls` (rewrites playlists, proxies segments/keys, handles fallback)
 - Content APIs: `/api/xuione/*`, `/api/tmdb/*`
@@ -212,6 +224,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
   - `autodownloadSettings.downloadClient.serviceUser/serviceGroup` now define the dedicated Linux account used by qBittorrent service (default `qbvpn`/`qbvpn`).
 - `downloadsMovies`, `downloadsSeries`
 - `processingLogs`, `selectionLogs`
+- `mediaLibraryLogs` (admin-triggered manual delete history for merged Media Library rows, storing per-target XUI/NAS statuses and actor/timestamp)
 - `sourceProviders`, `sourceProviderLogs`, `sourceProviderDomains`
   - `sourceProviderDomains` is the canonical per-domain/base health store (status, failure streak, backoff, last error, duration, ordering).
   - `sourceProviderDomainHealth` remains as a legacy compatibility array and is no longer authoritative.
@@ -228,6 +241,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Processing pipeline: `lib/server/autodownload/processingService.js`
 - XUI debounced scan logic: `lib/server/autodownload/xuiService.js`
 - qB provisioning/auth logic: `lib/server/autodownload/qbittorrentService.js`
+- Admin Media Library pages (`/admin/media-library/movies`, `/admin/media-library/series`) build one logical row per title/year by merging the live XUI media index with the persisted NAS inventory snapshot. NAS movie folder/file names like `Title (2025)-1080p` are normalized back to clean `title + year` before merging so the list does not split one title into separate `xui_only` / `nas_only` rows, and series with a missing NAS year can still merge title-only when there is exactly one safe XUI match. Deleting a row attempts every matching XUI id plus the tracked NAS path, records explicit per-target results (`deleted`, `not existing`, `unavailable`, `failed`), removes satisfied NAS rows from the cached inventory snapshot, clears XUI caches, and appends a manual admin action log in `mediaLibraryLogs`. The list pages keep filters in one compact horizontal row, do not render inline posters, and open recent deletion history in dedicated log pages via the clickable `Recent Deletes` KPI.
 - Home page (`/`) is the default landing page after login. It renders three full-bleed hero sections for Movies, Series, and Live TV; Movies/Series reuse the catalog hero rules with section labels and CTA buttons to `/movies` and `/series`, while the Live TV home hero fetches `/api/xuione/live`, selects the longest-uptime online channel per category, renders full-bleed channel artwork only until playback is requested, shows the live-count badge, opens the currently shown stream directly in a fullscreen `VideoPlayer` when **Play** is clicked, and keeps **Go to Live TV** linked to `/live`. In Kids mode, the Home page reuses the kids-safe catalog filters and only shows the Series hero when kids-safe series content exists.
 - Live TV page (`/live`) loads channels from `/api/xuione/live`, which uses XUI Admin `get_streams` plus XUI `get_categories` (configured via Admin Secrets) so channel rows show official live category names instead of raw category IDs. It only shows channels detected as online: the route filters to XUI “running” streams first (`stream_status`/`pid`), then optionally probes the actual stream URLs with a short in-memory TTL cache. Probes refresh **in the background** so API responses stay fast; streams confirmed as down are removed on the next poll (about every 15s) without a manual page reload. The route is served uncached (`Cache-Control: no-store`) and list/count updates are applied immediately even while the hero player is active. Channels are sorted by longest uptime first (best-effort via XUI PID ordering if no explicit uptime field exists), with any stored pinned IDs staying at the top. The hero is a movies-style full-bleed single-stream preview that defaults to the online channel with the longest runtime (falling back to XUI PID/number/name ordering when uptime is unknown), no longer auto-slides by category, keeps the user-selected channel while it remains online, shows the channel logo artwork while the background stream is still loading, shows an upper-right `Loading video…` pill during hero buffering, temporarily skips a hero preview channel if it never reaches playback readiness within about 10s, and exposes a lower-right mute/unmute action for the hero preview. Clicking a Live TV channel card now selects that channel and immediately enters fullscreen playback in the hero player. The Live page also caches the last successful channel list in `localStorage` so it renders immediately on return navigation, then refreshes in the background.
 - AutoDownload download/sync/control now opens an authenticated qB WebUI session using stored encrypted credentials (cookie-based login per SSH job) and treats HTTP/transport failures as hard errors instead of silent success.
@@ -492,6 +506,10 @@ npm run build:runtime
 sudo systemctl start 3j-tv
 sudo systemctl restart 3j-tv-scheduler.timer
 ```
+
+Important:
+- `3j-tv.service` runs with `NEXT_DIST_DIR=.next-runtime`, so `npm run build` updates `.next` only and does **not** change what the live app on port `3000` serves.
+- If a change is visible on a temporary `npm run start` instance but not on `http://<host>:3000`, rebuild with `npm run build:runtime` and restart `3j-tv.service`.
 
 ### Logs
 ```bash
