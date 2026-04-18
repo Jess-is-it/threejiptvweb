@@ -82,6 +82,13 @@ function logSortValue(log = {}) {
   );
 }
 
+function isManualUploadLog(log = {}) {
+  if (log?.manualUpload === true) return true;
+  if (String(log?.triggerReason || '').trim().toLowerCase() === 'manual_upload') return true;
+  const selectedItems = Array.isArray(log?.selectedItems) ? log.selectedItems : [];
+  return selectedItems.some((row) => String(row?.provider || '').trim().toLowerCase() === 'manual_upload');
+}
+
 function buildRecoveredSelectedItems(rows = [], { selectionLogId = '', type = 'movie' } = {}) {
   return dedupeSelectedItems(
     rows.map((row) => {
@@ -288,6 +295,7 @@ export async function GET(req) {
   await backfillReferencedSelectionLogs(db);
   const all = Array.isArray(db.selectionLogs) ? db.selectionLogs : [];
   const logs = all
+    .filter((x) => !isManualUploadLog(x))
     .filter((x) => {
       if (type === 'all') return true;
       const logType = String(x?.selectionType || 'movie').toLowerCase();
@@ -333,11 +341,13 @@ export async function DELETE(req) {
   const wantedType = type === 'all' ? 'all' : type === 'series' ? 'series' : 'movie';
   const deletedIds = new Set(
     all
+      .filter((x) => !isManualUploadLog(x))
       .filter((x) => wantedType === 'all' || String(x?.selectionType || 'movie').toLowerCase() === wantedType)
       .map((x) => String(x?.id || '').trim())
       .filter(Boolean)
   );
   const next = all.filter((x) => {
+    if (isManualUploadLog(x)) return true;
     const logType = String(x?.selectionType || 'movie').toLowerCase();
     const isTargeted = wantedType === 'all' || logType === wantedType;
     return !isTargeted;
@@ -456,6 +466,9 @@ export async function PATCH(req) {
   }
 
   const log = db.selectionLogs[logIdx] || {};
+  if (isManualUploadLog(log)) {
+    return NextResponse.json({ ok: false, error: 'Manual upload selection logs are not managed here.' }, { status: 400 });
+  }
   if (Number(log?.releasedAt || 0) > 0) {
     return NextResponse.json({ ok: false, error: 'Cannot edit release date after release processing.' }, { status: 400 });
   }

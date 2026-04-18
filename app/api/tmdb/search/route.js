@@ -14,13 +14,15 @@ export async function GET(req) {
     const q = String(searchParams.get('q') || '').trim();
     const type = String(searchParams.get('type') || 'movie').toLowerCase(); // movie | tv
     const page = String(searchParams.get('page') || '1');
+    const year = String(searchParams.get('year') || '').trim();
 
     if (!q) return NextResponse.json({ ok: false, error: 'Missing q' }, { status: 400 });
     const kind = type === 'tv' || type === 'series' ? 'tv' : 'movie';
+    const yearParam = /^\d{4}$/.test(year) ? `&${kind === 'tv' ? 'first_air_date_year' : 'primary_release_year'}=${encodeURIComponent(year)}` : '';
 
     const url = `${API}/search/${kind}?language=en-US&include_adult=false&page=${encodeURIComponent(page)}&query=${encodeURIComponent(
       q
-    )}&api_key=${encodeURIComponent(key)}`;
+    )}${yearParam}&api_key=${encodeURIComponent(key)}`;
     const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return NextResponse.json({ ok: false, error: `TMDb error ${r.status}` }, { status: 502 });
     const data = await r.json();
@@ -29,4 +31,3 @@ export async function GET(req) {
     return NextResponse.json({ ok: false, error: e?.message || 'Unexpected error' }, { status: 500 });
   }
 }
-

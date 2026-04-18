@@ -16,6 +16,7 @@ import {
   Link as LinkIcon,
   HardDrive,
   Download,
+  Upload,
   Search,
   Globe,
   Server,
@@ -73,10 +74,35 @@ const autodownloadSourcesItems = [
   { href: '/admin/autodownload/sources/series', label: 'Series', icon: Tv },
 ];
 
-const mediaLibraryItems = [
-  { href: '/admin/media-library/movies', label: 'Movie List', icon: Film },
-  { href: '/admin/media-library/series', label: 'Series List', icon: Tv },
+const mediaLibraryGroups = [
+  {
+    key: 'movies',
+    label: 'Movies',
+    icon: Film,
+    items: [
+      { href: '/admin/media-library/movies', label: 'Movie List', icon: Film, aliases: ['/admin/media-library/movies/logs'] },
+      { href: '/admin/media-library/movies/manual-uploaded', label: 'Manual Uploaded Movies', icon: Upload },
+    ],
+  },
+  {
+    key: 'series',
+    label: 'Series',
+    icon: Tv,
+    items: [
+      { href: '/admin/media-library/series', label: 'Series List', icon: Tv, aliases: ['/admin/media-library/series/logs'] },
+      { href: '/admin/media-library/series/manual-uploaded', label: 'Manual Uploaded Series', icon: Upload },
+    ],
+  },
 ];
+
+function matchesSidebarItem(pathname, item) {
+  const path = String(pathname || '');
+  const href = String(item?.href || '').trim();
+  if (!href) return false;
+  if (path === href) return true;
+  const aliases = Array.isArray(item?.aliases) ? item.aliases : [];
+  return aliases.some((alias) => path === alias || path.startsWith(`${alias}/`));
+}
 
 function Nav({ href, icon: Icon, children, onClick }) {
   const path = usePathname() || '';
@@ -143,6 +169,8 @@ export default function AdminShell({ admin, children }) {
       pathname.startsWith(`${it.href}/`) ||
       (Array.isArray(it.aliases) ? it.aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`)) : false)
   );
+  const mediaLibraryMoviesActive = pathname === '/admin/media-library/movies' || pathname.startsWith('/admin/media-library/movies/');
+  const mediaLibrarySeriesActive = pathname === '/admin/media-library/series' || pathname.startsWith('/admin/media-library/series/');
   const mediaLibraryActive =
     pathname === '/admin/media-library' ||
     pathname.startsWith('/admin/media-library/');
@@ -151,6 +179,8 @@ export default function AdminShell({ admin, children }) {
   const [autodownloadSourcesOpen, setAutodownloadSourcesOpen] = useState(autodownloadSourcesActive);
   const [autodownloadSelectionOpen, setAutodownloadSelectionOpen] = useState(autodownloadSelectionActive);
   const [mediaLibraryOpen, setMediaLibraryOpen] = useState(mediaLibraryActive);
+  const [mediaLibraryMoviesOpen, setMediaLibraryMoviesOpen] = useState(mediaLibraryMoviesActive);
+  const [mediaLibrarySeriesOpen, setMediaLibrarySeriesOpen] = useState(mediaLibrarySeriesActive);
   const [autoDeleteOpen, setAutoDeleteOpen] = useState(autodownloadAutoDeleteActive);
   const [autoDeleteLogsOpen, setAutoDeleteLogsOpen] = useState(autoDeleteLogsActive);
   const [sanitySummary, setSanitySummary] = useState({ passed: null, total: null, status: 'warn' });
@@ -187,6 +217,14 @@ export default function AdminShell({ admin, children }) {
   useEffect(() => {
     if (mediaLibraryActive) setMediaLibraryOpen(true);
   }, [mediaLibraryActive]);
+
+  useEffect(() => {
+    if (mediaLibraryMoviesActive) setMediaLibraryMoviesOpen(true);
+  }, [mediaLibraryMoviesActive]);
+
+  useEffect(() => {
+    if (mediaLibrarySeriesActive) setMediaLibrarySeriesOpen(true);
+  }, [mediaLibrarySeriesActive]);
 
   useEffect(() => {
     if (autodownloadAutoDeleteActive) setAutoDeleteOpen(true);
@@ -803,30 +841,74 @@ export default function AdminShell({ admin, children }) {
 
                 {mediaLibraryOpen ? (
                   <div id="media-library-subnav" className="space-y-1 pl-5">
-                    {mediaLibraryItems.map((it) => {
-                      const active = pathname === it.href || pathname.startsWith(`${it.href}/`);
-                      const Icon = it.icon;
+                    {mediaLibraryGroups.map((group) => {
+                      const groupActive = group.items.some((it) => matchesSidebarItem(pathname, it));
+                      const groupOpen = group.key === 'movies' ? mediaLibraryMoviesOpen : mediaLibrarySeriesOpen;
+                      const setGroupOpen = group.key === 'movies' ? setMediaLibraryMoviesOpen : setMediaLibrarySeriesOpen;
+                      const GroupIcon = group.icon;
                       return (
-                        <Link
-                          key={it.href}
-                          href={it.href}
-                          onClick={() => setSidebarOpen(false)}
-                          className={cx(
-                            'group flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium no-underline transition-colors hover:no-underline hover:opacity-100',
-                            active
-                              ? 'bg-primary/15 text-primary ring-1 ring-primary/35'
-                              : 'text-[var(--admin-muted)] hover:bg-[var(--admin-hover-bg)] hover:text-[var(--admin-text)]'
-                          )}
-                        >
-                          <Icon
-                            size={16}
+                        <div key={group.key} className="space-y-1">
+                          <button
+                            type="button"
+                            onClick={() => setGroupOpen((value) => !value)}
                             className={cx(
-                              'shrink-0',
-                              active ? 'text-primary' : 'text-[var(--admin-muted)] group-hover:text-[var(--admin-text)]'
+                              'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-medium transition',
+                              groupActive
+                                ? 'bg-[var(--admin-active-bg)] text-[var(--admin-text)]'
+                                : 'text-[var(--admin-muted)] hover:bg-[var(--admin-hover-bg)] hover:text-[var(--admin-text)]'
                             )}
-                          />
-                          <span>{it.label}</span>
-                        </Link>
+                          >
+                            <span className="flex items-center gap-2">
+                              <GroupIcon
+                                size={16}
+                                className={groupActive ? 'text-[var(--admin-text)]' : 'text-[var(--admin-muted)]'}
+                              />
+                              {group.label}
+                            </span>
+                            {groupOpen ? (
+                              <ChevronDown
+                                size={16}
+                                className={groupActive ? 'text-[var(--admin-text)]' : 'text-[var(--admin-muted)]'}
+                              />
+                            ) : (
+                              <ChevronRight
+                                size={16}
+                                className={groupActive ? 'text-[var(--admin-text)]' : 'text-[var(--admin-muted)]'}
+                              />
+                            )}
+                          </button>
+
+                          {groupOpen ? (
+                            <div className="space-y-1 pl-5">
+                              {group.items.map((it) => {
+                                const active = matchesSidebarItem(pathname, it);
+                                const Icon = it.icon;
+                                return (
+                                  <Link
+                                    key={it.href}
+                                    href={it.href}
+                                    onClick={() => setSidebarOpen(false)}
+                                    className={cx(
+                                      'group flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium no-underline transition-colors hover:no-underline hover:opacity-100',
+                                      active
+                                        ? 'bg-primary/15 text-primary ring-1 ring-primary/35'
+                                        : 'text-[var(--admin-muted)] hover:bg-[var(--admin-hover-bg)] hover:text-[var(--admin-text)]'
+                                    )}
+                                  >
+                                    <Icon
+                                      size={16}
+                                      className={cx(
+                                        'shrink-0',
+                                        active ? 'text-primary' : 'text-[var(--admin-muted)] group-hover:text-[var(--admin-text)]'
+                                      )}
+                                    />
+                                    <span>{it.label}</span>
+                                  </Link>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
                       );
                     })}
                   </div>
