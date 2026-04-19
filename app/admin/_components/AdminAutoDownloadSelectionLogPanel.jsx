@@ -1242,25 +1242,43 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                   <option value="deleted">Deleted</option>
                   <option value="size_rejected">Rejected by size limit</option>
                 </select>
-                {!isMovie ? (
-                  <select
-                    value={jobsPipeline}
-                    onChange={(e) => setJobsPipeline(e.target.value)}
-                    className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
-                  >
-                    <option value="all">All pipelines</option>
-                    <option value="newSeries">New S1 Pack</option>
-                    <option value="newSeriesEpisode">New Episode</option>
-                    <option value="existingSeries">Existing Series</option>
-                    <option value="deferredRetry">Retry</option>
-                    <option value="legacy">Legacy / unknown</option>
-                  </select>
-                ) : null}
               </div>
               <div className="text-xs text-[var(--admin-muted)]">
                 {jobsLoading ? 'Loading…' : `${filteredJobs.length} item${filteredJobs.length === 1 ? '' : 's'}`}
               </div>
             </div>
+
+            {!isMovie ? (
+              <div className="mt-3 overflow-x-auto rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-1">
+                <div className="flex min-w-max gap-1">
+                  {[
+                    { key: 'all', label: 'All' },
+                    { key: 'newSeries', label: 'New S1 Pack' },
+                    { key: 'newSeriesEpisode', label: 'New Episode' },
+                    { key: 'existingSeries', label: 'Existing Series' },
+                    { key: 'deferredRetry', label: 'Retry' },
+                    { key: 'legacy', label: 'Legacy' },
+                  ].map((tab) => {
+                    const active = String(jobsPipeline || 'all') === tab.key;
+                    return (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => setJobsPipeline(tab.key)}
+                        className={cx(
+                          'rounded-lg px-4 py-2 text-sm font-medium transition',
+                          active
+                            ? 'bg-[var(--admin-surface-solid)] text-[var(--admin-text)] shadow-sm'
+                            : 'text-[var(--admin-muted)] hover:bg-black/5 hover:text-[var(--admin-text)] data-[theme=dark]:hover:bg-white/5'
+                        )}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
 
             {jobsErr ? (
               <div className="mt-3 rounded-lg border px-3 py-2 text-sm" style={toneStyle('danger')}>
