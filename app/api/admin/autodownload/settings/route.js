@@ -5,6 +5,11 @@ import { getAdminDb } from '../../../../../lib/server/adminDb';
 import { updateAutodownloadSettings } from '../../../../../lib/server/autodownload/autodownloadDb';
 import { fetchVodStorageDevices } from '../../../../../lib/server/autodownload/mountService';
 import { normalizeReleaseDelayDays, normalizeReleaseTimezone } from '../../../../../lib/server/autodownload/releaseSchedule';
+import {
+  SERIES_PIPELINE_KEYS,
+  SERIES_PIPELINE_SIZE_FIELDS,
+  normalizeSeriesPipelines,
+} from '../../../../../lib/server/autodownload/seriesPipelines';
 import { bytesToGb, deriveStoragePolicy } from '../../../../../lib/server/autodownload/storagePolicy';
 
 export const runtime = 'nodejs';
@@ -193,6 +198,57 @@ function validateSelectionStrategy(
   };
 }
 
+function validateSeriesPipelineSettings(input, existingSettings) {
+  const errors = [];
+  const rawPipelines = input && typeof input === 'object' ? input : {};
+  const mergedForDefaults = {
+    ...(existingSettings || {}),
+    seriesPipelines: {
+      ...((existingSettings?.seriesPipelines && typeof existingSettings.seriesPipelines === 'object') ? existingSettings.seriesPipelines : {}),
+      ...rawPipelines,
+    },
+  };
+  const normalized = normalizeSeriesPipelines(mergedForDefaults);
+
+  for (const key of SERIES_PIPELINE_KEYS) {
+    const raw = rawPipelines?.[key] && typeof rawPipelines[key] === 'object' ? rawPipelines[key] : {};
+    const pipe = normalized[key];
+    const label =
+      key === 'newSeries'
+        ? 'New series Season 1 pack pipeline'
+        : key === 'newSeriesEpisode'
+          ? 'New series episode bootstrap pipeline'
+        : key === 'existingSeries'
+          ? 'Existing series continuation pipeline'
+          : 'Deferred/retry pipeline';
+    const sizeFields = SERIES_PIPELINE_SIZE_FIELDS[key] || { episode: true, season: true };
+    const strategy = validateSelectionStrategy(raw.strategy ?? pipe.strategy, {
+      label: `${label} strategy`,
+      defaults: pipe.strategy,
+    });
+    errors.push(...strategy.errors);
+
+    const minSeeders = clampNum(raw.minSeeders ?? pipe.minSeeders, { min: 0, max: 100000, fallback: null });
+    const maxEpisodeGb = clampNum(raw.maxEpisodeGb ?? pipe.maxEpisodeGb, { min: 0.05, max: 500, fallback: null });
+    const maxSeasonTotalGb = clampNum(raw.maxSeasonTotalGb ?? pipe.maxSeasonTotalGb, { min: 0.1, max: 5000, fallback: null });
+    const timeoutHours = clampNum(raw.timeoutHours ?? pipe.timeoutHours, { min: 1, max: 168, fallback: null });
+
+    if (!Number.isFinite(minSeeders) || minSeeders < 0) errors.push(`${label}: min seeders must be 0 or greater.`);
+    if (sizeFields.episode !== false && (!Number.isFinite(maxEpisodeGb) || maxEpisodeGb <= 0)) {
+      errors.push(`${label}: max episode size must be greater than 0.`);
+    }
+    if (sizeFields.season !== false && (!Number.isFinite(maxSeasonTotalGb) || maxSeasonTotalGb <= 0)) {
+      errors.push(`${label}: max season total size must be greater than 0.`);
+    }
+    if (!Number.isFinite(timeoutHours) || timeoutHours <= 0) errors.push(`${label}: timeout hours must be greater than 0.`);
+  }
+
+  const activeNormalPipelines = ['newSeries', 'newSeriesEpisode', 'existingSeries'].filter((key) => normalized?.[key]?.enabled !== false);
+  if (!activeNormalPipelines.length) errors.push('At least one normal series pipeline must be enabled.');
+
+  return { errors, value: normalized };
+}
+
 export async function GET(req) {
   const admin = await requireAdminFromRequest(req);
   if (!admin) return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
@@ -201,6 +257,7 @@ export async function GET(req) {
   const storagePolicyVolume = await resolveStoragePolicyVolumeStats(db).catch(() => ({ totalBytes: 0, usedBytes: 0 }));
   const hydratedSettings = JSON.parse(JSON.stringify(db.autodownloadSettings || null));
   if (hydratedSettings) {
+    hydratedSettings.seriesPipelines = normalizeSeriesPipelines(hydratedSettings);
     const policy = deriveStoragePolicy({ settings: hydratedSettings, totalBytes: Number(storagePolicyVolume?.totalBytes || 0) || 0 });
     if (!Number.isFinite(Number(hydratedSettings?.storage?.limitGb || 0)) || Number(hydratedSettings?.storage?.limitGb || 0) <= 0) {
       hydratedSettings.storage = {
@@ -432,6 +489,13 @@ export async function PUT(req) {
     },
   });
   errors.push(...seriesSel.errors);
+  const seriesPipelines = validateSeriesPipelineSettings(body?.seriesPipelines ?? existingSettings?.seriesPipelines ?? {}, {
+    ...existingSettings,
+    seriesSelectionStrategy: seriesSel.value,
+    sizeLimits: { maxMovieGb, maxEpisodeGb, maxSeasonTotalGb },
+    sourceFilters: { minMovieSeeders, minSeriesSeeders },
+  });
+  errors.push(...seriesPipelines.errors);
 
   const existingWatchfolderTrigger = existingSettings?.watchfolderTrigger || {};
   const wfEnabled = body?.watchfolderTrigger?.enabled;
@@ -503,6 +567,7 @@ export async function PUT(req) {
     },
     movieSelectionStrategy: movieSel.value,
     seriesSelectionStrategy: seriesSel.value,
+    seriesPipelines: seriesPipelines.value,
     watchfolderTrigger: {
       enabled: watchfolderAutoTriggerEnabled,
       cooldownMinutes: watchfolderCooldownMinutes,
@@ -552,17 +617,6 @@ export async function PATCH(req) {
     patch.sourceFilters = { minMovieSeeders };
     patch.movieSelectionStrategy = movieSel.value;
   } else {
-    const maxEpisodeGbRaw = String(body?.sizeLimits?.maxEpisodeGb ?? '').trim();
-    const maxEpisodeGb =
-      maxEpisodeGbRaw === '' || maxEpisodeGbRaw === 'null'
-        ? null
-        : clampNum(maxEpisodeGbRaw, { min: 0.05, max: 500, fallback: null });
-    const maxSeasonTotalGbRaw = String(body?.sizeLimits?.maxSeasonTotalGb ?? '').trim();
-    const maxSeasonTotalGb =
-      maxSeasonTotalGbRaw === '' || maxSeasonTotalGbRaw === 'null'
-        ? null
-        : clampNum(maxSeasonTotalGbRaw, { min: 0.1, max: 5000, fallback: null });
-    const minSeriesSeeders = clampNum(body?.sourceFilters?.minSeriesSeeders, { min: 0, max: 100000, fallback: null });
     const seriesSel = validateSelectionStrategy(body?.selectionStrategy ?? body?.seriesSelectionStrategy ?? existingSettings?.seriesSelectionStrategy ?? {}, {
       label: 'Series strategy',
       defaults: {
@@ -575,29 +629,65 @@ export async function PATCH(req) {
         classicLiveActionCount: 2,
       },
     });
-    if (maxEpisodeGbRaw && (!Number.isFinite(maxEpisodeGb) || maxEpisodeGb <= 0)) {
-      errors.push('Max episode size must be greater than 0 when set.');
-    }
-    if (maxSeasonTotalGbRaw && (!Number.isFinite(maxSeasonTotalGb) || maxSeasonTotalGb <= 0)) {
-      errors.push('Max season total size must be greater than 0 when set.');
-    }
-    if (!Number.isFinite(minSeriesSeeders) || minSeriesSeeders < 0) errors.push('Min series seeders must be 0 or greater.');
     errors.push(...seriesSel.errors);
-    patch.sizeLimits = { maxEpisodeGb, maxSeasonTotalGb };
-    patch.sourceFilters = { minSeriesSeeders };
+    const pipelineInput =
+      body?.seriesPipelines && typeof body.seriesPipelines === 'object'
+        ? body.seriesPipelines
+        : {
+            newSeries: {
+              enabled:
+                body?.selection?.seriesBootstrapMissingToSeason1 ??
+                body?.selection?.seriesBootstrapMissingToS01E01 ??
+                existingSettings?.selection?.seriesBootstrapMissingToSeason1 ??
+                existingSettings?.selection?.seriesBootstrapMissingToS01E01 ??
+                true,
+              minSeeders: body?.sourceFilters?.minSeriesSeeders ?? existingSettings?.sourceFilters?.minSeriesSeeders,
+              maxEpisodeGb: body?.sizeLimits?.maxEpisodeGb ?? existingSettings?.sizeLimits?.maxEpisodeGb,
+              maxSeasonTotalGb: body?.sizeLimits?.maxSeasonTotalGb ?? existingSettings?.sizeLimits?.maxSeasonTotalGb,
+              strategy: seriesSel.value,
+            },
+          };
+    const seriesPipelines = validateSeriesPipelineSettings(pipelineInput, {
+      ...existingSettings,
+      seriesSelectionStrategy: seriesSel.value,
+    });
+    errors.push(...seriesPipelines.errors);
+    const legacyEpisodePipeline =
+      seriesPipelines.value.newSeriesEpisode?.enabled !== false
+        ? seriesPipelines.value.newSeriesEpisode
+        : seriesPipelines.value.existingSeries?.enabled !== false
+          ? seriesPipelines.value.existingSeries
+          : seriesPipelines.value.deferredRetry;
+    const legacySeederPipeline =
+      seriesPipelines.value.newSeries?.enabled !== false
+        ? seriesPipelines.value.newSeries
+        : seriesPipelines.value.newSeriesEpisode?.enabled !== false
+          ? seriesPipelines.value.newSeriesEpisode
+          : seriesPipelines.value.existingSeries?.enabled !== false
+            ? seriesPipelines.value.existingSeries
+            : seriesPipelines.value.deferredRetry;
+    const legacyStrategyPipeline =
+      seriesPipelines.value.newSeries?.enabled !== false
+        ? seriesPipelines.value.newSeries
+        : seriesPipelines.value.newSeriesEpisode?.enabled !== false
+          ? seriesPipelines.value.newSeriesEpisode
+          : seriesPipelines.value.existingSeries;
+    patch.seriesPipelines = seriesPipelines.value;
+    patch.sizeLimits = {
+      maxEpisodeGb: legacyEpisodePipeline?.maxEpisodeGb ?? seriesPipelines.value.existingSeries?.maxEpisodeGb,
+      maxSeasonTotalGb: seriesPipelines.value.newSeries.maxSeasonTotalGb,
+    };
+    patch.sourceFilters = { minSeriesSeeders: legacySeederPipeline?.minSeeders ?? seriesPipelines.value.newSeries.minSeeders };
     patch.timeoutChecker = {
       strictSeriesReplacement: body?.timeoutChecker?.strictSeriesReplacement !== false,
       deletePartialSeriesOnReplacementFailure: body?.timeoutChecker?.deletePartialSeriesOnReplacementFailure !== false,
     };
-    patch.seriesSelectionStrategy = seriesSel.value;
+    patch.seriesSelectionStrategy = legacyStrategyPipeline?.strategy ?? seriesPipelines.value.newSeries.strategy;
     const existingSelection = existingSettings?.selection && typeof existingSettings.selection === 'object' ? existingSettings.selection : {};
-    const bootstrap = body?.selection?.seriesBootstrapMissingToSeason1 ?? body?.selection?.seriesBootstrapMissingToS01E01;
     patch.selection = {
       ...existingSelection,
       seriesBootstrapMissingToSeason1:
-        bootstrap === undefined || bootstrap === null
-          ? (existingSelection.seriesBootstrapMissingToSeason1 ?? existingSelection.seriesBootstrapMissingToS01E01) !== false
-          : Boolean(bootstrap),
+        seriesPipelines.value.newSeries.enabled !== false || seriesPipelines.value.newSeriesEpisode?.enabled !== false,
     };
   }
 

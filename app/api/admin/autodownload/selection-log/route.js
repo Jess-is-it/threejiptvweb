@@ -103,6 +103,8 @@ function buildRecoveredSelectedItems(rows = [], { selectionLogId = '', type = 'm
         bucket: '',
         type,
         provider: String(row?.source?.provider || '').trim(),
+        pipelineKey: type === 'series' ? String(row?.seriesMeta?.pipelineKey || '').trim() : '',
+        acquisitionMode: type === 'series' ? String(row?.seriesMeta?.acquisitionMode || row?.seriesMeta?.mode || '').trim() : '',
         selectionLogId,
         releaseDate: String(row?.releaseDate || '').trim(),
         releaseTag: String(row?.releaseTag || '').trim(),

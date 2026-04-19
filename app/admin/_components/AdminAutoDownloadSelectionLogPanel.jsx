@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { msUntilRelease } from '../../../lib/releaseTime';
 import AdminAutoDownloadSelectionSettingsButton from './AdminAutoDownloadSelectionSettingsButton';
@@ -94,6 +94,135 @@ function StatusPill({ item }) {
     <span className="inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium" style={toneStyle(tone)}>
       {statusInfo?.label || 'Queued'}
     </span>
+  );
+}
+
+const SERIES_PIPELINE_META = {
+  newSeries: {
+    label: 'New S1 Pack',
+    shortLabel: 'S1 Pack',
+    modeLabel: 'Season 1 pack',
+    tone: 'info',
+  },
+  newSeriesEpisode: {
+    label: 'New Episode',
+    shortLabel: 'New Ep',
+    modeLabel: 'First episode',
+    tone: 'accent',
+  },
+  existingSeries: {
+    label: 'Existing Series',
+    shortLabel: 'Existing',
+    modeLabel: 'Next episode',
+    tone: 'success',
+  },
+  deferredRetry: {
+    label: 'Retry',
+    shortLabel: 'Retry',
+    modeLabel: 'Replacement retry',
+    tone: 'warning',
+  },
+  legacy: {
+    label: 'Legacy',
+    shortLabel: 'Legacy',
+    modeLabel: 'Pre-pipeline',
+    tone: 'neutral',
+  },
+};
+
+function normalizeSeriesPipelineKey(value = '') {
+  const key = String(value || '').trim();
+  if (key === 'newSeries' || key === 'newSeriesEpisode' || key === 'existingSeries' || key === 'deferredRetry') return key;
+  return '';
+}
+
+function normalizeAcquisitionMode(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function seriesPipelineKeyFromRow(row = {}) {
+  const explicit = normalizeSeriesPipelineKey(row?.pipelineKey || row?._selectionPipelineKey || row?.seriesMeta?.pipelineKey);
+  if (explicit) return explicit;
+  const mode = normalizeAcquisitionMode(row?.acquisitionMode || row?._selectionAcquisitionMode || row?.seriesMeta?.acquisitionMode || row?.seriesMeta?.mode);
+  if (mode === 'first_episode' || mode === 'new_episode') return 'newSeriesEpisode';
+  if (mode === 'next_episode' || mode === 'episode') return 'existingSeries';
+  if (mode === 'replacement_retry') return 'deferredRetry';
+  if (mode === 'season_pack') return 'newSeries';
+  return 'legacy';
+}
+
+function acquisitionModeLabel(value = '') {
+  const mode = normalizeAcquisitionMode(value);
+  if (mode === 'season_pack') return 'Season 1 pack';
+  if (mode === 'first_episode' || mode === 'new_episode') return 'First episode';
+  if (mode === 'next_episode' || mode === 'episode') return 'Next episode';
+  if (mode === 'replacement_retry') return 'Replacement retry';
+  return '';
+}
+
+function getSeriesPipelineMeta(key = '') {
+  return SERIES_PIPELINE_META[normalizeSeriesPipelineKey(key) || key] || SERIES_PIPELINE_META.legacy;
+}
+
+function SeriesPipelinePill({ pipelineKey = '', acquisitionMode = '', compact = false }) {
+  const key = normalizeSeriesPipelineKey(pipelineKey) || 'legacy';
+  const meta = getSeriesPipelineMeta(key);
+  const modeLabel = acquisitionModeLabel(acquisitionMode) || meta.modeLabel;
+  return (
+    <span
+      className="inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium"
+      style={toneStyle(meta.tone)}
+      title={`${meta.label}${modeLabel ? ` · ${modeLabel}` : ''}`}
+    >
+      {compact ? meta.shortLabel : meta.label}
+    </span>
+  );
+}
+
+function seriesPipelineCounts(log = {}) {
+  const counts = {
+    newSeries: 0,
+    newSeriesEpisode: 0,
+    existingSeries: 0,
+    deferredRetry: 0,
+    legacy: 0,
+  };
+  for (const row of Array.isArray(log?.selectedItems) ? log.selectedItems : []) {
+    const key = seriesPipelineKeyFromRow(row);
+    counts[key] = Math.max(0, Number(counts[key] || 0) || 0) + 1;
+  }
+  return counts;
+}
+
+function SeriesPipelineCounts({ log }) {
+  const counts = seriesPipelineCounts(log);
+  const rows = ['newSeries', 'newSeriesEpisode', 'existingSeries', 'deferredRetry', 'legacy'].filter((key) => Number(counts[key] || 0) > 0);
+  if (!rows.length) return <span className="text-xs text-[var(--admin-muted)]">—</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {rows.map((key) => {
+        const meta = getSeriesPipelineMeta(key);
+        return (
+          <span
+            key={key}
+            className="inline-flex items-center rounded-full border px-2 py-1 text-xs font-medium"
+            style={toneStyle(meta.tone)}
+            title={meta.label}
+          >
+            {meta.shortLabel}: {counts[key]}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function BucketCountsSummary({ log }) {
+  return (
+    <div className="whitespace-nowrap text-xs text-[var(--admin-muted)]">
+      RA <Num v={log?.recentAnimationSelected} /> · RL <Num v={log?.recentLiveActionSelected} /> · CA{' '}
+      <Num v={log?.classicAnimationSelected} /> · CL <Num v={log?.classicLiveActionSelected} />
+    </div>
   );
 }
 
@@ -340,6 +469,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
   const [jobs, setJobs] = useState([]);
   const [jobsQ, setJobsQ] = useState('');
   const [jobsStatus, setJobsStatus] = useState('all');
+  const [jobsPipeline, setJobsPipeline] = useState('all');
   const [selectedJob, setSelectedJob] = useState(null);
   const [releaseEditOpen, setReleaseEditOpen] = useState(false);
   const [releaseDateDraft, setReleaseDateDraft] = useState('');
@@ -348,7 +478,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
   const [jobActionKey, setJobActionKey] = useState('');
   const [jobActionRun, setJobActionRun] = useState(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setErr('');
     try {
@@ -364,11 +494,11 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectionType]);
 
   useEffect(() => {
     load();
-  }, [selectionType]);
+  }, [load]);
 
   useEffect(() => {
     if (!isTriggering) return;
@@ -388,6 +518,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
     setJobsErr('');
     setJobsLoading(true);
     setJobs([]);
+    setJobsPipeline('all');
     setReleaseEditOpen(false);
     setReleaseDateDraft(String(run?.releaseDate || '').trim());
     setReleaseErr('');
@@ -419,6 +550,8 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
             ...job,
             _selectionBucket: meta?.bucket || '',
             _selectionProvider: meta?.provider || String(job?.source?.provider || '').trim(),
+            _selectionPipelineKey: meta?.pipelineKey || job?.seriesMeta?.pipelineKey || '',
+            _selectionAcquisitionMode: meta?.acquisitionMode || job?.seriesMeta?.acquisitionMode || job?.seriesMeta?.mode || '',
             _sortOrder: selectionOrderByTmdb.has(tmdbId) ? selectionOrderByTmdb.get(tmdbId) : runRows.length + idx,
           };
         });
@@ -443,6 +576,8 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
             error: '',
             _selectionBucket: row?.bucket || '',
             _selectionProvider: row?.provider || '',
+            _selectionPipelineKey: row?.pipelineKey || '',
+            _selectionAcquisitionMode: row?.acquisitionMode || '',
             _placeholder: true,
             _sortOrder: selectionOrderByTmdb.has(tmdbId) ? selectionOrderByTmdb.get(tmdbId) : runRows.length + idx,
           };
@@ -593,6 +728,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
   const filteredJobs = useMemo(() => {
     const needle = String(jobsQ || '').trim().toLowerCase();
     const st = String(jobsStatus || 'all').trim().toLowerCase();
+    const pipelineFilter = normalizeSeriesPipelineKey(jobsPipeline) || String(jobsPipeline || 'all').trim();
     return (Array.isArray(jobs) ? jobs : []).filter((x) => {
       const displayStatus = getDisplayStatus(x);
       if (st === 'size_rejected') {
@@ -600,12 +736,17 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
       } else if (st !== 'all' && String(displayStatus?.value || '').toLowerCase() !== st) {
         return false;
       }
+      if (selectionType === 'series' && pipelineFilter !== 'all' && seriesPipelineKeyFromRow(x) !== pipelineFilter) {
+        return false;
+      }
       if (!needle) return true;
+      const pipelineKey = seriesPipelineKeyFromRow(x);
+      const pipelineMeta = getSeriesPipelineMeta(pipelineKey);
       const hay =
-        `${x?.title || ''} ${x?.year || ''} ${x?.qbName || ''} ${x?.tmdb?.id || ''} ${x?._selectionBucket || ''} ${x?._selectionProvider || ''}`.toLowerCase();
+        `${x?.title || ''} ${x?.year || ''} ${x?.qbName || ''} ${x?.tmdb?.id || ''} ${x?._selectionBucket || ''} ${x?._selectionProvider || ''} ${pipelineMeta.label || ''} ${pipelineMeta.shortLabel || ''} ${x?._selectionAcquisitionMode || ''}`.toLowerCase();
       return hay.includes(needle);
     });
-  }, [jobs, jobsQ, jobsStatus]);
+  }, [jobs, jobsPipeline, jobsQ, jobsStatus, selectionType]);
 
   const canEditSelectedRunReleaseDate = useMemo(() => {
     if (!selectedRun) return false;
@@ -793,11 +934,29 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
   const notes = [
     {
       title: 'Purpose',
-      items: [
-        `Shows runs of the ${selectionStrategyLabel} (Recent/Classic × Animation/Live Action).`,
-        `Click a row to open the ${jobsLabel} table in a modal.`,
-      ],
+      items: isMovie
+        ? [
+            `Shows runs of the ${selectionStrategyLabel} (Recent/Classic × Animation/Live Action).`,
+            `Click a row to open the ${jobsLabel} table in a modal.`,
+          ]
+        : [
+            'Shows each Series Selection Log run with pipeline counts: New S1 Pack, New Episode, Existing Series, and Retry.',
+            'Click a row to open the Series Jobs table with pipeline, source, status, and action details.',
+          ],
     },
+    ...(isMovie
+      ? []
+      : [
+          {
+            title: 'Series pipelines',
+            items: [
+              'New S1 Pack bootstraps missing shows with a Season 1 pack.',
+              'New Episode bootstraps missing shows with one Season 1 episode when packs are too large or weakly seeded.',
+              'Existing Series continues shows already in the NAS with the next missing aired episode.',
+              'Retry is used by timeout/replacement flows with stricter source gates.',
+            ],
+          },
+        ]),
     {
       title: 'Run Now',
       items: ['Runs the selection immediately (admin debug). It still respects safety checks like mount health and storage limit.'],
@@ -810,7 +969,9 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
         <div>
           <div className="text-lg font-semibold">{selectionLogTitle}</div>
           <div className="mt-1 text-sm text-[var(--admin-muted)]">
-            {`Daily/interval selection runs for ${selectionLabel} strategy. Click any row to open the ${jobsLabel} table.`}
+            {isMovie
+              ? `Daily/interval selection runs for ${selectionLabel} strategy. Click any row to open the ${jobsLabel} table.`
+              : `Daily/interval series runs grouped by New S1 Pack, New Episode, Existing Series, and Retry pipelines. Click any row to open the ${jobsLabel} table.`}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -889,19 +1050,33 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
       <div className="mt-4 overflow-hidden rounded-xl border border-[var(--admin-border)]">
         <table className="w-full text-left text-sm">
           <thead className="bg-[var(--admin-surface-2)] text-xs text-[var(--admin-muted)]">
-            <tr>
-              <th className="px-3 py-2">Run time</th>
-              <th className="px-3 py-2">Release date</th>
-              <th className="px-3 py-2">Total</th>
-              <th className="px-3 py-2">Recent Anim</th>
-              <th className="px-3 py-2">Recent Live</th>
-              <th className="px-3 py-2">Classic Anim</th>
-              <th className="px-3 py-2">Classic Live</th>
-              <th className="px-3 py-2">Skipped dup</th>
-              <th className="px-3 py-2">Skipped no source</th>
-              <th className="px-3 py-2">Skipped storage</th>
-              <th className="px-3 py-2">Error</th>
-            </tr>
+            {isMovie ? (
+              <tr>
+                <th className="px-3 py-2">Run time</th>
+                <th className="px-3 py-2">Release date</th>
+                <th className="px-3 py-2">Total</th>
+                <th className="px-3 py-2">Recent Anim</th>
+                <th className="px-3 py-2">Recent Live</th>
+                <th className="px-3 py-2">Classic Anim</th>
+                <th className="px-3 py-2">Classic Live</th>
+                <th className="px-3 py-2">Skipped dup</th>
+                <th className="px-3 py-2">Skipped no source</th>
+                <th className="px-3 py-2">Skipped storage</th>
+                <th className="px-3 py-2">Error</th>
+              </tr>
+            ) : (
+              <tr>
+                <th className="px-3 py-2">Run time</th>
+                <th className="px-3 py-2">Release date</th>
+                <th className="px-3 py-2">Total</th>
+                <th className="px-3 py-2">Pipeline counts</th>
+                <th className="px-3 py-2">Bucket counts</th>
+                <th className="px-3 py-2">Skipped dup</th>
+                <th className="px-3 py-2">Skipped no source</th>
+                <th className="px-3 py-2">Skipped storage</th>
+                <th className="px-3 py-2">Error</th>
+              </tr>
+            )}
           </thead>
           <tbody>
             {logs.map((x) => (
@@ -919,18 +1094,31 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                 <td className="px-3 py-2">
                   <Num v={x.totalSelected} />
                 </td>
-                <td className="px-3 py-2">
-                  <Num v={x.recentAnimationSelected} />
-                </td>
-                <td className="px-3 py-2">
-                  <Num v={x.recentLiveActionSelected} />
-                </td>
-                <td className="px-3 py-2">
-                  <Num v={x.classicAnimationSelected} />
-                </td>
-                <td className="px-3 py-2">
-                  <Num v={x.classicLiveActionSelected} />
-                </td>
+                {isMovie ? (
+                  <>
+                    <td className="px-3 py-2">
+                      <Num v={x.recentAnimationSelected} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <Num v={x.recentLiveActionSelected} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <Num v={x.classicAnimationSelected} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <Num v={x.classicLiveActionSelected} />
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="px-3 py-2">
+                      <SeriesPipelineCounts log={x} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <BucketCountsSummary log={x} />
+                    </td>
+                  </>
+                )}
                 <td className="px-3 py-2">
                   <Num v={x.skippedDuplicatesCount} />
                 </td>
@@ -947,7 +1135,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
             ))}
             {!loading && logs.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-3 py-6 text-center text-sm text-[var(--admin-muted)]">
+                <td colSpan={isMovie ? 11 : 9} className="px-3 py-6 text-center text-sm text-[var(--admin-muted)]">
                   No selection runs yet.
                 </td>
               </tr>
@@ -969,6 +1157,11 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                   Run: {selectedRun?.runAt ? new Date(selectedRun.runAt).toLocaleString() : '—'} · Selected:{' '}
                   <Num v={selectedRun?.totalSelected} /> · Release: {selectedRun?.releaseDate || '—'}
                 </div>
+                {!isMovie ? (
+                  <div className="mt-2">
+                    <SeriesPipelineCounts log={selectedRun} />
+                  </div>
+                ) : null}
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {canEditSelectedRunReleaseDate ? (
@@ -1049,6 +1242,20 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                   <option value="deleted">Deleted</option>
                   <option value="size_rejected">Rejected by size limit</option>
                 </select>
+                {!isMovie ? (
+                  <select
+                    value={jobsPipeline}
+                    onChange={(e) => setJobsPipeline(e.target.value)}
+                    className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
+                  >
+                    <option value="all">All pipelines</option>
+                    <option value="newSeries">New S1 Pack</option>
+                    <option value="newSeriesEpisode">New Episode</option>
+                    <option value="existingSeries">Existing Series</option>
+                    <option value="deferredRetry">Retry</option>
+                    <option value="legacy">Legacy / unknown</option>
+                  </select>
+                ) : null}
               </div>
               <div className="text-xs text-[var(--admin-muted)]">
                 {jobsLoading ? 'Loading…' : `${filteredJobs.length} item${filteredJobs.length === 1 ? '' : 's'}`}
@@ -1109,6 +1316,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                 <thead className="bg-[var(--admin-surface-2)] text-xs text-[var(--admin-muted)]">
                   <tr>
                     <th className="px-3 py-2">Title</th>
+                    {!isMovie ? <th className="px-3 py-2">Pipeline</th> : null}
                     <th className="px-3 py-2">Status</th>
                     <th className="px-3 py-2">Progress</th>
                     <th className="px-3 py-2">Size</th>
@@ -1131,10 +1339,17 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                             </div>
                             {x?._selectionBucket || x?._selectionProvider ? (
                               <div className="mt-1 text-xs text-[var(--admin-muted)]">
-                                {x?._selectionBucket ? `Bucket: ${x._selectionBucket}` : ''}
-                                {x?._selectionProvider
-                                  ? `${x?._selectionBucket ? ' · ' : ''}Provider: ${String(x._selectionProvider).toUpperCase()}`
-                                  : ''}
+                                {isMovie
+                                  ? `${x?._selectionBucket ? `Bucket: ${x._selectionBucket}` : ''}${
+                                      x?._selectionProvider
+                                        ? `${x?._selectionBucket ? ' · ' : ''}Provider: ${String(x._selectionProvider).toUpperCase()}`
+                                        : ''
+                                    }`
+                                  : x?._selectionProvider
+                                    ? `Provider: ${String(x._selectionProvider).toUpperCase()}`
+                                    : x?._selectionBucket
+                                      ? `Bucket: ${x._selectionBucket}`
+                                      : ''}
                               </div>
                             ) : null}
                             {isPlaceholderJob(x) ? (
@@ -1145,6 +1360,22 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                           </div>
                         </div>
                       </td>
+                      {!isMovie ? (
+                        <td className="px-3 py-2">
+                          <div className="flex flex-col items-start gap-1">
+                            <SeriesPipelinePill
+                              pipelineKey={seriesPipelineKeyFromRow(x)}
+                              acquisitionMode={x?._selectionAcquisitionMode || x?.seriesMeta?.acquisitionMode || x?.seriesMeta?.mode}
+                            />
+                            <div className="text-xs text-[var(--admin-muted)]">
+                              {acquisitionModeLabel(x?._selectionAcquisitionMode || x?.seriesMeta?.acquisitionMode || x?.seriesMeta?.mode) || 'Mode —'}
+                            </div>
+                            {x?._selectionBucket ? (
+                              <div className="text-xs text-[var(--admin-muted)]">Bucket: {x._selectionBucket}</div>
+                            ) : null}
+                          </div>
+                        </td>
+                      ) : null}
                       <td className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-2" title={jobStatusHelp(x, selectionType)}>
                           <StatusPill item={x} />
@@ -1236,7 +1467,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                   ))}
                   {!jobsLoading && filteredJobs.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-6 text-center text-sm text-[var(--admin-muted)]">
+                      <td colSpan={isMovie ? 7 : 8} className="px-3 py-6 text-center text-sm text-[var(--admin-muted)]">
                         {`No ${selectionType} jobs found.`}
                       </td>
                     </tr>

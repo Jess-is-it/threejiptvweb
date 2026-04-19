@@ -82,7 +82,9 @@ export async function POST(req) {
     );
     const wantStatus = toBool(body?.status ?? query.get('status') ?? false);
     const runId = String(body?.runId || query.get('runId') || '').trim();
-    const compact = toBool(body?.compact ?? query.get('compact') ?? false) || schedulerAuthed;
+    const compactRaw = body?.compact ?? query.get('compact');
+    // For systemd/scheduler-token callers default to compact unless explicitly overridden.
+    const compact = compactRaw === undefined || compactRaw === null ? schedulerAuthed : toBool(compactRaw);
 
     if (wantStatus) {
       const status = getSchedulerTickBackgroundStatus({ runId });
