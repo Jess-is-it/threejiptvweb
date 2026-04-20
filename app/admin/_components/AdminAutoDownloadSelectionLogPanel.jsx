@@ -474,6 +474,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
   const [jobsQ, setJobsQ] = useState('');
   const [jobsStatus, setJobsStatus] = useState('all');
   const [jobsPipeline, setJobsPipeline] = useState('all');
+  const [runsPipeline, setRunsPipeline] = useState('all');
   const [selectedJob, setSelectedJob] = useState(null);
   const [releaseEditOpen, setReleaseEditOpen] = useState(false);
   const [releaseDateDraft, setReleaseDateDraft] = useState('');
@@ -522,7 +523,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
     setJobsErr('');
     setJobsLoading(true);
     setJobs([]);
-    setJobsPipeline('all');
+    setJobsPipeline(!isMovie && String(runsPipeline || 'all') !== 'all' ? String(runsPipeline || 'all') : 'all');
     setReleaseEditOpen(false);
     setReleaseDateDraft(String(run?.releaseDate || '').trim());
     setReleaseErr('');
@@ -751,6 +752,16 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
       return hay.includes(needle);
     });
   }, [jobs, jobsPipeline, jobsQ, jobsStatus, selectionType]);
+
+  const filteredLogs = useMemo(() => {
+    if (isMovie) return logs;
+    const pipelineFilter = normalizeSeriesPipelineKey(runsPipeline) || String(runsPipeline || 'all').trim();
+    if (!pipelineFilter || pipelineFilter === 'all') return logs;
+    return (Array.isArray(logs) ? logs : []).filter((log) => {
+      const counts = seriesPipelineCounts(log);
+      return Number(counts?.[pipelineFilter] || 0) > 0;
+    });
+  }, [isMovie, logs, runsPipeline]);
 
   const canEditSelectedRunReleaseDate = useMemo(() => {
     if (!selectedRun) return false;
@@ -1051,6 +1062,38 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
         </div>
       ) : null}
 
+      {!isMovie ? (
+        <div className="mt-4 overflow-x-auto rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-1">
+          <div className="flex min-w-max gap-1">
+            {[
+              { key: 'all', label: 'All runs' },
+              { key: 'newSeries', label: 'New S1 Pack' },
+              { key: 'newSeriesEpisode', label: 'New Episode' },
+              { key: 'existingSeries', label: 'Existing Series' },
+              { key: 'deferredRetry', label: 'Retry' },
+              { key: 'legacy', label: 'Legacy' },
+            ].map((tab) => {
+              const active = String(runsPipeline || 'all') === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setRunsPipeline(tab.key)}
+                  className={cx(
+                    'rounded-lg px-4 py-2 text-sm font-medium transition',
+                    active
+                      ? 'bg-[var(--admin-surface-solid)] text-[var(--admin-text)] shadow-sm'
+                      : 'text-[var(--admin-muted)] hover:bg-black/5 hover:text-[var(--admin-text)] data-[theme=dark]:hover:bg-white/5'
+                  )}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       <div className="mt-4 overflow-hidden rounded-xl border border-[var(--admin-border)]">
         <table className="w-full text-left text-sm">
           <thead className="bg-[var(--admin-surface-2)] text-xs text-[var(--admin-muted)]">
@@ -1083,7 +1126,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
             )}
           </thead>
           <tbody>
-            {logs.map((x) => (
+            {filteredLogs.map((x) => (
               <tr
                 key={x.id}
                 onClick={() => openRun(x)}
@@ -1137,7 +1180,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                 </td>
               </tr>
             ))}
-            {!loading && logs.length === 0 ? (
+            {!loading && filteredLogs.length === 0 ? (
               <tr>
                 <td colSpan={isMovie ? 11 : 9} className="px-3 py-6 text-center text-sm text-[var(--admin-muted)]">
                   No selection runs yet.
