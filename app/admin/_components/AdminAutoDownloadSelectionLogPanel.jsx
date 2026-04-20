@@ -6,6 +6,10 @@ import { msUntilRelease } from '../../../lib/releaseTime';
 import AdminAutoDownloadSelectionSettingsButton from './AdminAutoDownloadSelectionSettingsButton';
 import NotesButton from './NotesButton';
 
+function cx(...cls) {
+  return cls.filter(Boolean).join(' ');
+}
+
 function Num({ v }) {
   const n = Number(v || 0);
   if (!Number.isFinite(n)) return '—';
