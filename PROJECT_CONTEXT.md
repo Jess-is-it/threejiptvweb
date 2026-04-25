@@ -118,8 +118,16 @@ There is currently **no automated test suite**. Use:
 - Public: `/login`, `/` (post-login Home page), `/movies`, `/movies/[id]`, `/series`, `/series/[id]`, `/live` (nav label: `Live TV`), `/bookmarks`, `/request`, `/search`
 - Public search: `/search` shows unified movie + series results. Header search category chips are merged into one combined `Categories` list and now open `/search?genre=<name>` instead of filling the text query. Genre-filtered results stay combined across movies + series and are sorted by TMDB popularity.
 - Watch: `/watch/movie/[id]`, `/watch/series/[seriesId]/[episodeId]`, `/watch/live/[id]`
+  - Series playback waits for the episode metadata lookup to resolve the XUI container extension before attaching a source, then plays the direct episode file (`.mkv`, `.mp4`, etc.) first. It only uses `.m3u8` when the panel explicitly reports an HLS container, which avoids an initial unsupported-source flash from missing series HLS URLs.
 - Admin auth: `/admin/login`, `/admin/setup`
 - Admin protected: `/admin`, `/admin/settings`, `/admin/category-settings`, `/admin/secrets`, `/admin/admins`, `/admin/reports`
+  - `/admin/settings` is now tabbed (`Branding`, `Player`, `Login`, `Xuione`, `Notifications`, `Messages`). The `Notifications` tab manages Telegram delivery/test settings plus immediate-alert switches for `Live TV Channels Up/down`, `User Reports`, `NAS`, and `/home/xui/content/vod`.
+  - The `Messages` tab stores editable Telegram body templates for `Live TV status update`, `Live TV channel item`, `Live TV down reminder`, `User report`, `AutoDelete trigger alert`, and `Daily monitor report`, plus a Message Stamps modal that documents every supported `{{stamp}}`. Live TV, storage, and daily-report templates now expose granular per-field stamps (for example `{{channel-status}}`, `{{channel-server-line}}`, `{{nas-used-line}}`, `{{user-reports-open-line}}`) instead of requiring only combined summary stamps, while the default template text still mirrors the inline sentence-style Telegram output by using `*-part` helper stamps. Message editors disable soft wrapping so long inline stamp sentences stay on one editable line, and each template shows a rendered Telegram preview with sample values.
+  - The Notifications tab also schedules one daily monitor report at `07:00` `Asia/Manila` by default (editable). That daily report always includes Live TV status, User Reports summary, NAS usage, VOD usage, and current AutoDelete trigger/limit state even when every immediate-alert switch is off.
+  - Notification test actions are hidden behind a local `Test notifications` UI toggle inside the Notifications tab. When revealed, admins get a general Telegram test button, per-monitor-area realistic test buttons, and a daily-report test button.
+  - Live TV immediate alerts use the XUI Admin `get_streams` feed configured in Admin Secrets and now support two delivery controls in Notifications settings: `liveChannelAlertDelayMinutes` (default `15`) waits for a channel to stay in the new UP/DOWN state before sending, and `liveChannelDownReminderHours` (default `12`, `0` disables reminders) repeats reminders while a stream stays down.
+  - Live TV Telegram alerts now use user-facing status wording (`🟢 Up` / `🔴 Down`) instead of raw XUI numeric status/PID fields, and enrich each changed channel with server name, uptime or down duration, source host, resolution, codec summary, FPS, bitrate, and notable transcoder health fields when available from XUI. That output is now template-driven, so admins can rewrite the body and per-channel row format using message stamps like `{{checked-datetime}}`, `{{channel-details-line}}`, and `{{channel-meta-line}}`.
+  - NAS and VOD immediate alerts are tied to AutoDelete pressure: when either switch is enabled, Telegram sends once when storage reaches the configured AutoDelete trigger/limit state, then suppresses repeat alerts until usage drops below the trigger again.
 - Media Library admin:
   - `/admin/media-library/movies` (logical movie list merged from XUI + NAS snapshot with compact filters, pagination, and delete management)
   - `/admin/media-library/series` (logical series list merged from XUI + NAS snapshot with compact filters, pagination, and delete management)
@@ -151,6 +159,8 @@ There is currently **no automated test suite**. Use:
 ### Core APIs
 - Admin auth + profile: `/api/admin/login`, `/api/admin/logout`, `/api/admin/me`, `/api/admin/setup`
 - Admin config: `/api/admin/settings`, `/api/admin/secrets`, `/api/admin/users`, `/api/admin/reports`
+  - `GET/PUT /api/admin/settings` now also reads/saves admin-only Telegram notification settings, including Live TV change-delay/reminder settings, stored Telegram bot token/chat ID values, editable Telegram message templates, live-channel summary counts, last daily monitor-report date, and derived AutoDelete trigger/limit thresholds for the Notifications tab
+  - `POST /api/admin/settings/telegram/test` sends Telegram test messages using the current form values (supports unsaved bot token/chat ID overrides and unsaved message-template overrides from the Admin Settings UI). The request body may include a `scenario` (`general`, `live_channels`, `user_reports`, `nas_trigger`, `vod_trigger`, `daily_monitor_report`) so the Notifications tab can send realistic per-area and daily-report test deliveries.
 - Media Library admin: `GET/POST /api/admin/media-library`
   - `GET` returns the merged movie/series management list with presence filters (`both|xui_only|nas_only`), category/genre filters, sorting, pagination, source health, and recent delete counts
   - `GET ?view=logs` returns the recent deletion log feed only
@@ -164,7 +174,9 @@ There is currently **no automated test suite**. Use:
 - Movie/Series catalog APIs `/api/xuione/vod` and `/api/xuione/series` accept `resolveKids=1` to synchronously resolve persistent `kidsSafe` tags from TMDB metadata. Standard catalog requests return immediately with any cached tags and backfill unresolved titles in the background so newly added XUI items get tagged without client-side TMDB scans.
 - TMDB genre ranking endpoint: `/api/tmdb/genre-ranking` returns popularity-sorted TMDB discover rankings for a selected genre so public `/search?genre=...` can order local library matches by TMDB popularity.
 - Public feedback: `/api/public/reports`, `/api/public/notifications`
+  - `POST /api/public/reports` now optionally forwards a Telegram alert when `notificationSettings.telegram.userReportsEnabled` is on and Telegram delivery is configured
 - Public AutoDownload upcoming: `/api/public/autodownload/upcoming` (`GET` upcoming/released lists, `POST` reminder subscribe), `/api/public/autodownload/upcoming/details` (TMDB-enriched details for upcoming/released queue items)
+  - `/api/public/autodownload/leaving-soon/details` returns `{ ok: true, item: null }` with HTTP 200 when an item is not in the leaving-soon queue because movie/series detail pages treat that lookup as optional UI enrichment.
 - Public requests: `/api/public/requests` (`GET` quota/settings/active request states + per-user request history payload, `POST` actions: `submit|state|remind`)
   - includes TMDB request catalog endpoint `GET /api/public/requests/catalog` (supports request-page browse/search/infinite-scroll with `include_adult=false` and genre filters)
   - includes TMDB/XUI series picker endpoint `POST /api/public/requests/series-options` (body: `tmdbId`, optional `streamBase` + title/year hints) that returns season/episode rows with TMDB still images and per-episode XUI availability tags for scoped requests
@@ -219,6 +231,8 @@ There is currently **no automated test suite**. Use:
 ### Data Storage Model
 Main object is in admin DB (`lib/server/adminDb.js`), including:
 - `admins`, `sessions`, `secrets`, `settings`
+  - `notificationSettings` (admin-only Telegram immediate-alert toggles, daily monitor-report time, and Telegram message templates)
+  - `notificationState` (current observed live-channel snapshot, last notified live-channel snapshot, pending delayed live-status changes, down-reminder timestamps, last daily monitor-report send date, and dedupe state for storage-trigger Telegram alerts)
   - Public `settings.catalog` now stores category labels, page-layout rows, hero-carousel rules (source/count/sort criteria), and row behavior controls (top-row rotation cadence, display counts, pool sizes).
 - `reports`, `notifications`
 - `requestSettings` (daily limit default, per-username daily overrides, default landing category, customizable display labels for fixed request statuses)

@@ -42,12 +42,18 @@ export default function WatchSeries() {
   });
   const [subs, setSubs] = useState([]);
   const [ext, setExt] = useState(null); // <- container extension per episode
+  const [episodeInfoReady, setEpisodeInfoReady] = useState(false);
 
   useEffect(() => {
     const nextRouteEpisodeId = String(routeEpisodeId || '').trim();
     if (!nextRouteEpisodeId) return;
+    if (nextRouteEpisodeId !== activeEpisodeId) {
+      setEpisodeInfoReady(false);
+      setExt(null);
+      setSubs([]);
+    }
     setActiveEpisodeId((current) => (current === nextRouteEpisodeId ? current : nextRouteEpisodeId));
-  }, [routeEpisodeId]);
+  }, [activeEpisodeId, routeEpisodeId]);
 
   // Load available servers
   useEffect(() => {
@@ -79,7 +85,12 @@ export default function WatchSeries() {
 
   // Fetch series info → set title/poster and discover the episode extension
   useEffect(() => {
-    if (!session?.streamBase || !activeEpisodeId) return;
+    if (!session?.streamBase || !activeEpisodeId) {
+      setEpisodeInfoReady(false);
+      return;
+    }
+    let cancelled = false;
+    setEpisodeInfoReady(false);
     (async () => {
       try {
         const url = `/api/xuione/series/${seriesId}?streamBase=${encodeURIComponent(
@@ -87,6 +98,7 @@ export default function WatchSeries() {
         )}&episodeId=${encodeURIComponent(activeEpisodeId)}`;
         const r = await fetch(url);
         const d = await readJsonSafe(r);
+        if (cancelled) return;
         if (r.ok && d.ok) {
           const normalizedSeasons = (Array.isArray(d?.seasons) ? d.seasons : [])
             .map((season) => {
@@ -148,8 +160,14 @@ export default function WatchSeries() {
           setExt(ep?.ext || null);
           setSubs(Array.isArray(d?.subtitles) ? d.subtitles : []);
         }
-      } catch {}
+      } catch {
+      } finally {
+        if (!cancelled) setEpisodeInfoReady(true);
+      }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [seriesId, activeEpisodeId, session?.streamBase]);
 
   const seriesNavigation = useMemo(() => {
@@ -211,6 +229,7 @@ export default function WatchSeries() {
       } catch {}
       const targetUrl = `/watch/series/${seriesId}/${targetId}${queryString ? `?${queryString}` : ''}`;
       flushSync(() => {
+        setEpisodeInfoReady(false);
         setExt(episode?.ext || null);
         setMeta((current) => ({
           ...current,
@@ -236,19 +255,22 @@ export default function WatchSeries() {
     [activeEpisodeId, queryString, seriesId]
   );
 
-  // Build playback URLs (MP4-first using discovered extension; HLS as fallback)
+  // Build playback URLs only after the episode metadata request has had a chance
+  // to discover the real container extension. Starting with a guessed .m3u8 URL
+  // causes a recoverable 404/unsupported-source flash on panels without series HLS.
   const { mp4, hls } = useMemo(() => {
-    if (!session?.streamBase || !activeEpisodeId || !origin) return { mp4: '', hls: '' };
+    if (!episodeInfoReady || !session?.streamBase || !activeEpisodeId || !origin) return { mp4: '', hls: '' };
     const { username, password } = parseCreds(session.streamBase);
 
-    // if panel says "m3u8" we shouldn't try file container; use HLS only
-    const safeExt = ext && ext.toLowerCase() !== 'm3u8' ? ext.toLowerCase() : null;
+    const normalizedExt = String(ext || '').trim().toLowerCase();
+    const isHlsOnly = normalizedExt === 'm3u8';
+    const safeExt = normalizedExt && !isHlsOnly ? normalizedExt : 'mp4';
 
     return {
-      mp4: safeExt ? `${origin}/series/${username}/${password}/${activeEpisodeId}.${safeExt}` : '',
-      hls: `${origin}/series/${username}/${password}/${activeEpisodeId}.m3u8`,
+      mp4: isHlsOnly ? '' : `${origin}/series/${username}/${password}/${activeEpisodeId}.${safeExt}`,
+      hls: isHlsOnly ? `${origin}/series/${username}/${password}/${activeEpisodeId}.m3u8` : '',
     };
-  }, [session?.streamBase, activeEpisodeId, origin, ext]);
+  }, [episodeInfoReady, session?.streamBase, activeEpisodeId, origin, ext]);
 
   return (
     <Protected>

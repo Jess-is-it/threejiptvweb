@@ -16,7 +16,7 @@ export async function GET(req) {
     }
     const item = await findLeavingSoonItem({ type, xuiId });
     if (!item) {
-      return NextResponse.json({ ok: false, error: 'Leaving soon item not found' }, { status: 404 });
+      return NextResponse.json({ ok: true, item: null }, { status: 200 });
     }
     return NextResponse.json({ ok: true, item }, { status: 200 });
   } catch (error) {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 
 import { getAdminDb, saveAdminDb } from '../../../../lib/server/adminDb';
+import { notifyTelegramUserReportCreated } from '../../../../lib/server/telegramNotifications';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,6 +52,7 @@ export async function POST(req) {
     const db = await getAdminDb();
     db.reports.unshift(report);
     await saveAdminDb(db);
+    notifyTelegramUserReportCreated(report).catch(() => null);
 
     return NextResponse.json({ ok: true, id: report.id }, { status: 200 });
   } catch (e) {
