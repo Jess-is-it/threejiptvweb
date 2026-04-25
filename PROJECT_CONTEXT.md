@@ -116,6 +116,7 @@ There is currently **no automated test suite**. Use:
 
 ### Primary User Routes
 - Public: `/login`, `/` (post-login Home page), `/movies`, `/movies/[id]`, `/series`, `/series/[id]`, `/live` (nav label: `Live TV`), `/bookmarks`, `/request`, `/search`
+  - `/live` uses a static image-only hero for the featured channel; it does not autoplay or mount a stream in the hero area. The hero Watch button and channel cards route to `/watch/live/[id]` for playback.
 - Public search: `/search` shows unified movie + series results. Header search category chips are merged into one combined `Categories` list and now open `/search?genre=<name>` instead of filling the text query. Genre-filtered results stay combined across movies + series and are sorted by TMDB popularity.
 - Watch: `/watch/movie/[id]`, `/watch/series/[seriesId]/[episodeId]`, `/watch/live/[id]`
   - Series playback waits for the episode metadata lookup to resolve the XUI container extension before attaching a source, then plays the direct episode file (`.mkv`, `.mp4`, etc.) first. It only uses `.m3u8` when the panel explicitly reports an HLS container, which avoids an initial unsupported-source flash from missing series HLS URLs.

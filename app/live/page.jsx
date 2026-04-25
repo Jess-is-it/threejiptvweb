@@ -1,11 +1,10 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Play, Volume2, VolumeX } from 'lucide-react';
-import { flushSync } from 'react-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Play } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import Protected from '../../components/Protected';
 import { useSession } from '../../components/SessionProvider';
 import { useProfileMode } from '../../components/useProfileMode';
-import VideoPlayer from '../../components/VideoPlayer';
 import { pickKidsCategoryIds } from '../../lib/kidsMode';
 
 const LIVE_REFRESH_MS = 15_000;
@@ -14,8 +13,6 @@ const HEADER_H = 64;
 const SHELL_HEADER_OFFSET = 64;
 const SECTION_TOP_GAP = 24;
 const SCROLL_EDGE_TOLERANCE = 4;
-const HERO_LOAD_TIMEOUT_MS = 10_000;
-const HERO_SKIP_TTL_MS = 5 * 60 * 1000;
 
 async function readJsonSafe(res) {
   const text = await res.text().catch(() => '');
@@ -25,13 +22,6 @@ async function readJsonSafe(res) {
   } catch {
     return { ok: false, error: (text || '').slice(0, 200) || 'Invalid response' };
   }
-}
-
-function parseCreds(streamBase) {
-  const u = new URL(streamBase);
-  const p = u.pathname.split('/').filter(Boolean);
-  const i = p.indexOf('live');
-  return { username: p[i + 1], password: p[i + 2] };
 }
 
 function getOriginFromStreamBase(streamBase) {
@@ -50,12 +40,6 @@ function pinsKey({ username = '', origin = '' } = {}) {
   const u = normalizeUsername(username) || 'anon';
   const o = String(origin || '').trim() || 'origin';
   return `3jtv.livePins:${u}:${o}`;
-}
-
-function restartsKey({ username = '', origin = '' } = {}) {
-  const u = normalizeUsername(username) || 'anon';
-  const o = String(origin || '').trim() || 'origin';
-  return `3jtv.liveRestarts:${u}:${o}`;
 }
 
 function downKey({ username = '', origin = '' } = {}) {
@@ -113,80 +97,10 @@ function normalizeDownMap(value) {
   return out;
 }
 
-function normalizeRestartMap(value) {
-  const obj = value && typeof value === 'object' ? value : {};
-  const out = {};
-  for (const [k, v] of Object.entries(obj)) {
-    const id = String(k || '').trim();
-    const n = Number(v || 0);
-    if (!id || !Number.isFinite(n) || n < 0) continue;
-    out[id] = Math.floor(n);
-  }
-  return out;
-}
-
 function shouldHideDown({ downAt = 0, nowTs = Date.now(), ttlMs = 20 * 60 * 1000 } = {}) {
   const ts = Number(downAt || 0) || 0;
   if (!ts) return false;
   return nowTs - ts < ttlMs;
-}
-
-function normalizeLiveExt(value = '') {
-  return String(value || '').trim().toLowerCase().replace(/^\./, '');
-}
-
-function isHlsLikeSource(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) return false;
-  if (/\.m3u8($|\?)/i.test(raw)) return true;
-  try {
-    const url = new URL(raw);
-    const ext = normalizeLiveExt(
-      url.searchParams.get('extension') || url.searchParams.get('format') || url.searchParams.get('type')
-    );
-    return ext === 'm3u8';
-  } catch {
-    return /(?:extension|format|type)=m3u8/i.test(raw);
-  }
-}
-
-function sourceExtension(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  try {
-    const url = new URL(raw);
-    const extFromQuery = normalizeLiveExt(
-      url.searchParams.get('extension') || url.searchParams.get('format') || url.searchParams.get('type')
-    );
-    if (extFromQuery) return extFromQuery;
-    const match = url.pathname.match(/\.([a-z0-9]+)$/i);
-    return normalizeLiveExt(match?.[1] || '');
-  } catch {
-    const match = raw.match(/\.([a-z0-9]+)(?:$|\?)/i);
-    return normalizeLiveExt(match?.[1] || '');
-  }
-}
-
-function rebaseSourceOrigin(source = '', origin = '') {
-  const rawSource = String(source || '').trim();
-  const rawOrigin = String(origin || '').trim();
-  if (!rawSource || !rawOrigin) return rawSource;
-  try {
-    const url = new URL(rawSource);
-    return `${rawOrigin}${url.pathname}${url.search}${url.hash}`;
-  } catch {
-    return rawSource;
-  }
-}
-
-function pickDirectSource(channel) {
-  const candidates = [
-    channel?.directSource,
-    ...(Array.isArray(channel?.streamSources) ? channel.streamSources : []),
-  ]
-    .map((entry) => String(entry || '').trim())
-    .filter(Boolean);
-  return candidates[0] || '';
 }
 
 function uptimeSecondsOf(channel) {
@@ -369,6 +283,7 @@ function LiveCategoryRow({ group, activeId, onSelect }) {
 }
 
 export default function LivePage() {
+  const router = useRouter();
   const { session } = useSession();
   const { mode: profileMode } = useProfileMode();
   const kidsMode = profileMode === 'kids';
@@ -380,22 +295,12 @@ export default function LivePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
   const bootstrappedRef = useRef(false);
-  const heroWrapRef = useRef(null);
-  const heroPlayerRef = useRef(null);
   const username = String(session?.user?.username || '').trim();
   const sessionOrigin = useMemo(() => getOriginFromStreamBase(session?.streamBase), [session?.streamBase]);
 
   const [pinnedIds, setPinnedIds] = useState([]);
-  const [restartMap, setRestartMap] = useState({});
   const [downMap, setDownMap] = useState({});
-  const [heroSkipMap, setHeroSkipMap] = useState({});
   const [heroId, setHeroId] = useState('');
-  const [heroFs, setHeroFs] = useState(false);
-  const [heroPlayerMode, setHeroPlayerMode] = useState(false);
-  const [heroMsg, setHeroMsg] = useState('');
-  const [heroVideoLoading, setHeroVideoLoading] = useState(false);
-  const [heroMuted, setHeroMuted] = useState(true);
-  const servers = useMemo(() => (sessionOrigin ? [{ label: 'Current server', origin: sessionOrigin }] : []), [sessionOrigin]);
 
   useEffect(() => {
     const measure = () => {
@@ -507,23 +412,10 @@ export default function LivePage() {
   useEffect(() => {
     if (!username || !sessionOrigin) return;
     const pins = normalizePinnedIds(readJsonStorage(pinsKey({ username, origin: sessionOrigin }), []));
-    const restarts = normalizeRestartMap(readJsonStorage(restartsKey({ username, origin: sessionOrigin }), {}));
     const down = normalizeDownMap(readJsonStorage(downKey({ username, origin: sessionOrigin }), {}));
     setPinnedIds(pins);
-    setRestartMap(restarts);
     setDownMap(down);
   }, [username, sessionOrigin]);
-
-  useEffect(() => {
-    const onFs = () => {
-      const fs = Boolean(document.fullscreenElement);
-      setHeroFs(fs);
-      if (!fs) setHeroPlayerMode(false);
-    };
-    document.addEventListener('fullscreenchange', onFs);
-    onFs();
-    return () => document.removeEventListener('fullscreenchange', onFs);
-  }, []);
 
   const kidsCategoryIds = useMemo(() => (kidsMode ? pickKidsCategoryIds(categories) : new Set()), [kidsMode, categories]);
   const categoriesView = useMemo(() => {
@@ -581,16 +473,7 @@ export default function LivePage() {
     return ordered;
   }, [visibleChannels, categoriesView, pinnedIds]);
 
-  const heroCandidateChannels = useMemo(() => {
-    const nowTs = Date.now();
-    const list = visibleChannels.filter((channel) => {
-      const id = String(channel?.id || '').trim();
-      return !id || !shouldHideDown({ downAt: heroSkipMap?.[id] || 0, nowTs, ttlMs: HERO_SKIP_TTL_MS });
-    });
-    return list.length ? list : visibleChannels;
-  }, [visibleChannels, heroSkipMap]);
-
-  const longestRunningHero = useMemo(() => pickLongestRunningChannel(heroCandidateChannels), [heroCandidateChannels]);
+  const longestRunningHero = useMemo(() => pickLongestRunningChannel(visibleChannels), [visibleChannels]);
 
   useEffect(() => {
     const wanted = String(heroId || '').trim();
@@ -598,23 +481,19 @@ export default function LivePage() {
       if (wanted) setHeroId('');
       return;
     }
-    const wantedSkipped = wanted
-      ? shouldHideDown({ downAt: heroSkipMap?.[wanted] || 0, ttlMs: HERO_SKIP_TTL_MS })
-      : false;
-    if (wanted && !wantedSkipped && visibleChannels.some((channel) => String(channel?.id || '').trim() === wanted)) return;
+    if (wanted && visibleChannels.some((channel) => String(channel?.id || '').trim() === wanted)) return;
     const nextId = String(longestRunningHero?.id || '').trim();
     if (nextId && nextId !== wanted) setHeroId(nextId);
-  }, [visibleChannels, heroId, heroSkipMap, longestRunningHero]);
+  }, [visibleChannels, heroId, longestRunningHero]);
 
   const activeHero = useMemo(() => {
     const wanted = String(heroId || '').trim();
     if (wanted) {
       const selected = visibleChannels.find((channel) => String(channel?.id || '').trim() === wanted);
-      const selectedSkipped = shouldHideDown({ downAt: heroSkipMap?.[wanted] || 0, ttlMs: HERO_SKIP_TTL_MS });
-      if (selected && !selectedSkipped) return selected;
+      if (selected) return selected;
     }
     return longestRunningHero || null;
-  }, [visibleChannels, heroId, heroSkipMap, longestRunningHero]);
+  }, [visibleChannels, heroId, longestRunningHero]);
 
   const activeSlide = useMemo(() => {
     const activeId = String(activeHero?.id || '').trim();
@@ -629,354 +508,25 @@ export default function LivePage() {
     };
   }, [activeHero, channelsByCategory]);
 
-  // Keep meta stable across background refreshes; VideoPlayer re-attaches its media pipeline when `meta` changes.
-  const playerMeta = useMemo(() => {
-    const id = String(activeHero?.id || '').trim();
-    if (!id) {
-      return {
-        id: '',
-        type: 'live',
-        title: 'Live',
-        image: '',
-        href: '/live',
-        backHref: '/live',
-      };
-    }
-    return {
-      id,
-      type: 'live',
-      title: activeHero?.name || `Live #${id}`,
-      image: activeHero?.logo || '',
-      href: `/watch/live/${id}`,
-      backHref: '/live',
-    };
-  }, [activeHero?.id, activeHero?.name, activeHero?.logo]);
-
-  const playback = useMemo(() => {
-    if (!session?.streamBase || !activeHero?.id || !sessionOrigin) return { mp4: '', hls: '', preferHls: true };
-    const { username: u, password: p } = parseCreds(session.streamBase);
-    const directSource = rebaseSourceOrigin(pickDirectSource(activeHero), sessionOrigin);
-    const directIsHls = isHlsLikeSource(directSource);
-    const normalizedExt = normalizeLiveExt(activeHero?.ext || sourceExtension(directSource) || '');
-    const defaultHls = `${sessionOrigin}/live/${encodeURIComponent(u)}/${encodeURIComponent(p)}/${activeHero.id}.m3u8`;
-    const fallbackExt = normalizedExt && normalizedExt !== 'm3u8' ? normalizedExt : 'ts';
-    const defaultDirect = `${sessionOrigin}/live/${encodeURIComponent(u)}/${encodeURIComponent(p)}/${activeHero.id}.${fallbackExt}`;
-
-    if (directSource) {
-      return { mp4: directIsHls ? '' : directSource, hls: directIsHls ? directSource : defaultHls, preferHls: true };
-    }
-    return { mp4: normalizedExt === 'm3u8' ? '' : defaultDirect, hls: defaultHls, preferHls: true };
-  }, [session?.streamBase, sessionOrigin, activeHero]);
-
-  const forceHeroAudio = () => {
-    try {
-      heroPlayerRef.current?.unmute?.();
-    } catch {}
-    try {
-      const video = heroWrapRef.current?.querySelector('video');
-      if (!video) return;
-      video.defaultMuted = false;
-      video.muted = false;
-      if (typeof video.volume === 'number' && video.volume === 0) video.volume = 1;
-      const promise = video.play?.();
-      if (promise && typeof promise.catch === 'function') promise.catch(() => {});
-      setHeroMuted(false);
-    } catch {}
-  };
-
-  const forceHeroAudioAfterSwitch = () => {
-    forceHeroAudio();
-    for (const delay of [120, 400, 900]) {
-      setTimeout(forceHeroAudio, delay);
-    }
-  };
-
-  const setHeroById = (id, { fullscreen = false } = {}) => {
+  const setHeroById = (id) => {
     const wanted = String(id || '').trim();
     if (!wanted) return;
     const exists = visibleChannels.some((channel) => String(channel?.id || '').trim() === wanted);
     if (!exists) return;
-    setHeroSkipMap((current) => {
-      if (!current?.[wanted]) return current;
-      const next = { ...(current && typeof current === 'object' ? current : {}) };
-      delete next[wanted];
-      return next;
-    });
-    flushSync(() => setHeroId(wanted));
-    if (fullscreen) {
-      playHeroFullscreen();
-      return;
-    }
+    setHeroId(wanted);
     try {
-      if (!document.fullscreenElement) window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch {}
-    try {
-      if (heroPlayerMode || document.fullscreenElement) {
-        forceHeroAudioAfterSwitch();
-      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch {}
   };
 
-  const bumpRestart = (id) => {
-    const cid = String(id || '').trim();
-    if (!cid || !username || !sessionOrigin) return;
-    setRestartMap((current) => {
-      const next = { ...(current && typeof current === 'object' ? current : {}) };
-      next[cid] = Math.min(9999, (Number(next[cid] || 0) || 0) + 1);
-      writeJsonStorage(restartsKey({ username, origin: sessionOrigin }), next);
-      return next;
-    });
-  };
-
-  const markDown = (id) => {
-    const cid = String(id || '').trim();
-    if (!cid || !username || !sessionOrigin) return;
-    setDownMap((current) => {
-      const next = { ...(current && typeof current === 'object' ? current : {}) };
-      next[cid] = Date.now();
-      writeJsonStorage(downKey({ username, origin: sessionOrigin }), next);
-      return next;
-    });
-  };
-
-  const skipHeroChannel = useCallback(
-    (id, message = 'Channel is taking too long. Switching…') => {
-      const currentId = String(id || '').trim();
-      if (!currentId) return;
-      const nowTs = Date.now();
-      setHeroSkipMap((current) => ({
-        ...(current && typeof current === 'object' ? current : {}),
-        [currentId]: nowTs,
-      }));
-      if (message) {
-        setHeroMsg(message);
-        setTimeout(() => setHeroMsg(''), 2500);
-      }
-      const fallback = pickLongestRunningChannel(
-        visibleChannels.filter((channel) => {
-          const id = String(channel?.id || '').trim();
-          if (!id || id === currentId) return false;
-          return !shouldHideDown({ downAt: heroSkipMap?.[id] || 0, nowTs, ttlMs: HERO_SKIP_TTL_MS });
-        })
-      );
-      const nextId = String(fallback?.id || '').trim();
-      if (nextId) setHeroId(nextId);
-    },
-    [heroSkipMap, visibleChannels]
-  );
-
-  const heroVideoEl = () => {
-    const host = heroWrapRef.current;
-    if (!host) return null;
-    return host.querySelector('video');
-  };
-
-  useEffect(() => {
-    const channelId = String(activeHero?.id || '').trim();
-    if (!channelId) {
-      setHeroVideoLoading(false);
-      return undefined;
-    }
-
-    let alive = true;
-    let retryTimer = null;
-    let cleanupVideo = null;
-    setHeroVideoLoading(true);
-
-    const attachVideoListeners = (attempt = 0) => {
-      if (!alive) return;
-      const video = heroVideoEl();
-      if (!video) {
-        if (attempt < 20) retryTimer = setTimeout(() => attachVideoListeners(attempt + 1), 50);
-        return;
-      }
-
-      const hasStarted = () => {
-        try {
-          return video.readyState >= 2 || Number(video.currentTime || 0) > 0;
-        } catch {
-          return false;
-        }
-      };
-      const markLoading = () => {
-        if (alive && !hasStarted()) setHeroVideoLoading(true);
-      };
-      const markReady = () => {
-        if (alive) setHeroVideoLoading(false);
-      };
-      const markReadyIfStarted = () => {
-        if (hasStarted()) markReady();
-      };
-      const syncMuted = () => {
-        if (!alive) return;
-        try {
-          setHeroMuted(Boolean(video.muted || video.volume === 0));
-        } catch {}
-      };
-
-      syncMuted();
-      if (hasStarted()) markReady();
-      else markLoading();
-
-      video.addEventListener('loadstart', markLoading);
-      video.addEventListener('waiting', markLoading);
-      video.addEventListener('stalled', markLoading);
-      video.addEventListener('emptied', markLoading);
-      video.addEventListener('loadeddata', markReady);
-      video.addEventListener('canplay', markReady);
-      video.addEventListener('playing', markReady);
-      video.addEventListener('timeupdate', markReadyIfStarted);
-      video.addEventListener('progress', markReadyIfStarted);
-      video.addEventListener('error', markLoading);
-      video.addEventListener('volumechange', syncMuted);
-
-      cleanupVideo = () => {
-        video.removeEventListener('loadstart', markLoading);
-        video.removeEventListener('waiting', markLoading);
-        video.removeEventListener('stalled', markLoading);
-        video.removeEventListener('emptied', markLoading);
-        video.removeEventListener('loadeddata', markReady);
-        video.removeEventListener('canplay', markReady);
-        video.removeEventListener('playing', markReady);
-        video.removeEventListener('timeupdate', markReadyIfStarted);
-        video.removeEventListener('progress', markReadyIfStarted);
-        video.removeEventListener('error', markLoading);
-        video.removeEventListener('volumechange', syncMuted);
-      };
-    };
-
-    attachVideoListeners();
-
-    return () => {
-      alive = false;
-      if (retryTimer) clearTimeout(retryTimer);
-      cleanupVideo?.();
-    };
-  }, [activeHero?.id, playback.mp4, playback.hls]);
-
-  useEffect(() => {
-    const channelId = String(activeHero?.id || '').trim();
-    if (!channelId || heroFs || heroPlayerMode || !heroVideoLoading) return undefined;
-    const timer = setTimeout(() => {
-      const video = heroVideoEl();
-      const ready = (() => {
-        try {
-          return Boolean(video && (video.readyState >= 2 || Number(video.currentTime || 0) > 0));
-        } catch {
-          return false;
-        }
-      })();
-      if (ready) {
-        setHeroVideoLoading(false);
-        return;
-      }
-      skipHeroChannel(channelId);
-    }, HERO_LOAD_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [activeHero?.id, heroFs, heroPlayerMode, heroVideoLoading, playback.mp4, playback.hls, skipHeroChannel]);
-
-  const toggleHeroMute = () => {
-    const shouldUnmute = heroMuted;
+  const watchChannel = (id = activeHero?.id) => {
+    const targetId = String(id || '').trim();
+    if (!targetId) return;
     try {
-      if (shouldUnmute) heroPlayerRef.current?.unmute?.();
-      else heroPlayerRef.current?.mute?.();
+      sessionStorage.setItem('3jtv.playIntent', String(Date.now()));
     } catch {}
-
-    try {
-      const video = heroVideoEl();
-      if (!video) return;
-      video.defaultMuted = !shouldUnmute;
-      video.muted = !shouldUnmute;
-      if (shouldUnmute && typeof video.volume === 'number' && video.volume === 0) video.volume = 1;
-      if (shouldUnmute) {
-        const p = video.play?.();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
-      }
-      setHeroMuted(Boolean(video.muted || video.volume === 0));
-    } catch {}
+    router.push(`/watch/live/${encodeURIComponent(targetId)}?auto=1`);
   };
-
-  const playHeroFullscreen = () => {
-    const host = heroWrapRef.current;
-    flushSync(() => setHeroPlayerMode(true));
-    try {
-      host?.requestFullscreen?.();
-    } catch {}
-    forceHeroAudioAfterSwitch();
-    setTimeout(() => {
-      try {
-        if (!document.fullscreenElement) setHeroPlayerMode(false);
-      } catch {
-        setHeroPlayerMode(false);
-      }
-    }, 900);
-  };
-
-  const handleHeroPlayerBack = async ({ exitFullscreen } = {}) => {
-    try {
-      await exitFullscreen?.();
-    } catch {}
-    flushSync(() => setHeroPlayerMode(false));
-    setHeroFs(false);
-  };
-
-  const menuNavigation = useMemo(() => {
-    const currentId = String(activeHero?.id || '').trim();
-    if (!currentId || !session?.streamBase || !sessionOrigin) return null;
-    const { username: u, password: p } = parseCreds(session.streamBase);
-    const playbackFor = (ch) => {
-      if (!ch?.id) return { mp4: '', hls: '', preferHls: true };
-      const directSource = rebaseSourceOrigin(pickDirectSource(ch), sessionOrigin);
-      const directIsHls = isHlsLikeSource(directSource);
-      const normalizedExt = normalizeLiveExt(ch?.ext || sourceExtension(directSource) || '');
-      const defaultHls = `${sessionOrigin}/live/${encodeURIComponent(u)}/${encodeURIComponent(p)}/${ch.id}.m3u8`;
-      const fallbackExt = normalizedExt && normalizedExt !== 'm3u8' ? normalizedExt : 'ts';
-      const defaultDirect = `${sessionOrigin}/live/${encodeURIComponent(u)}/${encodeURIComponent(p)}/${ch.id}.${fallbackExt}`;
-
-      if (directSource) {
-        return { mp4: directIsHls ? '' : directSource, hls: directIsHls ? directSource : defaultHls, preferHls: true };
-      }
-      return { mp4: normalizedExt === 'm3u8' ? '' : defaultDirect, hls: defaultHls, preferHls: true };
-    };
-    const groups = channelsByCategory
-      .filter((g) => (Array.isArray(g?.channels) ? g.channels : []).length)
-      .map((g) => ({
-        id: String(g?.id || '').trim() || 'UNCAT',
-        title: String(g?.name || '').trim() || 'Channels',
-        items: (Array.isArray(g?.channels) ? g.channels : []).map((ch) => ({
-          id: String(ch?.id || '').trim(),
-          title: String(ch?.name || '').trim() || 'Channel',
-          image: String(ch?.logo || '').trim(),
-          ...playbackFor(ch),
-        })),
-      }))
-      .filter((g) => g.items.length);
-
-    const flat = [];
-    for (const g of groups) {
-      for (const item of g.items) {
-        if (!item?.id) continue;
-        flat.push({ ...item, groupId: g.id, groupTitle: g.title });
-      }
-    }
-    const idx = flat.findIndex((row) => String(row?.id || '').trim() === currentId);
-    const previousItem = flat.length ? flat[(idx > 0 ? idx - 1 : flat.length - 1)] : null;
-    const nextItem = flat.length ? flat[(idx >= 0 ? idx + 1 : 0) % flat.length] : null;
-
-    return {
-      groupLabel: 'Categories',
-      itemLabel: 'Channels',
-      groups,
-      currentItemId: currentId,
-      previousItem,
-      nextItem,
-      onSelectItem: (item) => {
-        const id = String(item?.id || '').trim();
-        if (!id) return;
-        setHeroById(id);
-      },
-    };
-  }, [channelsByCategory, activeHero?.id, session?.streamBase, sessionOrigin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Protected>
@@ -985,141 +535,69 @@ export default function LivePage() {
 
         {/* Hero */}
         <div
-          ref={heroWrapRef}
-          className={
-            heroFs
-              ? 'group relative h-screen w-screen overflow-hidden bg-black'
-              : 'group relative -mx-4 sm:-mx-6 lg:-mx-10 mb-6 h-[68vh] md:h-[72vh] lg:h-[74vh] w-auto overflow-hidden bg-black'
-          }
+          className="group relative -mx-4 mb-6 h-[68vh] w-auto overflow-hidden bg-black sm:-mx-6 md:h-[72vh] lg:-mx-10 lg:h-[74vh]"
           style={{
-            marginTop: heroFs ? '0px' : `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
-            paddingTop: heroFs ? '0px' : `${headerH}px`,
+            marginTop: `-${headerH + SHELL_HEADER_OFFSET + SECTION_TOP_GAP}px`,
+            paddingTop: `${headerH}px`,
             touchAction: 'pan-y',
           }}
         >
           {/* background */}
           <div className="absolute inset-0">
-            {activeHero ? (
-              <VideoPlayer
-                key={heroPlayerMode ? 'live-fullscreen-player' : String(activeHero?.id || '')}
-                mp4={playback.mp4}
-                hls={playback.hls}
-                preferHls={playback.preferHls}
-                meta={playerMeta}
-                mode="inline"
-                fill={true}
-                autoPlayOnLoad={true}
-                autoFullscreen={false}
-                startMuted={heroPlayerMode ? false : true}
-                chrome={heroPlayerMode ? 'default' : 'background'}
-                controlRef={heroPlayerRef}
-                onMutedChange={(muted, volume) => {
-                  setHeroMuted(Boolean(muted || Number(volume || 0) === 0));
-                }}
-                menuNavigation={heroPlayerMode ? menuNavigation : null}
-                onBack={handleHeroPlayerBack}
-                servers={servers}
-                activeOrigin={sessionOrigin}
-                onPlaybackError={({ code }) => {
-                  bumpRestart(activeHero?.id);
-                  if (Number(code || 0) === 4) {
-                    markDown(activeHero?.id);
-                    skipHeroChannel(activeHero?.id, 'Channel seems down. Switching…');
-                  } else if (!heroPlayerMode && !heroFs) {
-                    skipHeroChannel(activeHero?.id, 'Channel could not start. Switching…');
-                  }
-                }}
+            {activeHero?.logo ? (
+              <img
+                src={activeHero.logo}
+                alt=""
+                className="h-full w-full object-cover opacity-80 blur-[1px]"
+                loading="eager"
               />
-            ) : (
-              <div className="absolute inset-0 bg-neutral-900" />
-            )}
-
-            {!heroFs && activeHero?.logo && heroVideoLoading ? (
-              <div className="pointer-events-none absolute inset-0 z-[1] bg-black">
-                <img
-                  src={activeHero.logo}
-                  alt=""
-                  className="h-full w-full object-cover opacity-80 blur-[1px]"
-                  loading="eager"
-                />
-                <div className="absolute inset-0 bg-black/45" />
-              </div>
             ) : null}
-
-            {!heroFs ? (
-              <>
-                {/* TOP gradient under the header so nav stays readable */}
-                <div className="pointer-events-none absolute inset-x-0 top-0 z-[3] h-20 sm:h-24 lg:h-28 bg-gradient-to-b from-black/75 via-black/40 to-transparent" />
-                {/* BOTTOM vignette to darken the lower area over cards */}
-                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent z-[2]" />
-              </>
-            ) : null}
+            <div className="absolute inset-0 bg-neutral-950/70" />
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-[3] h-20 bg-gradient-to-b from-black/75 via-black/40 to-transparent sm:h-24 lg:h-28" />
+            <div className="pointer-events-none absolute inset-0 z-[2] bg-gradient-to-t from-black via-black/25 to-transparent" />
           </div>
 
-          {/* Total channels + loading badge (movies hero release-date style) */}
-          {!heroFs ? (
-            <div
-              className="absolute right-4 z-20 flex flex-col items-end gap-2 sm:right-6 lg:right-10"
-              style={{ top: `${headerH + 18}px` }}
-            >
-              <div className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md">
-                <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
-                <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
-                <span className="text-white">{visibleChannels.length}</span>
-              </div>
-              {activeHero && heroVideoLoading ? (
-                <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/55 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white shadow-2xl backdrop-blur-md">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
-                  <span className="text-neutral-200">Loading video…</span>
-                </div>
-              ) : null}
+          <div
+            className="absolute right-4 z-20 flex flex-col items-end gap-2 sm:right-6 lg:right-10"
+            style={{ top: `${headerH + 18}px` }}
+          >
+            <div className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-black/45 px-4 py-2 text-xs font-semibold shadow-lg backdrop-blur-md">
+              <span className="uppercase tracking-[0.2em] text-white/70">TV channels</span>
+              <span aria-hidden className="h-1 w-1 rounded-full bg-white/35" />
+              <span className="text-white">{visibleChannels.length}</span>
             </div>
-          ) : null}
+          </div>
 
           {/* copy & CTAs */}
-          {!heroFs ? (
-            <div className="relative z-10 flex h-full flex-col justify-end px-4 sm:px-6 lg:px-10 pb-10">
-              <div className="max-w-[72ch] bg-gradient-to-r from-black/80 via-black/50 to-transparent p-5 sm:p-6">
-                <div className="mb-2 text-xs uppercase tracking-[0.2em] text-white/70">Now playing</div>
+          <div className="relative z-10 flex h-full flex-col justify-end px-4 pb-10 sm:px-6 lg:px-10">
+            <div className="max-w-[72ch] bg-gradient-to-r from-black/80 via-black/50 to-transparent p-5 sm:p-6">
+              <div className="mb-2 text-xs uppercase tracking-[0.2em] text-white/70">Featured channel</div>
 
-                <h2 className="mb-2 text-3xl font-extrabold leading-tight text-white sm:text-4xl md:text-6xl line-clamp-2">
-                  {activeHero?.name || (loading ? 'Loading channels…' : 'No live channels available.')}
-                </h2>
+              <h2 className="mb-2 line-clamp-2 text-3xl font-extrabold leading-tight text-white sm:text-4xl md:text-6xl">
+                {activeHero?.name || (loading ? 'Loading channels…' : 'No live channels available.')}
+              </h2>
 
-                {(activeSlide?.categoryName || heroMsg) ? (
-                  <div className="mb-3 flex flex-wrap items-center gap-x-3 text-sm text-neutral-200">
-                    {activeSlide?.categoryName ? <span>• {activeSlide.categoryName}</span> : null}
-                    {heroMsg ? <span className="rounded bg-amber-500/20 px-2 py-1 text-xs text-amber-100">{heroMsg}</span> : null}
-                  </div>
-                ) : null}
+              {activeSlide?.categoryName ? (
+                <div className="mb-3 flex flex-wrap items-center gap-x-3 text-sm text-neutral-200">
+                  <span>• {activeSlide.categoryName}</span>
+                </div>
+              ) : null}
 
+              {activeHero ? (
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={playHeroFullscreen}
+                    onClick={() => watchChannel(activeHero?.id)}
                     className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-semibold text-white"
                     style={{ background: BRAND }}
-                    title="Play"
+                    title="Watch"
                   >
-                    <Play size={18} /> Play
+                    <Play size={18} /> Watch
                   </button>
                 </div>
-              </div>
+              ) : null}
             </div>
-          ) : null}
-
-          {!heroFs && activeHero ? (
-            <button
-              type="button"
-              onClick={toggleHeroMute}
-              className="absolute bottom-6 right-4 z-20 inline-flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-black/55 text-white shadow-2xl backdrop-blur-md transition hover:bg-black/75 sm:right-6 lg:right-10"
-              aria-label={heroMuted ? 'Unmute live preview' : 'Mute live preview'}
-              title={heroMuted ? 'Unmute live preview' : 'Mute live preview'}
-            >
-              {heroMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
-            </button>
-          ) : null}
-
+          </div>
         </div>
 
         {/* Channels */}
@@ -1147,7 +625,10 @@ export default function LivePage() {
                   key={group.id}
                   group={group}
                   activeId={activeHero ? String(activeHero?.id || '').trim() : ''}
-                  onSelect={(id) => setHeroById(id, { fullscreen: true })}
+                  onSelect={(id) => {
+                    setHeroById(id);
+                    watchChannel(id);
+                  }}
                 />
               ))
           )}
