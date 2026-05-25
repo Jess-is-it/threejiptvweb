@@ -75,9 +75,10 @@ function numericTimestamp(value) {
 }
 
 function logSortValue(log = {}) {
-  return Math.max(
-    numericTimestamp(log?.updatedAt),
-    numericTimestamp(log?.runAt),
+  return (
+    numericTimestamp(log?.runAt) ||
+    numericTimestamp(log?.createdAt) ||
+    numericTimestamp(log?.updatedAt) ||
     numericTimestamp(log?.releasedAt)
   );
 }

@@ -306,7 +306,7 @@ function SearchModal({ open, onClose }) {
 // ---------- Profile Popover ----------
 function ProfileMenu({ open, onClose }) {
   const { logout } = useSession();
-  const { movieCardClickAction, setMovieCardClickAction } = useUserPreferences();
+  const { movieCardClickAction, setMovieCardClickAction, autoSubtitleEnabled, setAutoSubtitleEnabled } = useUserPreferences();
   const router = useRouter();
   const { mode, setMode } = useProfileMode(); // 'adult' or 'kids'
   const ref = useRef(null);
@@ -385,6 +385,24 @@ function ProfileMenu({ open, onClose }) {
           >
             Preview trailer {movieCardClickAction === 'preview' ? <Check size={16} /> : null}
           </button>
+        </div>
+
+        <div className="my-2 border-t border-neutral-800" />
+
+        <div className="px-1">
+          <div className="mb-1 text-xs font-semibold text-neutral-300">Subtitles</div>
+          <button
+            onClick={() => setAutoSubtitleEnabled(!autoSubtitleEnabled)}
+            className={cx(
+              'flex w-full items-center justify-between rounded-md px-3 py-2 text-left hover:bg-white/10',
+              autoSubtitleEnabled ? 'text-white' : 'text-neutral-300'
+            )}
+          >
+            Auto use first available {autoSubtitleEnabled ? <Check size={16} /> : null}
+          </button>
+          <div className="px-3 pb-1 text-[11px] leading-snug text-neutral-500">
+            Prioritizes local NAS subtitles first, then panel subtitles, then OpenSubtitles.
+          </div>
         </div>
 
         <div className="my-2 border-t border-neutral-800" />

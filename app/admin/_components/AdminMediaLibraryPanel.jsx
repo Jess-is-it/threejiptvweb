@@ -804,6 +804,20 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
   const [manualPage, setManualPage] = useState(1);
   const [manualPageSize, setManualPageSize] = useState(25);
   const [showManualModal, setShowManualModal] = useState(false);
+  const [showSubtitleModal, setShowSubtitleModal] = useState(false);
+  const [subtitleQueryInput, setSubtitleQueryInput] = useState('');
+  const [subtitleQuery, setSubtitleQuery] = useState('');
+  const [subtitleLoading, setSubtitleLoading] = useState(false);
+  const [subtitleTargets, setSubtitleTargets] = useState([]);
+  const [subtitleTarget, setSubtitleTarget] = useState(null);
+  const [subtitleFiles, setSubtitleFiles] = useState([]);
+  const [subtitleLanguages, setSubtitleLanguages] = useState({});
+  const [subtitleAssignments, setSubtitleAssignments] = useState({});
+  const [subtitlePlan, setSubtitlePlan] = useState(null);
+  const [subtitlePlanning, setSubtitlePlanning] = useState(false);
+  const [subtitleSubmitting, setSubtitleSubmitting] = useState(false);
+  const [subtitleErr, setSubtitleErr] = useState('');
+  const [subtitleResult, setSubtitleResult] = useState(null);
   const [manualForm, setManualForm] = useState({
     title: '',
     year: '',
@@ -895,6 +909,21 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
     });
   }, [showManualModal]);
 
+  useEffect(() => {
+    if (!showSubtitleModal) return;
+    setSubtitleQueryInput('');
+    setSubtitleQuery('');
+    setSubtitleTargets([]);
+    setSubtitleTarget(null);
+    setSubtitleFiles([]);
+    setSubtitleLanguages({});
+    setSubtitleAssignments({});
+    setSubtitlePlan(null);
+    setSubtitlePlanning(false);
+    setSubtitleErr('');
+    setSubtitleResult(null);
+  }, [showSubtitleModal]);
+
   useEffect(
     () => () => {
       if (manualMovieBlurTimerRef.current) clearTimeout(manualMovieBlurTimerRef.current);
@@ -917,6 +946,13 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
     }, 250);
     return () => clearTimeout(timer);
   }, [manualQueryInput]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSubtitleQuery(String(subtitleQueryInput || '').trim());
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [subtitleQueryInput]);
 
   useEffect(() => {
     setPage(1);
@@ -1002,6 +1038,96 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
   }, [isManualView, loadManual]);
 
   useEffect(() => {
+    if (!showSubtitleModal) return;
+    let cancelled = false;
+    const run = async () => {
+      setSubtitleLoading(true);
+      setSubtitleErr('');
+      try {
+        const qs = new URLSearchParams();
+        qs.set('type', resolvedType);
+        qs.set('q', subtitleQuery);
+        qs.set('presence', 'all');
+        qs.set('sort', 'title_asc');
+        qs.set('page', '1');
+        qs.set('pageSize', '25');
+        const response = await fetch(`/api/admin/media-library?${qs.toString()}`, { cache: 'no-store' });
+        const json = await readJsonSafe(response);
+        if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to search media library.');
+        const targets = (Array.isArray(json?.items) ? json.items : []).filter((row) => String(row?.nasPath || '').trim());
+        if (!cancelled) {
+          setSubtitleTargets(targets);
+          setSubtitleTarget((current) => {
+            const currentId = String(current?.id || '').trim();
+            return targets.find((row) => String(row?.id || '').trim() === currentId) || null;
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSubtitleTargets([]);
+          setSubtitleErr(error?.message || 'Failed to search media library.');
+        }
+      } finally {
+        if (!cancelled) setSubtitleLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedType, showSubtitleModal, subtitleQuery]);
+
+  useEffect(() => {
+    if (!showSubtitleModal || !subtitleTarget || !subtitleFiles.length) {
+      setSubtitlePlan(null);
+      setSubtitlePlanning(false);
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setSubtitlePlanning(true);
+      try {
+        const files = subtitleFiles.map((row) => ({ name: row.name, size: row.size }));
+        const languages = subtitleFiles.map((row) => String(subtitleLanguages[row.key] || row.lang || 'en').trim() || 'en');
+        const assignments = subtitleFiles.map((row) => String(subtitleAssignments[row.key] || '').trim());
+        const response = await fetch('/api/admin/media-library', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action: 'subtitle_plan',
+            type: resolvedType,
+            id: subtitleTarget?.id || '',
+            files,
+            languages,
+            assignments,
+          }),
+        });
+        const json = await readJsonSafe(response);
+        if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to inspect subtitle matches.');
+        if (!cancelled) setSubtitlePlan(json);
+      } catch (error) {
+        if (!cancelled) {
+          setSubtitlePlan({
+            ok: false,
+            error: error?.message || 'Failed to inspect subtitle matches.',
+            results: [],
+            episodeOptions: [],
+          });
+        }
+      } finally {
+        if (!cancelled) setSubtitlePlanning(false);
+      }
+    };
+
+    const timer = setTimeout(run, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [resolvedType, showSubtitleModal, subtitleTarget, subtitleFiles, subtitleLanguages, subtitleAssignments]);
+
+  useEffect(() => {
     setSelectedIds([]);
   }, [data?.items]);
 
@@ -1029,6 +1155,14 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
   const working = refreshing || deleting;
   const pageBusy = isManualView ? manualLoading || manualSubmitting : working;
   const pageErr = isManualView ? manualErr : err;
+  const subtitlePlanByIndex = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(subtitlePlan?.results) ? subtitlePlan.results : []).forEach((item) => {
+      map.set(Number(item?.fileIndex || 0), item);
+    });
+    return map;
+  }, [subtitlePlan?.results]);
+  const subtitleEpisodeOptions = Array.isArray(subtitlePlan?.episodeOptions) ? subtitlePlan.episodeOptions : [];
 
   const toggleSelectOne = (id) => {
     const resolvedId = String(id || '').trim();
@@ -1073,6 +1207,55 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
       setErr(error?.message || `Failed to delete ${itemLabel}.`);
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const submitSubtitles = async () => {
+    const targetId = String(subtitleTarget?.id || '').trim();
+    if (!targetId) {
+      setSubtitleErr(`Choose the ${isSeries ? 'series' : 'movie'} title first.`);
+      return;
+    }
+    if (!subtitleFiles.length) {
+      setSubtitleErr('Choose at least one subtitle file.');
+      return;
+    }
+
+    setSubtitleSubmitting(true);
+    setSubtitleErr('');
+    setSubtitleResult(null);
+    setOk('');
+    try {
+      const fd = new FormData();
+      fd.set('action', 'subtitle_upload');
+      fd.set('type', resolvedType);
+      fd.set('id', targetId);
+      subtitleFiles.forEach((row, index) => {
+        fd.append(`files[${index}]`, row.file, row.name || row.file?.name || `subtitle-${index}`);
+        fd.append(`languages[${index}]`, String(subtitleLanguages[row.key] || row.lang || 'en').trim() || 'en');
+        if (isSeries) fd.append(`assignments[${index}]`, String(subtitleAssignments[row.key] || '').trim());
+      });
+
+      const response = await fetch('/api/admin/media-library', {
+        method: 'POST',
+        body: fd,
+      });
+      const json = await readJsonSafe(response);
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'Subtitle upload failed.');
+      setSubtitleResult(json);
+      const uploaded = Number(json?.summary?.uploaded || 0) || 0;
+      const failed = Number(json?.summary?.failed || 0) || 0;
+      setOk(`Subtitle upload finished: ${uploaded} uploaded${failed ? `, ${failed} failed` : ''}.`);
+      if (uploaded > 0) {
+        setSubtitleFiles([]);
+        setSubtitleLanguages({});
+        setSubtitleAssignments({});
+        setSubtitlePlan(null);
+      }
+    } catch (error) {
+      setSubtitleErr(error?.message || 'Subtitle upload failed.');
+    } finally {
+      setSubtitleSubmitting(false);
     }
   };
 
@@ -1545,6 +1728,17 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
             <Plus size={16} />
             Add {isSeries ? 'Series' : 'Movie'}
           </button>
+          {!isManualView ? (
+            <button
+              type="button"
+              onClick={() => setShowSubtitleModal(true)}
+              disabled={pageBusy}
+              className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
+            >
+              <UploadCloud size={16} />
+              Add Subtitles
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -2174,6 +2368,261 @@ export default function AdminMediaLibraryPanel({ type = 'movie', mode = 'library
           </div>
         </>
       )}
+
+      {showSubtitleModal ? (
+        <ModalShell
+          title={`Add Subtitles to ${isSeries ? 'Series' : 'Movie'}`}
+          onClose={() => {
+            if (subtitleSubmitting) return;
+            setShowSubtitleModal(false);
+          }}
+        >
+          {subtitleErr ? (
+            <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-[var(--admin-text)]">{subtitleErr}</div>
+          ) : null}
+
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-[var(--admin-muted)]">Search deployed {isSeries ? 'series' : 'movie'} title</label>
+              <div className="mt-1 flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3">
+                <Search size={14} className="text-[var(--admin-muted)]" />
+                <input
+                  value={subtitleQueryInput}
+                  onChange={(event) => setSubtitleQueryInput(event.target.value)}
+                  placeholder={isSeries ? 'Search series title in NAS' : 'Search movie title in NAS'}
+                  className="h-10 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--admin-muted)]"
+                />
+                {subtitleLoading ? <Loader2 size={14} className="animate-spin text-[var(--admin-muted)]" /> : null}
+              </div>
+              <div className="mt-2 max-h-52 overflow-y-auto rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)]">
+                {subtitleTargets.length ? (
+                  subtitleTargets.map((row) => {
+                    const selected = String(subtitleTarget?.id || '') === String(row?.id || '');
+                    return (
+                      <button
+                        key={row.id}
+                        type="button"
+                        onClick={() => {
+                          setSubtitleTarget(row);
+                          setSubtitleAssignments({});
+                          setSubtitlePlan(null);
+                        }}
+                        className={
+                          'block w-full border-b border-[var(--admin-border)] px-3 py-2 text-left text-xs last:border-b-0 hover:bg-black/10 ' +
+                          (selected ? 'bg-emerald-500/10' : '')
+                        }
+                      >
+                        <div className="font-semibold text-[var(--admin-text)]">
+                          {row.title || 'Untitled'} {row.year ? `(${row.year})` : ''}
+                        </div>
+                        <div className="mt-1 break-all text-[var(--admin-muted)]">{row.nasPath}</div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="px-3 py-6 text-center text-xs text-[var(--admin-muted)]">
+                    {subtitleLoading ? 'Searching…' : 'No NAS-deployed title found. Try a different search.'}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-[var(--admin-muted)]">Subtitle files</label>
+              <input
+                type="file"
+                multiple
+                accept=".srt,.ass,.ssa,.sub,.vtt"
+                onChange={(event) => {
+                  const picked = event.target.files ? Array.from(event.target.files) : [];
+                  const rows = picked
+                    .filter((file) => SUBTITLE_EXTS.has(fileExt(file?.name || '')))
+                    .map((file, index) => {
+                      const parsedEpisode = parseEpisodeFromName(file?.name || '');
+                      const key = `${file.name}:${file.size}:${file.lastModified}:${index}`;
+                      return {
+                        key,
+                        file,
+                        name: String(file?.name || '').trim(),
+                        ext: fileExt(file?.name || ''),
+                        size: Number(file?.size || 0) || 0,
+                        lang: inferSubtitleLangTag(file?.name || '') || 'en',
+                        detectedEpisode:
+                          parsedEpisode.season && parsedEpisode.episode
+                            ? `S${String(parsedEpisode.season).padStart(2, '0')}E${String(parsedEpisode.episode).padStart(2, '0')}`
+                            : '',
+                      };
+                    });
+                  setSubtitleFiles(rows);
+                  setSubtitleLanguages(
+                    rows.reduce((acc, row) => {
+                      acc[row.key] = row.lang || 'en';
+                      return acc;
+                    }, {})
+                  );
+                  setSubtitleAssignments({});
+                  setSubtitlePlan(null);
+                  setSubtitleResult(null);
+                }}
+                className="mt-1 block w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm"
+              />
+              <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                {isSeries
+                  ? 'Series subtitles are auto-matched from SxxEyy or 1x02 in the filename. If detection is wrong or missing, assign the episode manually below.'
+                  : 'Movie subtitles are renamed to the deployed movie video basename, for example Movie Title (2008)-720p.en.srt.'}
+              </div>
+
+              {subtitleFiles.length ? (
+                <div className="mt-3 overflow-hidden rounded-lg border border-[var(--admin-border)]">
+                  {subtitlePlanning ? (
+                    <div className="flex items-center gap-2 border-b border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-xs text-[var(--admin-muted)]">
+                      <Loader2 size={13} className="animate-spin" />
+                      Inspecting subtitle episode matches…
+                    </div>
+                  ) : null}
+                  {subtitlePlan?.error ? (
+                    <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-[var(--admin-text)]">{subtitlePlan.error}</div>
+                  ) : null}
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[var(--admin-surface-2)] text-[var(--admin-muted)]">
+                      <tr>
+                        <th className="px-3 py-2">File</th>
+                        {isSeries ? <th className="px-3 py-2">Episode assignment</th> : null}
+                        <th className="px-3 py-2">Upload result</th>
+                        <th className="px-3 py-2">Language tag</th>
+                        <th className="px-3 py-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {subtitleFiles.map((row, index) => {
+                        const planRow = subtitlePlanByIndex.get(index) || null;
+                        const status = String(planRow?.status || '').trim().toLowerCase();
+                        const isFailed = status === 'failed';
+                        return (
+                          <tr key={row.key} className="border-t border-[var(--admin-border)]">
+                            <td className="px-3 py-2 align-top">
+                              <div className="font-medium text-[var(--admin-text)]">{row.name}</div>
+                              <div className="text-[var(--admin-muted)]">
+                                {(Number(row.size || 0) / 1024).toFixed(1)} KB
+                                {isSeries ? ` · Detected: ${row.detectedEpisode || 'none'}` : ''}
+                              </div>
+                            </td>
+                            {isSeries ? (
+                              <td className="px-3 py-2 align-top">
+                                <select
+                                  value={subtitleAssignments[row.key] || ''}
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    setSubtitleAssignments((prev) => ({ ...(prev || {}), [row.key]: value }));
+                                  }}
+                                  className="h-8 w-full min-w-64 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2 text-xs outline-none"
+                                >
+                                  <option value="">Auto by filename</option>
+                                  {subtitleEpisodeOptions.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <div className="mt-1 text-[11px] text-[var(--admin-muted)]">
+                                  {subtitleAssignments[row.key] ? 'Manual override will be used.' : 'Uses detected episode marker when possible.'}
+                                </div>
+                              </td>
+                            ) : null}
+                            <td className="px-3 py-2 align-top">
+                              {planRow ? (
+                                isFailed ? (
+                                  <div className="text-red-300">{planRow.error || 'No matching episode.'}</div>
+                                ) : (
+                                  <div>
+                                    <div className="text-emerald-300">
+                                      {isSeries ? `Matched ${planRow.episodeLabel || planRow.videoName || 'episode'}` : 'Ready'}
+                                    </div>
+                                    <div className="mt-1 break-all text-[var(--admin-muted)]">{planRow.destPath || '—'}</div>
+                                  </div>
+                                )
+                              ) : (
+                                <div className="text-[var(--admin-muted)]">{subtitlePlanning ? 'Checking…' : 'Choose a title to inspect.'}</div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top">
+                              <input
+                                value={subtitleLanguages[row.key] || 'en'}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  setSubtitleLanguages((prev) => ({ ...(prev || {}), [row.key]: value }));
+                                }}
+                                placeholder="en"
+                                className="h-8 w-24 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2 text-xs outline-none"
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-right align-top">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSubtitleFiles((prev) => prev.filter((item) => item.key !== row.key));
+                                  setSubtitleLanguages((prev) => {
+                                    const next = { ...(prev || {}) };
+                                    delete next[row.key];
+                                    return next;
+                                  });
+                                  setSubtitleAssignments((prev) => {
+                                    const next = { ...(prev || {}) };
+                                    delete next[row.key];
+                                    return next;
+                                  });
+                                }}
+                                className="rounded-lg border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] hover:bg-red-500/20"
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+
+            {subtitleResult ? (
+              <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-3 text-xs">
+                <div className="font-semibold text-[var(--admin-text)]">
+                  Uploaded {Number(subtitleResult?.summary?.uploaded || 0)} of {Number(subtitleResult?.summary?.requested || 0)} subtitle file(s)
+                </div>
+                <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+                  {(Array.isArray(subtitleResult?.results) ? subtitleResult.results : []).map((item, index) => (
+                    <div key={`${item?.sourceName || index}-${index}`} className="break-all text-[var(--admin-muted)]">
+                      {item?.status === 'uploaded' ? '✅' : '⚠️'} {item?.sourceName || 'Subtitle'} → {item?.destPath || item?.error || '—'}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--admin-border)] pt-3">
+              <button
+                type="button"
+                onClick={() => setShowSubtitleModal(false)}
+                disabled={subtitleSubmitting}
+                className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={submitSubtitles}
+                disabled={subtitleSubmitting || !subtitleTarget || !subtitleFiles.length}
+                className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-[var(--admin-text)] hover:bg-emerald-500/20 disabled:opacity-60"
+              >
+                {subtitleSubmitting ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+                Upload subtitles
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      ) : null}
 
       {showManualModal ? (
         <ModalShell

@@ -79,20 +79,64 @@ function pickDirectSource(channel) {
   return candidates[0] || '';
 }
 
+function readRecentPlayIntent(maxAgeMs = 15_000) {
+  if (typeof window === 'undefined') return false;
+  try {
+    const ts = Number(sessionStorage.getItem('3jtv.playIntent') || 0) || 0;
+    return Boolean(ts && Date.now() - ts <= maxAgeMs);
+  } catch {
+    return false;
+  }
+}
+
+function buildLivePlayback({ channel = null, id = '', streamBase = '', origin = '' } = {}) {
+  const streamId = String(channel?.id || id || '').trim();
+  if (!streamBase || !streamId || !origin) return { mp4: '', hls: '', preferHls: true };
+
+  const { username, password } = parseCreds(streamBase);
+  const directSource = rebaseSourceOrigin(pickDirectSource(channel), origin);
+  const directSourceIsHls = isHlsLikeSource(directSource);
+  const normalizedExt = normalizeLiveExt(channel?.ext || sourceExtension(directSource) || '');
+  const defaultHls = `${origin}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${streamId}.m3u8`;
+  const fallbackExt = normalizedExt && normalizedExt !== 'm3u8' ? normalizedExt : 'ts';
+  const defaultDirect = `${origin}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${streamId}.${fallbackExt}`;
+
+  if (directSource) {
+    return {
+      mp4: directSourceIsHls ? '' : directSource,
+      hls: directSourceIsHls ? directSource : defaultHls,
+      preferHls: true,
+    };
+  }
+
+  return {
+    mp4: normalizedExt === 'm3u8' ? '' : defaultDirect,
+    hls: defaultHls,
+    preferHls: true,
+  };
+}
+
 export default function WatchLivePage() {
   const { session, setServerOrigin } = useSession();
   const params = useParams();
-  const id = params?.id;
+  const id = String(params?.id || '').trim();
   const q = useSearchParams();
   const auto = q.get('auto') === '1';
   const sessionOrigin = useMemo(() => getOriginFromStreamBase(session?.streamBase), [session?.streamBase]);
 
-  const [channel, setChannel] = useState(null);
+  const [activeId, setActiveId] = useState(id);
+  const [categories, setCategories] = useState([]);
+  const [channels, setChannels] = useState([]);
   const [err, setErr] = useState('');
+  const [startWithSound] = useState(() => readRecentPlayIntent());
   const [servers, setServers] = useState(() =>
     sessionOrigin ? [{ label: 'Current server', origin: sessionOrigin }] : []
   );
   const [origin, setOrigin] = useState(sessionOrigin);
+
+  useEffect(() => {
+    setActiveId(id);
+  }, [id]);
 
   useEffect(() => {
     if (!sessionOrigin) return;
@@ -136,30 +180,19 @@ export default function WatchLivePage() {
 
   const playbackOrigin = origin || sessionOrigin;
 
+  const channel = useMemo(
+    () => (channels || []).find((c) => String(c?.id || '').trim() === String(activeId || '').trim()) || null,
+    [activeId, channels]
+  );
+
   const { mp4, hls, preferHls } = useMemo(() => {
-    if (!session?.streamBase || !id || !playbackOrigin) return { mp4: '', hls: '', preferHls: true };
-    const { username, password } = parseCreds(session.streamBase);
-    const directSource = rebaseSourceOrigin(pickDirectSource(channel), playbackOrigin);
-    const directSourceIsHls = isHlsLikeSource(directSource);
-    const normalizedExt = normalizeLiveExt(channel?.ext || sourceExtension(directSource) || '');
-    const defaultHls = `${playbackOrigin}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${id}.m3u8`;
-    const fallbackExt = normalizedExt && normalizedExt !== 'm3u8' ? normalizedExt : 'ts';
-    const defaultDirect = `${playbackOrigin}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${id}.${fallbackExt}`;
-
-    if (directSource) {
-      return {
-        mp4: directSourceIsHls ? '' : directSource,
-        hls: directSourceIsHls ? directSource : defaultHls,
-        preferHls: true,
-      };
-    }
-
-    return {
-      mp4: normalizedExt === 'm3u8' ? '' : defaultDirect,
-      hls: defaultHls,
-      preferHls: true,
-    };
-  }, [session?.streamBase, id, playbackOrigin, channel]);
+    return buildLivePlayback({
+      channel,
+      id: activeId,
+      streamBase: session?.streamBase,
+      origin: playbackOrigin,
+    });
+  }, [activeId, session?.streamBase, playbackOrigin, channel]);
 
   useEffect(() => {
     let alive = true;
@@ -174,14 +207,105 @@ export default function WatchLivePage() {
         const data = await readJsonSafe(r);
         if (!alive) return;
         if (!r.ok || !data.ok) throw new Error(data?.error || 'Failed to load channel');
-        const ch = (data.channels || []).find((c) => String(c.id) === String(id));
-        setChannel(ch || null);
+        setCategories(Array.isArray(data.categories) ? data.categories : []);
+        setChannels(Array.isArray(data.channels) ? data.channels : []);
       } catch (e) {
         setErr(e.message || 'Network error');
       }
     })();
     return () => { alive = false; };
   }, [session?.streamBase, id]);
+
+  const menuNavigation = useMemo(() => {
+    const currentId = String(activeId || '').trim();
+    if (!currentId || !session?.streamBase || !playbackOrigin) return null;
+
+    const visibleChannels = (Array.isArray(channels) ? channels : []).filter((row) => row?.isUp !== false);
+    const byCategory = new Map();
+    for (const ch of visibleChannels) {
+      const categoryId = String(ch?.category_id ?? '').trim() || 'UNCAT';
+      const list = byCategory.get(categoryId);
+      if (list) list.push(ch);
+      else byCategory.set(categoryId, [ch]);
+    }
+
+    const groups = [];
+    const seen = new Set();
+    for (const category of Array.isArray(categories) ? categories : []) {
+      const categoryId = String(category?.id ?? '').trim();
+      if (!categoryId || seen.has(categoryId)) continue;
+      seen.add(categoryId);
+      const rows = byCategory.get(categoryId) || [];
+      if (!rows.length) continue;
+      groups.push({
+        id: categoryId,
+        title: String(category?.name || '').trim() || `Category ${categoryId}`,
+        items: rows.map((ch) => ({
+          id: String(ch?.id || '').trim(),
+          title: String(ch?.name || '').trim() || 'Channel',
+          image: String(ch?.logo || '').trim(),
+          ...buildLivePlayback({
+            channel: ch,
+            streamBase: session.streamBase,
+            origin: playbackOrigin,
+          }),
+        })),
+      });
+    }
+
+    for (const [categoryId, rows] of byCategory.entries()) {
+      if (seen.has(categoryId) || !rows.length) continue;
+      groups.push({
+        id: categoryId,
+        title: categoryId === 'UNCAT' ? 'Other' : `Category ${categoryId}`,
+        items: rows.map((ch) => ({
+          id: String(ch?.id || '').trim(),
+          title: String(ch?.name || '').trim() || 'Channel',
+          image: String(ch?.logo || '').trim(),
+          ...buildLivePlayback({
+            channel: ch,
+            streamBase: session.streamBase,
+            origin: playbackOrigin,
+          }),
+        })),
+      });
+    }
+
+    const normalizedGroups = groups
+      .map((group) => ({
+        ...group,
+        items: (Array.isArray(group.items) ? group.items : []).filter((item) => item.id),
+      }))
+      .filter((group) => group.items.length);
+
+    const flat = normalizedGroups.flatMap((group) =>
+      group.items.map((item) => ({ ...item, groupId: group.id, groupTitle: group.title }))
+    );
+    const idx = flat.findIndex((item) => String(item?.id || '').trim() === currentId);
+    const previousItem = flat.length ? flat[(idx > 0 ? idx - 1 : flat.length - 1)] : null;
+    const nextItem = flat.length ? flat[(idx >= 0 ? idx + 1 : 0) % flat.length] : null;
+
+    return {
+      switchMode: 'parent',
+      groupLabel: 'Categories',
+      itemLabel: 'Channels',
+      groups: normalizedGroups,
+      currentItemId: currentId,
+      previousItem,
+      nextItem,
+      onSelectItem: (item) => {
+        const nextId = String(item?.id || '').trim();
+        if (!nextId) return;
+        try {
+          sessionStorage.setItem('3jtv.playIntent', String(Date.now()));
+        } catch {}
+        setActiveId(nextId);
+        try {
+          window.history.replaceState(window.history.state, '', `/watch/live/${encodeURIComponent(nextId)}?auto=1`);
+        } catch {}
+      },
+    };
+  }, [activeId, categories, channels, playbackOrigin, session?.streamBase]);
 
   return (
     <Protected>
@@ -192,11 +316,11 @@ export default function WatchLivePage() {
           hls={hls}
           preferHls={preferHls}
           meta={{
-            id,
+            id: activeId,
             type: 'live',
-            title: channel?.name || `Live #${id}`,
+            title: channel?.name || `Live #${activeId}`,
             image: channel?.logo || '',
-            href: `/watch/live/${id}`,
+            href: `/watch/live/${activeId}`,
             backHref: '/live',
           }}
           mode="immersive"
@@ -208,6 +332,9 @@ export default function WatchLivePage() {
           }}
           autoFullscreen={auto}
           autoPlayOnLoad={true}
+          startMuted={startWithSound ? false : undefined}
+          autoUnmuteOnLoad={startWithSound}
+          menuNavigation={menuNavigation}
         />
       </section>
     </Protected>

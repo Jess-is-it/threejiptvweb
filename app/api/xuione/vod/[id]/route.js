@@ -43,6 +43,7 @@ async function handle(req, ctx) {
     const xuiSubtitles = Array.isArray(subsRaw)
       ? subsRaw
           .map((s) => ({
+            source: 'xui',
             lang: s?.language || s?.lang || 'Subtitle',
             label: s?.language || s?.lang || 'Subtitle',
             srclang: mapLanguageCode(s?.language || s?.lang || ''),
@@ -60,13 +61,15 @@ async function handle(req, ctx) {
 
     const mergedExisting = mergeSubtitleTrackLists(localSubtitles, xuiSubtitles);
     let openSubtitles = [];
-    try {
-      openSubtitles = await searchMovieSubtitles({
-        title: i.name || `Movie ${id}`,
-        year: (i.releasedate || '').slice(0, 4) || '',
-        acceptLanguage: req.headers.get('accept-language') || '',
-      });
-    } catch {}
+    if (!mergedExisting.length) {
+      try {
+        openSubtitles = await searchMovieSubtitles({
+          title: i.name || `Movie ${id}`,
+          year: (i.releasedate || '').slice(0, 4) || '',
+          acceptLanguage: req.headers.get('accept-language') || '',
+        });
+      } catch {}
+    }
 
     return NextResponse.json(
       {
@@ -85,7 +88,7 @@ async function handle(req, ctx) {
           i?.container_extension ||
           info?.info?.container_extension ||
           null,
-        subtitles: mergeSubtitleTrackLists(localSubtitles, xuiSubtitles, openSubtitles),
+        subtitles: mergeSubtitleTrackLists(mergedExisting, openSubtitles),
       },
       { status: 200 }
     );

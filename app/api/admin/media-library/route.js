@@ -8,7 +8,13 @@ import Busboy from 'busboy';
 import { NextResponse } from 'next/server';
 
 import { requireAdminFromRequest } from '../../../../lib/server/adminApiAuth';
-import { deleteMediaLibraryItems, listMediaLibrary, listMediaLibraryLogs } from '../../../../lib/server/autodownload/mediaLibraryService';
+import {
+  addMediaLibrarySubtitles,
+  deleteMediaLibraryItems,
+  listMediaLibrary,
+  listMediaLibraryLogs,
+  planMediaLibrarySubtitles,
+} from '../../../../lib/server/autodownload/mediaLibraryService';
 import {
   checkManualUploadDuplicateItems,
   createManualUpload,
@@ -251,6 +257,25 @@ export async function POST(req) {
       const parsed = await parseManualUploadMultipart(req);
       try {
         const action = String(parsed.fields?.action || '').trim().toLowerCase();
+        if (action === 'subtitle_upload') {
+          const fileLanguages = parsed.files.map((file, index) => {
+            const uploadIndex = Number(file?.uploadIndex ?? index);
+            return parsed.fields?.[`languages[${uploadIndex}]`] || parsed.fields?.language || 'en';
+          });
+          const fileAssignments = parsed.files.map((file, index) => {
+            const uploadIndex = Number(file?.uploadIndex ?? index);
+            return parsed.fields?.[`assignments[${uploadIndex}]`] || '';
+          });
+          const out = await addMediaLibrarySubtitles({
+            type: parsed.fields?.type || 'movie',
+            id: parsed.fields?.id || '',
+            files: parsed.files,
+            languages: fileLanguages,
+            assignments: fileAssignments,
+            actor: admin?.username || admin?.email || 'admin',
+          });
+          return NextResponse.json(out, { status: 200 });
+        }
         if (action !== 'manual_upload') {
           return NextResponse.json({ ok: false, error: 'Unsupported form action.' }, { status: 400 });
         }
@@ -292,6 +317,17 @@ export async function POST(req) {
         type: body?.type || 'movie',
         ids: Array.isArray(body?.ids) ? body.ids : [],
         actor: admin?.username || admin?.email || 'admin',
+      });
+      return NextResponse.json(out, { status: 200 });
+    }
+
+    if (action === 'subtitle_plan') {
+      const out = await planMediaLibrarySubtitles({
+        type: body?.type || 'movie',
+        id: body?.id || '',
+        files: Array.isArray(body?.files) ? body.files : [],
+        languages: Array.isArray(body?.languages) ? body.languages : [],
+        assignments: Array.isArray(body?.assignments) ? body.assignments : [],
       });
       return NextResponse.json(out, { status: 200 });
     }

@@ -243,9 +243,6 @@ function validateSeriesPipelineSettings(input, existingSettings) {
     if (!Number.isFinite(timeoutHours) || timeoutHours <= 0) errors.push(`${label}: timeout hours must be greater than 0.`);
   }
 
-  const activeNormalPipelines = ['newSeries', 'newSeriesEpisode', 'existingSeries'].filter((key) => normalized?.[key]?.enabled !== false);
-  if (!activeNormalPipelines.length) errors.push('At least one normal series pipeline must be enabled.');
-
   return { errors, value: normalized };
 }
 
@@ -652,26 +649,9 @@ export async function PATCH(req) {
       seriesSelectionStrategy: seriesSel.value,
     });
     errors.push(...seriesPipelines.errors);
-    const legacyEpisodePipeline =
-      seriesPipelines.value.newSeriesEpisode?.enabled !== false
-        ? seriesPipelines.value.newSeriesEpisode
-        : seriesPipelines.value.existingSeries?.enabled !== false
-          ? seriesPipelines.value.existingSeries
-          : seriesPipelines.value.deferredRetry;
-    const legacySeederPipeline =
-      seriesPipelines.value.newSeries?.enabled !== false
-        ? seriesPipelines.value.newSeries
-        : seriesPipelines.value.newSeriesEpisode?.enabled !== false
-          ? seriesPipelines.value.newSeriesEpisode
-          : seriesPipelines.value.existingSeries?.enabled !== false
-            ? seriesPipelines.value.existingSeries
-            : seriesPipelines.value.deferredRetry;
-    const legacyStrategyPipeline =
-      seriesPipelines.value.newSeries?.enabled !== false
-        ? seriesPipelines.value.newSeries
-        : seriesPipelines.value.newSeriesEpisode?.enabled !== false
-          ? seriesPipelines.value.newSeriesEpisode
-          : seriesPipelines.value.existingSeries;
+    const legacyEpisodePipeline = seriesPipelines.value.newSeries;
+    const legacySeederPipeline = seriesPipelines.value.newSeries;
+    const legacyStrategyPipeline = seriesPipelines.value.newSeries;
     patch.seriesPipelines = seriesPipelines.value;
     patch.sizeLimits = {
       maxEpisodeGb: legacyEpisodePipeline?.maxEpisodeGb ?? seriesPipelines.value.existingSeries?.maxEpisodeGb,
@@ -686,8 +666,7 @@ export async function PATCH(req) {
     const existingSelection = existingSettings?.selection && typeof existingSettings.selection === 'object' ? existingSettings.selection : {};
     patch.selection = {
       ...existingSelection,
-      seriesBootstrapMissingToSeason1:
-        seriesPipelines.value.newSeries.enabled !== false || seriesPipelines.value.newSeriesEpisode?.enabled !== false,
+      seriesBootstrapMissingToSeason1: seriesPipelines.value.newSeries.enabled !== false,
     };
   }
 

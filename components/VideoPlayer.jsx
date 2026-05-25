@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import Hls from 'hls.js';
 import { upsertContinue } from './continueStore';
 import { useSession } from './SessionProvider';
+import { useUserPreferences } from './UserPreferencesProvider';
 import { readJsonSafe } from '../lib/readJsonSafe';
 import { readMovieReturnState } from '../lib/moviePlaySeed';
 import {
@@ -59,6 +60,34 @@ function toBrowserMediaUrl(raw, { forceProxy = false } = {}) {
     return url.toString();
   } catch {
     return raw;
+  }
+}
+
+function subtitleSourceRank(source = '') {
+  const normalized = String(source || '').trim().toLowerCase();
+  if (normalized === 'local') return 0;
+  if (normalized === 'opensubtitles' || normalized === 'open_subtitles') return 2;
+  return 1;
+}
+
+function subtitleSourceLabel(source = '') {
+  const normalized = String(source || '').trim().toLowerCase();
+  if (normalized === 'local') return 'Local';
+  if (normalized === 'opensubtitles' || normalized === 'open_subtitles') return 'OpenSubtitles';
+  if (normalized === 'xui' || normalized === 'xuione') return 'XUI';
+  return 'Panel';
+}
+
+function applyTextTrackIndex(video, wantedIndex = -1) {
+  if (!video) return false;
+  try {
+    const tracks = Array.from(video.textTracks || []);
+    tracks.forEach((track, index) => {
+      track.mode = index === wantedIndex ? 'showing' : 'disabled';
+    });
+    return tracks.length > 0 || wantedIndex < 0;
+  } catch {
+    return false;
   }
 }
 
@@ -119,10 +148,12 @@ export default function VideoPlayer({
   subtitles = [],
   menuNavigation = null,
   seriesNavigation = null,
+  autoUnmuteOnLoad = false,
   onBack = null,
 }) {
   const router = useRouter();
   const { session } = useSession();
+  const { autoSubtitleEnabled } = useUserPreferences();
   const wrapRef = useRef(null);
   const videoRef = useRef(null);
   const attachSrcRef = useRef(null);
@@ -159,6 +190,11 @@ export default function VideoPlayer({
   const attemptRef = useRef({ key: '', triedMp4: false, triedHls: false });
   const currentRef = useRef({ kind: '', url: '' });
   const interactiveAudioRef = useRef({ at: 0 });
+  const autoUnmuteAttemptRef = useRef(false);
+  const metaRef = useRef(meta);
+  const serversRef = useRef(Array.isArray(servers) ? servers : []);
+  const onSelectServerRef = useRef(null);
+  const onPlaybackErrorRef = useRef(null);
   const prevMp4Ref = useRef(mp4);
   const liveRecoverRef = useRef({ lastAt: 0, tries: 0 });
   const livePlaylistRecoverRef = useRef({ lastAt: 0, windowStartAt: 0, tries: 0 });
@@ -166,10 +202,27 @@ export default function VideoPlayer({
   const liveStallRecoverRef = useRef({ lastAt: 0 });
   const { push, View: Toasts } = useToasts();
   const onMutedChangeRef = useRef(null);
+  const [activeSubtitleIndex, setActiveSubtitleIndex] = useState(-1);
 
   useEffect(() => {
     onMutedChangeRef.current = typeof onMutedChange === 'function' ? onMutedChange : null;
   }, [onMutedChange]);
+
+  useEffect(() => {
+    metaRef.current = meta;
+  }, [meta]);
+
+  useEffect(() => {
+    serversRef.current = Array.isArray(servers) ? servers : [];
+  }, [servers]);
+
+  useEffect(() => {
+    onSelectServerRef.current = typeof onSelectServer === 'function' ? onSelectServer : null;
+  }, [onSelectServer]);
+
+  useEffect(() => {
+    onPlaybackErrorRef.current = typeof onPlaybackError === 'function' ? onPlaybackError : null;
+  }, [onPlaybackError]);
 
   useEffect(() => {
     forcedUseHlsRef.current = useHls;
@@ -258,17 +311,21 @@ export default function VideoPlayer({
   const subtitleTracks = useMemo(
     () =>
       (subtitles || [])
-        .map((track) => ({
+        .map((track, originalIndex) => ({
           ...track,
+          originalIndex,
+          source: String(track?.source || 'xui').trim().toLowerCase() || 'xui',
           url: toBrowserMediaUrl(track?.url || '', { forceProxy: true }),
         }))
-        .filter((track) => track.url),
+        .filter((track) => track.url)
+        .sort((a, b) => subtitleSourceRank(a?.source) - subtitleSourceRank(b?.source) || Number(a?.originalIndex || 0) - Number(b?.originalIndex || 0)),
     [subtitles]
   );
   const seriesSeasons = useMemo(
     () => (Array.isArray(seriesNavigation?.seasons) ? seriesNavigation.seasons : []),
     [seriesNavigation?.seasons]
   );
+  const mediaType = String(meta?.type || '').trim();
   const menuGroups = useMemo(
     () => (Array.isArray(menuNavigation?.groups) ? menuNavigation.groups : []),
     [menuNavigation?.groups]
@@ -293,6 +350,37 @@ export default function VideoPlayer({
   const canNavigateMenu =
     typeof menuNavigation?.onSelectItem === 'function' && menuGroups.length > 0;
   const renderMenuNav = canNavigateMenu && !canNavigateSeriesEpisodes;
+
+  useEffect(() => {
+    setActiveSubtitleIndex(-1);
+  }, [meta?.id]);
+
+  useEffect(() => {
+    autoUnmuteAttemptRef.current = false;
+  }, [meta?.id, srcs.mp4, srcs.hls]);
+
+  useEffect(() => {
+    if (meta?.type === 'live') return;
+    const video = videoRef.current;
+    const wantedIndex = autoSubtitleEnabled && subtitleTracks.length ? 0 : -1;
+    let cancelled = false;
+
+    const apply = () => {
+      if (cancelled) return;
+      applyTextTrackIndex(videoRef.current || video, wantedIndex);
+      setActiveSubtitleIndex(wantedIndex);
+    };
+
+    const timer = setTimeout(apply, 180);
+    video?.addEventListener?.('loadedmetadata', apply);
+    video?.addEventListener?.('loadeddata', apply);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      video?.removeEventListener?.('loadedmetadata', apply);
+      video?.removeEventListener?.('loadeddata', apply);
+    };
+  }, [autoSubtitleEnabled, meta?.id, meta?.type, srcs.mp4, srcs.hls, subtitleTracks]);
 
   useEffect(() => {
     setNextPreviewOpen(false);
@@ -410,7 +498,10 @@ export default function VideoPlayer({
         return template;
       }
     };
-    setSrcs({ mp4: build(mp4), hls: build(hls) });
+    const nextSrcs = { mp4: build(mp4), hls: build(hls) };
+    setSrcs((current) =>
+      current?.mp4 === nextSrcs.mp4 && current?.hls === nextSrcs.hls ? current : nextSrcs
+    );
   }, [origin, mp4, hls, meta?.id]);
 
   // core attach
@@ -420,6 +511,20 @@ export default function VideoPlayer({
 
     let hlsInst;
     let loadTimeout;
+    const tryAutoUnmuteAfterPlay = () => {
+      if (!autoUnmuteOnLoad || autoUnmuteAttemptRef.current) return;
+      autoUnmuteAttemptRef.current = true;
+      setTimeout(() => {
+        try {
+          applyMutedState(v, false);
+          markPlaybackReady(v);
+        } catch {}
+        try {
+          const p = v.play?.();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch {}
+      }, 120);
+    };
     const tryResumeInteractiveAudio = () => {
       const pending = hasInteractiveAudioIntent();
       if (!pending) return;
@@ -445,7 +550,7 @@ export default function VideoPlayer({
       }
 
       const maybeProxy = (raw) => {
-        const proxied = toBrowserMediaUrl(raw, { forceProxy: meta?.type === 'live' });
+        const proxied = toBrowserMediaUrl(raw, { forceProxy: mediaType === 'live' });
         return proxied || raw;
       };
 
@@ -468,7 +573,7 @@ export default function VideoPlayer({
           hlsInst = new Hls({
             // Low latency mode tends to be brittle on some IPTV panels (sequence discontinuities, short windows).
             // Prefer stability over minimal latency.
-            lowLatencyMode: meta?.type === 'live' ? false : true,
+            lowLatencyMode: mediaType === 'live' ? false : true,
             enableWorker: true,
             backBufferLength: 90,
             maxBufferLength: 30,
@@ -490,7 +595,7 @@ export default function VideoPlayer({
             if (!data) return;
             const detail = String(data?.details || '').toLowerCase();
             const msg = String(data?.err?.message || data?.error?.message || '');
-            const isLive = meta?.type === 'live';
+            const isLive = mediaType === 'live';
             const isLiveRecoverablePlaylistNoise =
               isLive &&
               (msg.toLowerCase().includes('media sequence mismatch') ||
@@ -528,7 +633,7 @@ export default function VideoPlayer({
               // Hard reset helper: destroy/recreate pipeline with a cache-busted root playlist.
               const hardResetLive = () => {
                 try {
-                  const isLive = meta?.type === 'live';
+                  const isLive = mediaType === 'live';
                   if (!isLive || !srcs.hls) return false;
                   const now = Date.now();
                   if (!liveHardResetRef.current.windowStartAt || now - liveHardResetRef.current.windowStartAt > 60_000) {
@@ -560,7 +665,7 @@ export default function VideoPlayer({
               // This avoids a visible flicker for transient live playlist inconsistencies.
               const softResyncLive = () => {
                 try {
-                  const isLive = meta?.type === 'live';
+                  const isLive = mediaType === 'live';
                   if (!isLive || !srcs.hls) return false;
                   const now = Date.now();
                   if (
@@ -588,7 +693,7 @@ export default function VideoPlayer({
 
               const softReloadLive = () => {
                 try {
-                  const isLive = meta?.type === 'live';
+                  const isLive = mediaType === 'live';
                   if (!isLive || !srcs.hls) return false;
                   const now = Date.now();
                   if (now - (liveHardResetRef.current.lastAt || 0) < 4000) return false;
@@ -614,7 +719,7 @@ export default function VideoPlayer({
               // If a nested playlist URL expires or the upstream returned HTML (common after a while on live),
               // restart from the root source to get a fresh token.
               try {
-                const isLive = meta?.type === 'live';
+                const isLive = mediaType === 'live';
                 const status =
                   data?.response?.code ||
                   data?.response?.status ||
@@ -716,7 +821,7 @@ export default function VideoPlayer({
       if (url === srcs.mp4) attemptRef.current.triedMp4 = true;
 
       const maybeProxy = (raw) => {
-        const proxied = toBrowserMediaUrl(raw, { forceProxy: meta?.type === 'live' });
+        const proxied = toBrowserMediaUrl(raw, { forceProxy: mediaType === 'live' });
         return proxied || raw;
       };
       const desiredFinal = maybeProxy(url);
@@ -747,7 +852,7 @@ export default function VideoPlayer({
             applyMutedState(v, false);
           } else if (typeof startMuted === 'boolean') {
             applyMutedState(v, startMuted);
-          } else if (meta?.type === 'live') {
+          } else if (mediaType === 'live') {
             applyMutedState(v, true);
           } else {
             applyMutedState(v, false);
@@ -758,6 +863,7 @@ export default function VideoPlayer({
           await v.play();
           setAutoplayBlocked(false);
           setNeedsUnmute(Boolean(v.muted || v.volume === 0));
+          tryAutoUnmuteAfterPlay();
         } catch (e) {
           // Some browsers won't allow audible autoplay after navigation, even if user clicked.
           // For VOD, prefer "start muted" over "doesn't start at all" (Netflix-style).
@@ -767,7 +873,7 @@ export default function VideoPlayer({
           // Even when a caller asks for sound (`startMuted=false`), browsers may block audible autoplay
           // after a navigation. For Live, prefer "play muted + show unmute hint" over "doesn't start".
           const allowMutedFallback =
-            meta?.type === 'live'
+            mediaType === 'live'
               ? !interactiveAudioPending
               : (startMuted !== false && isAutoplayPolicy);
           if (allowMutedFallback) {
@@ -776,6 +882,7 @@ export default function VideoPlayer({
               await v.play();
               setAutoplayBlocked(false);
               setNeedsUnmute(true);
+              tryAutoUnmuteAfterPlay();
               return;
             } catch {}
           }
@@ -797,9 +904,9 @@ export default function VideoPlayer({
       clearTimeout(loadTimeout);
       loadTimeout = setTimeout(() => {
         if (v.readyState < 3) {
-          const next = nextServer(origin, servers);
+          const next = nextServer(origin, serversRef.current);
           if (next && next !== origin) {
-            push(`${meta?.type === 'live' ? 'Stream' : 'Movie'} not responding for 15s, switching server…`);
+            push(`${mediaType === 'live' ? 'Stream' : 'Movie'} not responding for 15s, switching server…`);
             switchServer(next, true);
           }
         }
@@ -814,7 +921,7 @@ export default function VideoPlayer({
     const switchServer = async (newOrigin, silent = false) => {
       const pos = Number.isFinite(v.currentTime) ? v.currentTime : 0;
       const wasPlaying = !v.paused;
-      if (!silent) push(`Changing to ${labelFor(newOrigin, servers)}…`);
+      if (!silent) push(`Changing to ${labelFor(newOrigin, serversRef.current)}…`);
       setOrigin(newOrigin);
       // rebuild URLs immediately
       const build = (template) => {
@@ -832,7 +939,7 @@ export default function VideoPlayer({
         v.removeEventListener('loadedmetadata', onReady);
       };
       v.addEventListener('loadedmetadata', onReady, { once:true });
-      onSelectServer && onSelectServer(newOrigin);
+      onSelectServerRef.current?.(newOrigin);
     };
 
     // handlers
@@ -843,19 +950,19 @@ export default function VideoPlayer({
 	        console.warn('[3JTV][VIDEO]', 'error', errCode, mediaErr);
 	      } catch {}
         try {
-          onPlaybackError?.({
+          onPlaybackErrorRef.current?.({
             code: errCode,
             message: String(mediaErr?.message || '').trim(),
             kind: currentRef.current?.kind || '',
             url: currentRef.current?.url || '',
-            meta,
+            meta: metaRef.current,
           });
         } catch {}
 
         // Live streams can occasionally return a bad segment (HTML/502) which causes a demuxer parse error.
         // Try a lightweight recover once or twice before surfacing the error.
         try {
-          const isLive = meta?.type === 'live';
+          const isLive = mediaType === 'live';
           const isDemux =
             String(mediaErr?.message || '').toLowerCase().includes('demuxer_error') ||
             String(mediaErr?.message || '').toLowerCase().includes('could_not_parse');
@@ -927,9 +1034,13 @@ export default function VideoPlayer({
           duration: Number.isFinite(duration) ? duration : 0,
         });
         const ok = Number.isFinite(duration) && duration > 0;
+        const latestMeta = metaRef.current || {};
         upsertContinue({
-          id: meta.id, type: meta.type || 'movie',
-          title: meta.title || 'Untitled', image: meta.image || '', href: meta.href || '',
+          id: latestMeta.id,
+          type: latestMeta.type || 'movie',
+          title: latestMeta.title || 'Untitled',
+          image: latestMeta.image || '',
+          href: latestMeta.href || '',
           progress: ok ? Math.round((position / duration) * 100) : null,
           position: ok ? position : null,
           duration: ok ? duration : null,
@@ -962,10 +1073,11 @@ export default function VideoPlayer({
       v.removeEventListener('play', onPlay);
       v.removeEventListener('pause', onPause);
       if (hlsInst) hlsInst.destroy();
+      currentRef.current = { kind: '', url: '' };
       clearTimeout(loadTimeout);
       if (attachSrcRef.current === attachSrc) attachSrcRef.current = null;
     };
-  }, [origin, srcs, useHls, autoFullscreen, autoPlayOnLoad, mp4, hls, servers, meta, chrome, startMuted]);
+  }, [origin, srcs, useHls, autoFullscreen, autoPlayOnLoad, mp4, hls, mediaType, chrome, startMuted, autoUnmuteOnLoad]);
 
   const infoVisible = !showControls && paused;
   const backVisible = Boolean(showControls || err || autoplayBlocked);
@@ -1288,7 +1400,9 @@ export default function VideoPlayer({
     const id = String(item?.id || '').trim();
     if (!id) return;
     const hasDirectSwitchSource = Boolean(item?.mp4 || item?.hls);
-    const shouldDelayParentSync = meta?.type === 'live' && hasDirectSwitchSource;
+    const menuSwitchMode = String(menuNavigation?.switchMode || 'instant').trim().toLowerCase();
+    const shouldSwitchBeforeParent = hasDirectSwitchSource && menuSwitchMode !== 'parent';
+    const shouldDelayParentSync = mediaType === 'live' && shouldSwitchBeforeParent;
 
     if (menuSyncTimerRef.current) {
       clearTimeout(menuSyncTimerRef.current);
@@ -1313,7 +1427,7 @@ export default function VideoPlayer({
       }, 650);
     } else {
       try {
-        if (hasDirectSwitchSource) {
+        if (shouldSwitchBeforeParent) {
           switchToSourcesNow({
             mp4: item.mp4 || '',
             hls: item.hls || '',
@@ -1427,6 +1541,7 @@ export default function VideoPlayer({
                 src={t.url}
                 label={t.label || t.lang || `Sub ${i + 1}`}
                 srcLang={t.srclang || undefined}
+                default={autoSubtitleEnabled && i === 0 ? true : undefined}
               />
             ))}
           </video>
@@ -1473,14 +1588,15 @@ export default function VideoPlayer({
           preload="auto"
         >
           {subtitleTracks.map((t, i) => (
-            <track
-              key={i}
-              kind="subtitles"
-              src={t.url}
-              label={t.label || t.lang || `Sub ${i+1}`}
-              srcLang={t.srclang || undefined}
-            />
-          ))}
+              <track
+                key={i}
+                kind="subtitles"
+                src={t.url}
+                label={t.label || t.lang || `Sub ${i+1}`}
+                srcLang={t.srclang || undefined}
+                default={autoSubtitleEnabled && i === 0 ? true : undefined}
+              />
+            ))}
         </video>
 
         <Toasts />
@@ -2045,14 +2161,14 @@ export default function VideoPlayer({
                       onClick={() => {
                         const v = videoRef.current;
                         if (!v) return;
-                        try {
-                          for (const t of Array.from(v.textTracks || [])) t.mode = 'disabled';
-                        } catch {}
+                        applyTextTrackIndex(v, -1);
+                        setActiveSubtitleIndex(-1);
                         setSubsOpen(false);
                         push('Subtitles off');
                       }}
                     >
-                      Off
+                      <span>Off</span>
+                      {activeSubtitleIndex < 0 ? <Check size={14} /> : null}
                     </button>
                     {subtitleTracks.map((t, idx) => (
                       <button
@@ -2061,17 +2177,17 @@ export default function VideoPlayer({
                         onClick={() => {
                           const v = videoRef.current;
                           if (!v) return;
-                          try {
-                            const tracks = Array.from(v.textTracks || []);
-                            tracks.forEach((x, i) => {
-                              x.mode = i === idx ? 'showing' : 'disabled';
-                            });
-                          } catch {}
+                          applyTextTrackIndex(v, idx);
+                          setActiveSubtitleIndex(idx);
                           setSubsOpen(false);
                           push(`Subtitles: ${t.label || t.lang || 'On'}`);
                         }}
                       >
-                        <span className="truncate">{t.label || t.lang || `Subtitle ${idx + 1}`}</span>
+                        <span className="min-w-0">
+                          <span className="block truncate">{t.label || t.lang || `Subtitle ${idx + 1}`}</span>
+                          <span className="block text-[10px] text-neutral-400">{subtitleSourceLabel(t.source)}</span>
+                        </span>
+                        {activeSubtitleIndex === idx ? <Check size={14} /> : null}
                       </button>
                     ))}
                     {!subtitleTracks.length ? (

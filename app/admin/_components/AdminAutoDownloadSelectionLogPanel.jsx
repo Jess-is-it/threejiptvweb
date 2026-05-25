@@ -103,9 +103,9 @@ function StatusPill({ item }) {
 
 const SERIES_PIPELINE_META = {
   newSeries: {
-    label: 'New S1 Pack',
-    shortLabel: 'S1 Pack',
-    modeLabel: 'Season 1 pack',
+    label: 'TV Pack',
+    shortLabel: 'TV Pack',
+    modeLabel: 'Season 1 TV pack',
     tone: 'info',
   },
   newSeriesEpisode: {
@@ -121,9 +121,9 @@ const SERIES_PIPELINE_META = {
     tone: 'success',
   },
   deferredRetry: {
-    label: 'Retry',
+    label: 'TV Pack Retry',
     shortLabel: 'Retry',
-    modeLabel: 'Replacement retry',
+    modeLabel: 'Season 1 TV pack retry',
     tone: 'warning',
   },
   legacy: {
@@ -150,14 +150,14 @@ function seriesPipelineKeyFromRow(row = {}) {
   const mode = normalizeAcquisitionMode(row?.acquisitionMode || row?._selectionAcquisitionMode || row?.seriesMeta?.acquisitionMode || row?.seriesMeta?.mode);
   if (mode === 'first_episode' || mode === 'new_episode') return 'newSeriesEpisode';
   if (mode === 'next_episode' || mode === 'episode') return 'existingSeries';
-  if (mode === 'replacement_retry') return 'deferredRetry';
+  if (mode === 'replacement_retry' || mode === 'season_pack_retry') return 'deferredRetry';
   if (mode === 'season_pack') return 'newSeries';
   return 'legacy';
 }
 
 function acquisitionModeLabel(value = '') {
   const mode = normalizeAcquisitionMode(value);
-  if (mode === 'season_pack') return 'Season 1 pack';
+  if (mode === 'season_pack') return 'Season 1 TV pack';
   if (mode === 'first_episode' || mode === 'new_episode') return 'First episode';
   if (mode === 'next_episode' || mode === 'episode') return 'Next episode';
   if (mode === 'replacement_retry') return 'Replacement retry';
@@ -955,7 +955,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
             `Click a row to open the ${jobsLabel} table in a modal.`,
           ]
         : [
-            'Shows each Series Selection Log run with pipeline counts: New S1 Pack, New Episode, Existing Series, and Retry.',
+            'Shows each Series Selection Log run with TV-pack-only counts and source status.',
             'Click a row to open the Series Jobs table with pipeline, source, status, and action details.',
           ],
     },
@@ -963,12 +963,11 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
       ? []
       : [
           {
-            title: 'Series pipelines',
+            title: 'Series TV packs',
             items: [
-              'New S1 Pack bootstraps missing shows with a Season 1 pack.',
-              'New Episode bootstraps missing shows with one Season 1 episode when packs are too large or weakly seeded.',
-              'Existing Series continues shows already in the NAS with the next missing aired episode.',
-              'Retry is used by timeout/replacement flows with stricter source gates.',
+              'Series selection now accepts Season 1 TV packs only.',
+              'Episode-only sources, existing-series continuation, and multi-season bundles are rejected before queueing.',
+              'Retry is still available internally for timeout/replacement flows, but it also requires a TV pack.',
             ],
           },
         ]),
@@ -986,7 +985,7 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
           <div className="mt-1 text-sm text-[var(--admin-muted)]">
             {isMovie
               ? `Daily/interval selection runs for ${selectionLabel} strategy. Click any row to open the ${jobsLabel} table.`
-              : `Daily/interval series runs grouped by New S1 Pack, New Episode, Existing Series, and Retry pipelines. Click any row to open the ${jobsLabel} table.`}
+              : `Daily/interval series runs grouped by TV-pack-only selection. Click any row to open the ${jobsLabel} table.`}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1065,14 +1064,12 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
       {!isMovie ? (
         <div className="mt-4 overflow-x-auto rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-1">
           <div className="flex min-w-max gap-1">
-            {[
-              { key: 'all', label: 'All runs' },
-              { key: 'newSeries', label: 'New S1 Pack' },
-              { key: 'newSeriesEpisode', label: 'New Episode' },
-              { key: 'existingSeries', label: 'Existing Series' },
-              { key: 'deferredRetry', label: 'Retry' },
-              { key: 'legacy', label: 'Legacy' },
-            ].map((tab) => {
+              {[
+                { key: 'all', label: 'All runs' },
+                { key: 'newSeries', label: 'TV Packs' },
+                { key: 'deferredRetry', label: 'TV Pack Retry' },
+                { key: 'legacy', label: 'Legacy' },
+              ].map((tab) => {
               const active = String(runsPipeline || 'all') === tab.key;
               return (
                 <button
@@ -1300,10 +1297,8 @@ export default function AdminAutoDownloadSelectionLogPanel({ type = 'movie' }) {
                 <div className="flex min-w-max gap-1">
                   {[
                     { key: 'all', label: 'All' },
-                    { key: 'newSeries', label: 'New S1 Pack' },
-                    { key: 'newSeriesEpisode', label: 'New Episode' },
-                    { key: 'existingSeries', label: 'Existing Series' },
-                    { key: 'deferredRetry', label: 'Retry' },
+                    { key: 'newSeries', label: 'TV Packs' },
+                    { key: 'deferredRetry', label: 'TV Pack Retry' },
                     { key: 'legacy', label: 'Legacy' },
                   ].map((tab) => {
                     const active = String(jobsPipeline || 'all') === tab.key;

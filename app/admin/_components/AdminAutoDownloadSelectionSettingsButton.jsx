@@ -76,22 +76,22 @@ const SERIES_PIPELINE_KEYS = ['newSeries', 'newSeriesEpisode', 'existingSeries',
 
 const SERIES_PIPELINE_SIZE_FIELDS = {
   newSeries: { episode: false, season: true },
-  newSeriesEpisode: { episode: true, season: false },
-  existingSeries: { episode: true, season: false },
-  deferredRetry: { episode: true, season: true },
+  newSeriesEpisode: { episode: false, season: false },
+  existingSeries: { episode: false, season: false },
+  deferredRetry: { episode: false, season: true },
 };
 
 const SERIES_PIPELINE_LABELS = {
   newSeries: {
-    title: 'New Series Season Pack',
-    tabLabel: 'New S1 Pack',
-    modeLabel: 'Season 1 pack',
-    description: 'For shows not yet found in the NAS library. Downloads a healthy Season 1 pack.',
+    title: 'TV Packs Only',
+    tabLabel: 'TV Packs',
+    modeLabel: 'Season 1 TV pack',
+    description: 'Automatically queues healthy Season 1 TV packs for shows not yet found in the NAS library.',
     notes: [
-      'Use this for shows that do not exist yet in the final NAS series library.',
-      'The selector searches enabled series sources by IMDb id and accepts Season 1 packs only.',
-      'Max season size is enforced against the selected pack. Episode size is not used by this pipeline.',
-      'If large season packs keep stalling, raise min seeders or lower max season size before increasing counts.',
+      'AutoDownload accepts full Season 1 TV packs only for series selection.',
+      'Episode-only, existing-series continuation, and mixed multi-season packs are rejected before queueing.',
+      'Max TV pack size is enforced against the selected pack. Episode size is not used by series selection.',
+      'Use Prowlarr/Jackett style indexers for TV packs; EZTV is useful for diagnostics but commonly returns episode-only results.',
     ],
   },
   newSeriesEpisode: {
@@ -120,31 +120,23 @@ const SERIES_PIPELINE_LABELS = {
     ],
   },
   deferredRetry: {
-    title: 'Deferred / Replacement Retry',
+    title: 'TV Pack Retry',
     tabLabel: 'Retry',
-    modeLabel: 'Replacement retry',
-    description: 'Used by timeout and replacement flows with stricter source gates.',
+    modeLabel: 'Season 1 TV pack retry',
+    description: 'Used by timeout and replacement flows while still enforcing TV-pack-only source selection.',
     notes: [
       'Used when timeout, replacement, deferred, or retry selection runs are triggered.',
-      'Defaults are stricter so failed downloads do not immediately recycle another weak source.',
-      'Disabling this prevents automatic retry selections after failed replacement flows.',
-      'Timeout and size limits here are captured onto new retry queue rows when they are created.',
+      'Retry runs still require Season 1 TV packs and never fall back to single episodes.',
+      'Timeout and size limits are copied from the TV Packs settings unless changed by backend policy.',
     ],
   },
 };
 
-const SERIES_SETTINGS_TABS = [
-  { key: 'overview', label: 'Overview' },
-  ...SERIES_PIPELINE_KEYS.map((key) => ({ key, label: SERIES_PIPELINE_LABELS[key].tabLabel })),
-];
-
 const SERIES_OVERVIEW_NOTES = [
-  'At least one normal pipeline must stay enabled: New S1 Pack, New Episode, or Existing Series.',
-  'Each pipeline has its own selection strategy, source gates, relevant max size, and timeout.',
-  'Season-pack pipelines show max season size. Episode pipelines show max episode size.',
-  'Selection counts decide how many TMDB titles a pipeline tries per cycle; source gates decide whether a title is actually queued.',
-  'Pipeline timeout values are saved onto new queue rows. Existing queued rows keep the timeout captured when they were created.',
-  'Strict replacement settings affect failed replacement cleanup only; they do not change normal pipeline selection counts.',
+  'Series AutoDownload is TV-pack-only. The selector queues Season 1 packs for brand-new shows.',
+  'Episode bootstrap, existing-series continuation, and single-episode retry pipelines are disabled.',
+  'Selection counts decide how many TMDB titles are attempted per cycle; source gates decide whether a title is queued.',
+  'TV pack timeout values are saved onto new queue rows. Existing queued rows keep the timeout captured when they were created.',
 ];
 
 const SERIES_PIPELINE_DEFAULTS = {
@@ -240,7 +232,6 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
   const [classicAnimationCount, setClassicAnimationCount] = useState(String(strategyDefaults.classicAnimationCount));
   const [classicLiveActionCount, setClassicLiveActionCount] = useState(String(strategyDefaults.classicLiveActionCount));
   const [seriesPipelines, setSeriesPipelines] = useState(() => normalizeSeriesPipelines(null, STRATEGY_DEFAULTS.series));
-  const [activeSeriesTab, setActiveSeriesTab] = useState('overview');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -278,10 +269,6 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
     if (!open) return;
     load();
   }, [open, load]);
-
-  useEffect(() => {
-    if (open && selectionType === 'series') setActiveSeriesTab('overview');
-  }, [open, selectionType]);
 
   const updateSeriesPipeline = (key, patch) => {
     setSeriesPipelines((prev) => ({
@@ -349,9 +336,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
         nextErrors.push('At least one selection count must be greater than 0.');
       }
     } else {
-      const activeNormal = ['newSeries', 'newSeriesEpisode', 'existingSeries'].filter((key) => seriesPipelines?.[key]?.enabled);
-      if (!activeNormal.length) nextErrors.push('Enable at least one normal series pipeline.');
-      for (const key of SERIES_PIPELINE_KEYS) {
+      for (const key of ['newSeries']) {
         const label = SERIES_PIPELINE_LABELS[key].title;
         const pipe = seriesPipelines?.[key] || {};
         const strategy = pipe.strategy || {};
@@ -368,6 +353,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
           Number(strategy.classicAnimationCount),
           Number(strategy.classicLiveActionCount),
         ];
+        if (!pipe.enabled) continue;
         if (!Number.isFinite(minSeedersValue) || minSeedersValue < 0) nextErrors.push(`${label}: min seeders must be 0 or greater.`);
         if (pipelineUsesEpisodeSize(key) && (!Number.isFinite(maxEpisodeValue) || maxEpisodeValue <= 0)) {
           nextErrors.push(`${label}: max episode size must be greater than 0.`);
@@ -422,26 +408,36 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
         const strategy = pipe.strategy || SERIES_PIPELINE_DEFAULTS[key].strategy;
         const maxEpisodeGb = Number(pipe.maxEpisodeGb);
         const maxSeasonTotalGb = Number(pipe.maxSeasonTotalGb);
+        const tvPackPipe = seriesPipelines?.newSeries || SERIES_PIPELINE_DEFAULTS.newSeries;
+        const tvPackStrategy = tvPackPipe.strategy || SERIES_PIPELINE_DEFAULTS.newSeries.strategy;
+        const hiddenPipeline = key !== 'newSeries';
+        const retryPipeline = key === 'deferredRetry';
         acc[key] = {
-          enabled: Boolean(pipe.enabled),
-          minSeeders: Math.max(0, Math.floor(Number(pipe.minSeeders) || 0)),
+          enabled: hiddenPipeline ? retryPipeline && Boolean(tvPackPipe.enabled) : Boolean(pipe.enabled),
+          minSeeders: Math.max(
+            0,
+            Math.floor(Number((hiddenPipeline ? tvPackPipe : pipe).minSeeders) || SERIES_PIPELINE_DEFAULTS[key].minSeeders)
+          ),
           maxEpisodeGb:
             Number.isFinite(maxEpisodeGb) && maxEpisodeGb > 0 ? maxEpisodeGb : SERIES_PIPELINE_DEFAULTS[key].maxEpisodeGb,
           maxSeasonTotalGb:
-            Number.isFinite(maxSeasonTotalGb) && maxSeasonTotalGb > 0
+            hiddenPipeline
+              ? Number(tvPackPipe.maxSeasonTotalGb) || SERIES_PIPELINE_DEFAULTS.newSeries.maxSeasonTotalGb
+              : Number.isFinite(maxSeasonTotalGb) && maxSeasonTotalGb > 0
               ? maxSeasonTotalGb
               : SERIES_PIPELINE_DEFAULTS[key].maxSeasonTotalGb,
-          timeoutHours: Number(pipe.timeoutHours),
+          timeoutHours: Number((hiddenPipeline ? tvPackPipe : pipe).timeoutHours) || SERIES_PIPELINE_DEFAULTS[key].timeoutHours,
           strategy: {
-            recentMonthsRange: Math.max(1, Math.floor(Number(strategy.recentMonthsRange) || SERIES_PIPELINE_DEFAULTS[key].strategy.recentMonthsRange)),
-            classicYearStart: Math.max(1900, Math.min(2100, Math.floor(Number(strategy.classicYearStart) || SERIES_PIPELINE_DEFAULTS[key].strategy.classicYearStart))),
-            classicYearEnd: Math.max(1900, Math.min(2100, Math.floor(Number(strategy.classicYearEnd) || SERIES_PIPELINE_DEFAULTS[key].strategy.classicYearEnd))),
-            recentAnimationCount: Math.max(0, Math.floor(Number(strategy.recentAnimationCount) || 0)),
-            recentLiveActionCount: Math.max(0, Math.floor(Number(strategy.recentLiveActionCount) || 0)),
-            classicAnimationCount: Math.max(0, Math.floor(Number(strategy.classicAnimationCount) || 0)),
-            classicLiveActionCount: Math.max(0, Math.floor(Number(strategy.classicLiveActionCount) || 0)),
+            recentMonthsRange: Math.max(1, Math.floor(Number((hiddenPipeline ? tvPackStrategy : strategy).recentMonthsRange) || SERIES_PIPELINE_DEFAULTS[key].strategy.recentMonthsRange)),
+            classicYearStart: Math.max(1900, Math.min(2100, Math.floor(Number((hiddenPipeline ? tvPackStrategy : strategy).classicYearStart) || SERIES_PIPELINE_DEFAULTS[key].strategy.classicYearStart))),
+            classicYearEnd: Math.max(1900, Math.min(2100, Math.floor(Number((hiddenPipeline ? tvPackStrategy : strategy).classicYearEnd) || SERIES_PIPELINE_DEFAULTS[key].strategy.classicYearEnd))),
+            recentAnimationCount: Math.max(0, Math.floor(Number((hiddenPipeline ? tvPackStrategy : strategy).recentAnimationCount) || 0)),
+            recentLiveActionCount: Math.max(0, Math.floor(Number((hiddenPipeline ? tvPackStrategy : strategy).recentLiveActionCount) || 0)),
+            classicAnimationCount: Math.max(0, Math.floor(Number((hiddenPipeline ? tvPackStrategy : strategy).classicAnimationCount) || 0)),
+            classicLiveActionCount: Math.max(0, Math.floor(Number((hiddenPipeline ? tvPackStrategy : strategy).classicLiveActionCount) || 0)),
           },
         };
+        if (hiddenPipeline && !retryPipeline) acc[key].enabled = false;
         return acc;
       }, {});
       const body =
@@ -497,12 +493,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
       Number(strategy.classicAnimationCount || 0) +
       Number(strategy.classicLiveActionCount || 0);
     return (
-      <button
-        key={key}
-        type="button"
-        onClick={() => setActiveSeriesTab(key)}
-        className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4 text-left transition hover:border-[--brand]/50"
-      >
+      <div key={key} className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4 text-left">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-[var(--admin-text)]">{meta.tabLabel}</div>
@@ -524,7 +515,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
           {pipelineUsesSeasonSize(key) ? <div>Season max: {pipe.maxSeasonTotalGb} GB</div> : null}
           <div className="col-span-2">Cycle target: {Number.isFinite(totalCount) ? totalCount : 0} title(s)</div>
         </div>
-      </button>
+      </div>
     );
   };
 
@@ -532,15 +523,15 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
     <div className="space-y-4">
       <NoteBox title="Process notes" items={SERIES_OVERVIEW_NOTES} />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {SERIES_PIPELINE_KEYS.map((key) => renderSeriesPipelineSummary(key))}
+      <div className="grid gap-4 md:grid-cols-2">
+        {renderSeriesPipelineSummary('newSeries')}
       </div>
 
       <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
         <div className="mb-3">
           <div className="text-sm font-semibold text-[var(--admin-text)]">Replacement cleanup rules</div>
           <div className="mt-1 text-xs text-[var(--admin-muted)]">
-            These settings are global for series replacement failures. Pipeline tabs control source selection and timeout behavior.
+            These settings are global for series replacement failures. Source selection remains TV-pack-only.
           </div>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
@@ -711,37 +702,10 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
   };
 
   const renderSeriesSettingsTabs = () => {
-    const activeKey = SERIES_SETTINGS_TABS.some((tab) => tab.key === activeSeriesTab) ? activeSeriesTab : 'overview';
     return (
       <div className="space-y-4">
-        <div className="-mx-5 sticky top-0 z-10 bg-[var(--admin-surface)] px-5 pb-4 pt-1">
-          <div className="overflow-x-auto rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-1">
-            <div className="flex min-w-max gap-1">
-              {SERIES_SETTINGS_TABS.map((tab) => {
-                const active = tab.key === activeKey;
-                return (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setActiveSeriesTab(tab.key)}
-                    className={cx(
-                      'rounded-lg px-4 py-2 text-sm font-medium transition',
-                      active
-                        ? 'bg-[var(--admin-surface-solid)] text-[var(--admin-text)] shadow-sm'
-                        : 'text-[var(--admin-muted)] hover:bg-black/5 hover:text-[var(--admin-text)] data-[theme=dark]:hover:bg-white/5'
-                    )}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <div className="mt-2 text-[11px] text-[var(--admin-muted)]">
-            Tip: Scroll horizontally if tabs are clipped on mobile.
-          </div>
-        </div>
-        {activeKey === 'overview' ? renderSeriesOverview() : renderSeriesPipelineCard(activeKey)}
+        {renderSeriesOverview()}
+        {renderSeriesPipelineCard('newSeries')}
       </div>
     );
   };
@@ -764,7 +728,7 @@ export default function AdminAutoDownloadSelectionSettingsButton({ type = 'movie
         description={
           selectionType === 'movie'
             ? 'Movie size/seeder gates and Movie Selection Strategy buckets used when building movie selection runs.'
-            : 'Series pipeline gates, replacement behavior, and Series Selection Strategy buckets used during automatic series selection.'
+            : 'TV-pack-only gates, replacement behavior, and Series Selection Strategy buckets used during automatic series selection.'
         }
         error={error}
         success={success}

@@ -102,16 +102,19 @@ async function handle(req, ctx) {
           episodeNumber: currentEpisode.episode,
         });
       } catch {}
-      try {
-        openSubtitles = await searchSeriesEpisodeSubtitles({
-          title: i?.name || 'Series',
-          year: (i?.releaseDate || '').slice(0, 4) || '',
-          seasonNumber: currentEpisode.seasonNumber,
-          episodeNumber: currentEpisode.episode,
-          acceptLanguage: req.headers.get('accept-language') || '',
-        });
-      } catch {}
-      subtitles = mergeSubtitleTrackLists(localSubtitles, currentEpisode.subtitles, openSubtitles);
+      const mergedExisting = mergeSubtitleTrackLists(localSubtitles, currentEpisode.subtitles);
+      if (!mergedExisting.length) {
+        try {
+          openSubtitles = await searchSeriesEpisodeSubtitles({
+            title: i?.name || 'Series',
+            year: (i?.releaseDate || '').slice(0, 4) || '',
+            seasonNumber: currentEpisode.seasonNumber,
+            episodeNumber: currentEpisode.episode,
+            acceptLanguage: req.headers.get('accept-language') || '',
+          });
+        } catch {}
+      }
+      subtitles = mergeSubtitleTrackLists(mergedExisting, openSubtitles);
     }
 
     return NextResponse.json({

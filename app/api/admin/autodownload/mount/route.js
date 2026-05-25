@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { requireAdminFromRequest } from '../../../../../lib/server/adminApiAuth';
 import { getMountSettings } from '../../../../../lib/server/autodownload/autodownloadDb';
 import { updateMountSettingsFromAdminInput } from '../../../../../lib/server/autodownload/mountService';
+import { decryptString } from '../../../../../lib/server/vault';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,8 @@ function safeMountSettings(s) {
     smbVersion: s.smbVersion || '',
     uid: s.uid || 'xui',
     gid: s.gid || 'xui',
+    username: s.usernameEnc ? decryptString(s.usernameEnc) : '',
+    password: s.passwordEnc ? decryptString(s.passwordEnc) : '',
     hasCredentials: Boolean(s.usernameEnc && s.passwordEnc),
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,

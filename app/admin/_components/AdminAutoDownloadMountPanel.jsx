@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Settings2 } from 'lucide-react';
 
 import HelpTooltip from './HelpTooltip';
@@ -111,6 +112,7 @@ function SettingsIconButton({ onClick }) {
 }
 
 export default function AdminAutoDownloadMountPanel() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -174,6 +176,7 @@ export default function AdminAutoDownloadMountPanel() {
       items: [
         'Mount adds and maintains a managed /etc/fstab entry with marker # 3JTV_CIFS_AUTOMOUNT.',
         'Unmount removes the managed fstab entry and unmounts all active mounts for this mount path.',
+        'Share Path must start with the real Windows SMB share name; if the library is inside a folder, append it like D/iptv_files.',
         'Repair remounts and refreshes mount health only.',
       ],
     },
@@ -184,6 +187,13 @@ export default function AdminAutoDownloadMountPanel() {
   const moviesStageBaseDir = useMemo(() => `${qBittorrentBaseDir}/Movies`, [qBittorrentBaseDir]);
   const seriesStageBaseDir = useMemo(() => `${qBittorrentBaseDir}/Series`, [qBittorrentBaseDir]);
 
+  const handleUnauthorized = (response) => {
+    if (response?.status !== 401) return false;
+    setErr('Admin session expired. Redirecting to login…');
+    router.replace('/admin/login');
+    return true;
+  };
+
   const canAuthAction = useMemo(() => {
     return Boolean(
       windowsHost.trim() &&
@@ -192,6 +202,36 @@ export default function AdminAutoDownloadMountPanel() {
         (hasSavedCredentials || (username.trim() && password))
     );
   }, [windowsHost, shareName, mountDir, hasSavedCredentials, username, password]);
+
+  const applyMountSettings = (mount) => {
+    if (!mount) return;
+    setWindowsHost(mount.windowsHost || '');
+    setShareName(mount.shareName || '');
+    setMountDir(mount.mountDir || '/mnt/windows_vod');
+    setXuiVodPath(mount.xuiVodPath || '/home/xui/content/vod');
+    setUsername(mount.username || '');
+    setPassword(mount.password || '');
+    setDomain(mount.domain || '');
+    setSmbVersion(mount.smbVersion || '');
+    setUid(mount.uid || 'xui');
+    setGid(mount.gid || 'xui');
+    setHasSavedCredentials(Boolean(mount.hasCredentials));
+    setNeedsVerification(!mount.hasCredentials);
+  };
+
+  const refreshMountSettingsForm = async () => {
+    try {
+      const response = await fetch('/api/admin/autodownload/mount', { cache: 'no-store' });
+      const json = await response.json().catch(() => ({}));
+      if (handleUnauthorized(response)) return false;
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to load mount settings.');
+      applyMountSettings(json.mount || null);
+      return true;
+    } catch (error) {
+      setErr(error?.message || 'Failed to load mount settings.');
+      return false;
+    }
+  };
 
   const syncFolderSummary = async ({ silent = true } = {}) => {
     setValidating(true);
@@ -225,6 +265,7 @@ export default function AdminAutoDownloadMountPanel() {
       ]);
 
       const mountJson = await mountRes.json().catch(() => ({}));
+      if (handleUnauthorized(mountRes)) return false;
       if (mountRes.ok && mountJson?.ok) {
         const next = mountJson.status || null;
         setStatus(next);
@@ -263,20 +304,10 @@ export default function AdminAutoDownloadMountPanel() {
       ]);
 
       const j1 = await r1.json().catch(() => ({}));
+      if (handleUnauthorized(r1)) return;
       if (!r1.ok || !j1?.ok) throw new Error(j1?.error || 'Failed to load mount settings.');
       const mount = j1.mount || null;
-      if (mount) {
-        setWindowsHost(mount.windowsHost || '');
-        setShareName(mount.shareName || '');
-        setMountDir(mount.mountDir || '/mnt/windows_vod');
-        setXuiVodPath(mount.xuiVodPath || '/home/xui/content/vod');
-        setDomain(mount.domain || '');
-        setSmbVersion(mount.smbVersion || '');
-        setUid(mount.uid || 'xui');
-        setGid(mount.gid || 'xui');
-        setHasSavedCredentials(Boolean(mount.hasCredentials));
-        setNeedsVerification(!mount.hasCredentials);
-      }
+      applyMountSettings(mount);
 
       let loadedStatus = null;
       if (r2) {
@@ -354,6 +385,17 @@ export default function AdminAutoDownloadMountPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!settingsOpen) return;
+    refreshMountSettingsForm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen]);
+
+  const openSettings = async () => {
+    setSettingsOpen(true);
+    await refreshMountSettingsForm();
+  };
+
   const save = async () => {
     if (needsVerification) {
       setErr('Run Test SMB or Mount first before saving NAS settings.');
@@ -385,10 +427,14 @@ export default function AdminAutoDownloadMountPanel() {
         }),
       });
       const j = await r.json().catch(() => ({}));
+      if (handleUnauthorized(r)) return false;
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to save NAS settings.');
       setOk('NAS settings saved.');
-      setPassword('');
       setHasSavedCredentials(true);
+      if (j?.mount) {
+        setUsername(j.mount.username || username);
+        setPassword(j.mount.password || password);
+      }
       await refreshStatus();
       return true;
     } catch (e) {
@@ -421,6 +467,7 @@ export default function AdminAutoDownloadMountPanel() {
         }),
       });
       const j = await r.json().catch(() => ({}));
+      if (handleUnauthorized(r)) return false;
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'SMB test failed.');
       setOk(j?.result?.message || 'SMB OK.');
       setNeedsVerification(false);
@@ -455,13 +502,13 @@ export default function AdminAutoDownloadMountPanel() {
         }),
       });
       const j = await r.json().catch(() => ({}));
+      if (handleUnauthorized(r)) return false;
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Mount failed.');
       setOk('Mounted and configured.');
       const nextStatus = j?.result?.status || null;
       if (nextStatus) setStatus(nextStatus);
       setHasSavedCredentials(true);
       setNeedsVerification(false);
-      setPassword('');
       await refreshStatus();
       return true;
     } catch (e) {
@@ -479,6 +526,7 @@ export default function AdminAutoDownloadMountPanel() {
     try {
       const r = await fetch('/api/admin/autodownload/mount/repair', { method: 'POST' });
       const j = await r.json().catch(() => ({}));
+      if (handleUnauthorized(r)) return false;
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Repair failed.');
       setOk('Repair completed.');
       setStatus(j?.result?.status || null);
@@ -500,6 +548,7 @@ export default function AdminAutoDownloadMountPanel() {
     try {
       const r = await fetch('/api/admin/autodownload/mount/unmount', { method: 'POST' });
       const j = await r.json().catch(() => ({}));
+      if (handleUnauthorized(r)) return false;
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Unmount failed.');
       setOk('Unmounted.');
       const nextStatus = j?.result?.status || null;
@@ -588,6 +637,7 @@ export default function AdminAutoDownloadMountPanel() {
         }),
       });
       const j = await r.json().catch(() => ({}));
+      if (handleUnauthorized(r)) return false;
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to save folder configuration.');
 
       const lf = j.libraryFolders || {};
@@ -659,7 +709,6 @@ export default function AdminAutoDownloadMountPanel() {
       setOk('Folder structure saved.');
     }
     setSettingsOpen(false);
-    setPassword('');
     setFolderCfgErr('');
     setFolderCfgOk('');
   };
@@ -835,7 +884,7 @@ export default function AdminAutoDownloadMountPanel() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <NotesButton title="Storage & Mount — Notes" sections={notes} />
-          <SettingsIconButton onClick={() => setSettingsOpen(true)} />
+          <SettingsIconButton onClick={openSettings} />
         </div>
       </div>
 
@@ -1094,7 +1143,6 @@ export default function AdminAutoDownloadMountPanel() {
         saving={savingFolders}
         onCancel={async () => {
           setSettingsOpen(false);
-          setPassword('');
           setFolderCfgErr('');
           setFolderCfgOk('');
           await load();
@@ -1286,10 +1334,10 @@ export default function AdminAutoDownloadMountPanel() {
             <Field
               label={
                 <span className="inline-flex items-center gap-2">
-                  Share Name <HelpTooltip text="SMB share name (not a disk path). Mount source is //WindowsHost/ShareName." />
+                  Share Path <HelpTooltip text="First segment must be the real SMB share name. Add folders after it when the library is inside the share, for example D/iptv_files." />
                 </span>
               }
-              hint="Example: VOD"
+              hint="Example: D/iptv_files"
             >
               <Input
                 value={shareName}
@@ -1297,7 +1345,7 @@ export default function AdminAutoDownloadMountPanel() {
                   setShareName(e.target.value);
                   setNeedsVerification(true);
                 }}
-                placeholder="VOD"
+                placeholder="D/iptv_files"
               />
             </Field>
 
@@ -1342,7 +1390,7 @@ export default function AdminAutoDownloadMountPanel() {
                   SMB Username <HelpTooltip text="SMB username for the NAS share." />
                 </span>
               }
-              hint="Not displayed after save"
+              hint="Saved credential"
             >
               <Input
                 value={username}
@@ -1350,7 +1398,7 @@ export default function AdminAutoDownloadMountPanel() {
                   setUsername(e.target.value);
                   setNeedsVerification(true);
                 }}
-                placeholder={hasSavedCredentials ? '(already saved)' : 'nasuser'}
+                placeholder={hasSavedCredentials ? 'Saved SMB username' : 'nasuser'}
                 autoComplete="username"
               />
             </Field>
@@ -1361,7 +1409,7 @@ export default function AdminAutoDownloadMountPanel() {
                   SMB Password <HelpTooltip text="SMB password for the NAS share." />
                 </span>
               }
-              hint="Not displayed after save"
+              hint="Saved credential"
             >
               <Input
                 value={password}
@@ -1369,8 +1417,8 @@ export default function AdminAutoDownloadMountPanel() {
                   setPassword(e.target.value);
                   setNeedsVerification(true);
                 }}
-                placeholder={hasSavedCredentials ? '(already saved)' : '••••••••'}
-                type="password"
+                placeholder={hasSavedCredentials ? 'Saved SMB password' : '••••••••'}
+                type="text"
                 autoComplete="new-password"
               />
             </Field>

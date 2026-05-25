@@ -88,6 +88,17 @@ function statusClass(status) {
   return 'border-neutral-600 bg-neutral-800/50 text-neutral-200';
 }
 
+function seriesProviderRole(provider = {}) {
+  const key = String(provider?.key || provider?.id || '').toLowerCase();
+  if (key === 'prowlarr' || key === 'jackett') {
+    return { tone: 'success', label: 'TV packs supported', note: 'Preferred for Season 1 TV pack searches.' };
+  }
+  if (key === 'eztv') {
+    return { tone: 'warning', label: 'Episode-heavy', note: 'Diagnostics only unless it returns a full Season 1 pack.' };
+  }
+  return { tone: 'neutral', label: 'Generic TV source', note: 'Accepted only when a result is a full Season 1 TV pack.' };
+}
+
 function normalizeDomainsText(input) {
   return String(input || '')
     .split(/\r?\n/)
@@ -739,6 +750,9 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
       items: [
         'Manages torrent provider adapters (YTS/TPB/Jackett/Prowlarr/EZTV) with health status, tests, backoff, and logs.',
         'No anti-bot bypass is implemented. Blocked/challenge responses are recorded and backoff is applied.',
+        mediaType === 'series'
+          ? 'Series AutoDownload is TV-pack-only: source tests use an IMDb TV query and dispatch rejects episode-only results.'
+          : '',
       ],
     },
     {
@@ -776,7 +790,9 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
             </div>
           ) : (
             <div className="mt-1 text-sm text-[var(--admin-muted)]">
-              Provider health, test controls, backoff policies, and recent provider activity.
+              {mediaType === 'series'
+                ? 'Provider health for TV-pack-only series searches, test controls, backoff policies, and recent activity.'
+                : 'Provider health, test controls, backoff policies, and recent provider activity.'}
             </div>
           )}
         </div>
@@ -834,13 +850,30 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
             ))}
           </div>
 
+          {mediaType === 'series' ? (
+            <div className="mt-4 rounded-xl border border-sky-500/20 bg-sky-500/10 p-3 text-sm text-[var(--admin-text)]">
+              <div className="font-semibold">TV pack mode</div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                Series selection and dispatch accept full Season 1 TV packs only. Single episodes and multi-season bundles are filtered out even if a provider test succeeds.
+              </div>
+            </div>
+          ) : null}
+
           <div className="mt-5 grid gap-3 md:grid-cols-2">
-            {providersSorted.map((p) => (
+            {providersSorted.map((p) => {
+              const role = mediaType === 'series' ? seriesProviderRole(p) : null;
+              return (
               <div key={p.id} className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-base font-semibold">{p.displayName}</div>
                     <div className="mt-1 text-xs text-[var(--admin-muted)]">Priority {p.priority}</div>
+                    {role ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Badge tone={role.tone}>{role.label}</Badge>
+                        <span className="text-[11px] text-[var(--admin-muted)]">{role.note}</span>
+                      </div>
+                    ) : null}
                     <div className="mt-1 text-xs text-[var(--admin-muted)]">
                       Active base: <span className="font-medium text-[var(--admin-text)]">{p.activeBase || '—'}</span>
                     </div>
@@ -893,7 +926,7 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
                     disabled={busy}
                     className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] px-2 py-1 text-xs hover:bg-black/10 disabled:opacity-60"
                   >
-                    Test
+                    {mediaType === 'series' ? 'Test TV pack' : 'Test'}
                   </button>
 
                   <button
@@ -956,7 +989,8 @@ export default function AdminAutoDownloadSourcesPanel({ type = 'movie' } = {}) {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </>
       ) : null}
