@@ -959,14 +959,25 @@ export default function VideoPlayer({
           });
         } catch {}
 
-        // Live streams can occasionally return a bad segment (HTML/502) which causes a demuxer parse error.
-        // Try a lightweight recover once or twice before surfacing the error.
+        // Live streams can occasionally return a bad direct TS response while the HLS route is healthy.
+        // Move to the HLS root explicitly before doing heavier recoveries.
         try {
           const isLive = mediaType === 'live';
           const isDemux =
             String(mediaErr?.message || '').toLowerCase().includes('demuxer_error') ||
             String(mediaErr?.message || '').toLowerCase().includes('could_not_parse');
           if (isLive && errCode === 4 && isDemux && srcs.hls) {
+            if (currentRef.current?.kind !== 'hls') {
+              try {
+                setUseHls(true);
+                forcedUseHlsRef.current = true;
+                attachSrc(srcs.hls, true);
+                setTimeout(() => {
+                  safePlay(v);
+                }, 250);
+                return;
+              } catch {}
+            }
             const now = Date.now();
             if (now - liveRecoverRef.current.lastAt > 3000) {
               liveRecoverRef.current.lastAt = now;
@@ -978,7 +989,7 @@ export default function VideoPlayer({
                 hlsInst?.recoverMediaError?.();
               } catch {}
               try {
-                attachSrc(srcs.hls);
+                attachSrc(srcs.hls, true);
                 // Best-effort resume
                 setTimeout(() => {
                   safePlay(v);

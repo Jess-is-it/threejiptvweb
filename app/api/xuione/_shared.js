@@ -10,11 +10,50 @@ const insecureDispatcher = new Agent({
   connect: { rejectUnauthorized: false },
 });
 
+const DEFAULT_PUBLIC_XUI_ORIGIN = 'https://xui.3jhotspot.com/';
+const RETIRED_XUI_HOST_RE = /^tv\d+\.3jxentro\.net$/i;
+
 function normalizeOrigin(raw = '') {
   try {
     return `${new URL(String(raw || '').trim()).origin}/`;
   } catch {
     return '';
+  }
+}
+
+function publicXuiOrigin() {
+  return (
+    normalizeOrigin(process.env.XUI_PUBLIC_URL) ||
+    normalizeOrigin(process.env.XUI_PUBLIC_BASE_URL) ||
+    normalizeOrigin(process.env.NEXT_PUBLIC_XUI_PUBLIC_URL) ||
+    DEFAULT_PUBLIC_XUI_ORIGIN
+  );
+}
+
+function isRetiredXuiHost(hostname = '') {
+  return RETIRED_XUI_HOST_RE.test(String(hostname || '').trim().toLowerCase());
+}
+
+export function normalizeXuioneServerOrigin(origin = '') {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return '';
+  try {
+    const url = new URL(normalized);
+    if (isRetiredXuiHost(url.hostname)) return publicXuiOrigin();
+  } catch {}
+  return normalized;
+}
+
+function normalizeRetiredXuiUrl(rawUrl = '') {
+  try {
+    const url = new URL(rawUrl);
+    if (!isRetiredXuiHost(url.hostname)) return rawUrl;
+    const replacement = new URL(publicXuiOrigin());
+    url.protocol = replacement.protocol;
+    url.host = replacement.host;
+    return url.toString();
+  } catch {
+    return rawUrl;
   }
 }
 
@@ -94,6 +133,7 @@ export function resolveXuioneAssetUrl(value = '', server = '') {
   const origin = normalizeOrigin(server);
 
   if (/^https?:\/\//i.test(raw)) {
+    raw = normalizeRetiredXuiUrl(raw);
     try {
       const url = new URL(raw);
       // XUI often returns internal panel artwork as absolute URLs based on the
@@ -187,7 +227,7 @@ export function parseStreamBase(streamBase = '') {
     const i = parts.indexOf('live');
     const username = parts[i + 1] || '';
     const password = parts[i + 2] || '';
-    const server = `${u.origin}/`;
+    const server = normalizeXuioneServerOrigin(`${u.origin}/`);
     if (!username || !password) throw new Error('Invalid streamBase');
     return { server, username, password };
   } catch {
@@ -200,9 +240,11 @@ export function parseStreamBase(streamBase = '') {
  * Original first, then other tvN hosts.
  */
 function mirrorServers(originalOrigin) {
-  const u = new URL(originalOrigin);
+  const normalizedOrigin = normalizeXuioneServerOrigin(originalOrigin);
+  const u = new URL(normalizedOrigin);
+  if (isRetiredXuiHost(u.hostname)) return [publicXuiOrigin()];
   const m = u.hostname.match(/^tv(\d+)\.(.+)$/i);
-  if (!m) return [originalOrigin]; // unknown pattern: just use original
+  if (!m) return [normalizedOrigin]; // unknown pattern: just use original
 
   const current = Number(m[1]);
   const domain = m[2];
@@ -227,19 +269,24 @@ async function xtreamOnce({ server, username, password, action, extra = {}, sign
   }
 
   const insecureTls = await allowInsecureTlsFor(url.toString());
-  const r = await fetch(url.toString(), {
-    cache: 'no-store',
-    redirect: 'follow',
-    ...(signal ? { signal } : {}),
-    ...(insecureTls ? { dispatcher: insecureDispatcher } : {}),
-    headers: {
-      // be more “browser-y” – some panels behave differently
-      'user-agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
-      accept: 'application/json,text/plain;q=0.9,*/*;q=0.8',
-      'accept-language': 'en-US,en;q=0.7',
-    },
-  });
+  let r;
+  try {
+    r = await fetch(url.toString(), {
+      cache: 'no-store',
+      redirect: 'follow',
+      ...(signal ? { signal } : {}),
+      ...(insecureTls ? { dispatcher: insecureDispatcher } : {}),
+      headers: {
+        // be more “browser-y” – some panels behave differently
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+        accept: 'application/json,text/plain;q=0.9,*/*;q=0.8',
+        'accept-language': 'en-US,en;q=0.7',
+      },
+    });
+  } catch (error) {
+    throw new Error(`Xuione fetch failed for ${url.origin}: ${error?.message || 'fetch failed'}`);
+  }
 
   const ct = r.headers.get('content-type') || '';
   const text = await r.text().catch(() => '');
@@ -279,5 +326,15 @@ export async function xtreamWithFallback({ server, username, password, action, e
     }
   }
 
-  throw lastErr || new Error('Xuione request timed out');
+  const candidateText = candidates.map((base) => {
+    try {
+      return new URL(base).origin;
+    } catch {
+      return String(base || '').replace(/\/+$/, '');
+    }
+  }).filter(Boolean).join(', ');
+  const suffix = candidateText ? ` Tried: ${candidateText}.` : '';
+  throw lastErr
+    ? new Error(`${lastErr.message || 'Xuione request failed'}.${suffix}`)
+    : new Error(`Xuione request timed out.${suffix}`);
 }

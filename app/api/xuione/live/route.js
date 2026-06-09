@@ -178,25 +178,25 @@ function sanitizeLogoUrl(value, { origin = '' } = {}) {
   const raw = String(value || '').trim();
   if (!raw) return '';
   const baseOrigin = String(origin || '').trim();
-  if (baseOrigin) {
-    try {
-      const proxied = (src) => `/api/xuione/image?src=${encodeURIComponent(src)}&server=${encodeURIComponent(baseOrigin)}`;
-      if (/^\/images\//i.test(raw)) {
-        return proxied(raw);
-      }
-      if (/^images\//i.test(raw)) {
-        return proxied(`/${raw.replace(/^\/+/, '')}`);
-      }
-      const pseudoPath = raw.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\d*:(\/images\/.+)$/i);
-      if (pseudoPath?.[1]) {
-        return proxied(pseudoPath[1]);
-      }
-    } catch {}
-  }
+  const proxied = (src) => {
+    if (!baseOrigin) return '';
+    return `/api/xuione/image?src=${encodeURIComponent(src)}&server=${encodeURIComponent(baseOrigin)}`;
+  };
+
+  if (/^data:image\//i.test(raw)) return raw;
   // Browsers will refuse `file://` (and it spams the console).
   if (raw.toLowerCase().startsWith('file://')) return '';
   // Windows paths like `S:\images\...` occasionally leak via XUI icons.
   if (/^[a-zA-Z]:[\\/]/.test(raw)) return '';
+
+  try {
+    if (/^\/images\//i.test(raw)) return proxied(raw);
+    if (/^images\//i.test(raw)) return proxied(`/${raw.replace(/^\/+/, '')}`);
+    const pseudoPath = raw.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\d*:(\/images\/.+)$/i);
+    if (pseudoPath?.[1]) return proxied(pseudoPath[1]);
+    if (/^https?:\/\//i.test(raw)) return proxied(raw) || raw;
+  } catch {}
+
   // XUI sometimes leaks pseudo-paths like `s:1:/images/...`; Windows browsers coerce these into
   // `file:///S:/...` requests that fail noisily in the console.
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/i.test(raw) && !/^(https?:|data:image\/)/i.test(raw)) return '';
@@ -397,6 +397,7 @@ async function readXuiAdminLiveCatalog() {
           const name = String(r2?.stream_display_name || r2?.name || `CH ${id}`).trim();
           const icon = sanitizeLogoUrl(r2?.stream_icon, { origin });
           const sources = normalizeSourceList(r2?.stream_source || r2?.streamSource || r2?.sources);
+          const liveExt = normalizeLiveExt(r2?.container_extension || r2?.target_container || sourceExtension(sources[0]) || 'ts') || 'ts';
           const cats = parseCategoryIds(r2?.category_id ?? r2?.categoryId);
           for (const c of cats) catSet.add(String(c));
           const { xuiStreamStatus, xuiPid, isUp } = deriveLiveRuntimeStatus(r2);
@@ -408,7 +409,7 @@ async function readXuiAdminLiveCatalog() {
             logo: icon,
             number: r2?.num ?? r2?.order ?? null,
             category_id: cats[0] || '',
-            ext: 'm3u8',
+            ext: liveExt,
             streamType: 'live',
             directSource: '',
             streamSources: sources,
@@ -445,6 +446,7 @@ async function readXuiAdminLiveCatalog() {
         const name = String(r?.stream_display_name || r?.name || `CH ${id}`).trim();
         const icon = sanitizeLogoUrl(r?.stream_icon, { origin });
         const sources = normalizeSourceList(r?.stream_source || r?.streamSource || r?.sources);
+        const liveExt = normalizeLiveExt(r?.container_extension || r?.target_container || sourceExtension(sources[0]) || 'ts') || 'ts';
         const cats = parseCategoryIds(r?.category_id ?? r?.categoryId);
         for (const c of cats) catSet.add(String(c));
         const { xuiStreamStatus, xuiPid, isUp } = deriveLiveRuntimeStatus(r);
@@ -456,7 +458,7 @@ async function readXuiAdminLiveCatalog() {
           logo: icon,
           number: r?.num ?? r?.order ?? null,
           category_id: cats[0] || '',
-          ext: 'm3u8',
+          ext: liveExt,
           streamType: 'live',
           directSource: '',
           streamSources: sources,
