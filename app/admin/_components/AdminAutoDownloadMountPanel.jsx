@@ -943,7 +943,7 @@ export default function AdminAutoDownloadMountPanel() {
                 <div className="text-sm font-semibold">2. Folder Structure</div>
                 <CreatedBadge ready={folderStructureCreated} checking={validating || (Boolean(status?.mounted) && !folderSummary)} />
               </div>
-              <div className="mt-2 text-xs text-[var(--admin-muted)]">Staging folders are checked/created from current settings.</div>
+              <div className="mt-2 text-xs text-[var(--admin-muted)]">Pipeline folders are checked/created from current settings.</div>
 
               <div className="mt-3 grid gap-3 text-sm">
                 <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-3">
@@ -1471,7 +1471,7 @@ export default function AdminAutoDownloadMountPanel() {
           <div>
             <div className="text-sm font-semibold">Library Folder Structure</div>
             <div className="mt-1 text-xs text-[var(--admin-muted)]">
-              Edit staging folder names for Movies and Series. Click <span className="font-medium">Save & Close</span> below to apply changes.
+              Edit pipeline folder names for Movies and Series. Click <span className="font-medium">Save & Close</span> below to apply changes.
             </div>
           </div>
 

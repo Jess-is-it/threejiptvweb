@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Info } from 'lucide-react';
+import { Copy, ExternalLink, Globe2, Info, Play, RefreshCw, RotateCcw, ShieldCheck, Square } from 'lucide-react';
 
 import {
   defaultTelegramMessageTemplates,
@@ -11,12 +11,20 @@ import {
   TELEGRAM_MESSAGE_STAMP_GROUPS,
   TELEGRAM_MESSAGE_TEMPLATE_FIELDS,
 } from '../../../lib/telegramMessageTemplates';
+import AdminA2PSettingsPanel from './AdminA2PSettingsPanel';
+
+const SAVED_TOKEN_TEXT = 'Saved token configured - leave blank to keep it';
+const SAVED_TURNSTILE_SECRET_TEXT = 'Saved secret configured - leave blank to keep it';
+const SAVED_SSH_SECRET_TEXT = 'Saved secret configured - leave blank to keep it';
 
 const TABS = [
   { key: 'branding', label: 'Branding' },
   { key: 'player', label: 'Player' },
   { key: 'login', label: 'Login' },
-  { key: 'servers', label: 'Xuione' },
+  { key: 'security', label: 'Security' },
+  { key: 'publicHttps', label: 'Public HTTPS' },
+  { key: 'xuiHttps', label: 'XUI HTTPS' },
+  { key: 'a2p', label: 'A2P Messaging' },
   { key: 'notifications', label: 'Notifications' },
   { key: 'messages', label: 'Messages' },
 ];
@@ -30,13 +38,6 @@ const TEST_MESSAGES = {
   daily_monitor_report: 'Daily monitor report test notification sent.',
 };
 
-function normalizeServers(text) {
-  const lines = String(text || '')
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return lines.map((u) => (u.endsWith('/') ? u : `${u}/`));
-}
 
 function TabButton({ active, onClick, children }) {
   return (
@@ -75,7 +76,7 @@ function Field({ label, help, children }) {
   );
 }
 
-function TextInput({ value, onChange, placeholder, type = 'text', min, max, step }) {
+function TextInput({ value, onChange, onFocus, placeholder, type = 'text', min, max, step }) {
   return (
     <input
       type={type}
@@ -83,6 +84,7 @@ function TextInput({ value, onChange, placeholder, type = 'text', min, max, step
       min={min}
       max={max}
       step={step}
+      onFocus={onFocus}
       onChange={(event) => onChange(event.target.value)}
       className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
       placeholder={placeholder}
@@ -90,11 +92,12 @@ function TextInput({ value, onChange, placeholder, type = 'text', min, max, step
   );
 }
 
-function TextAreaInput({ value, onChange, placeholder, rows = 6, noWrap = false }) {
+function TextAreaInput({ value, onChange, onFocus, placeholder, rows = 6, noWrap = false }) {
   return (
     <textarea
       value={value}
       onChange={(event) => onChange(event.target.value)}
+      onFocus={onFocus}
       rows={rows}
       wrap={noWrap ? 'off' : undefined}
       className={
@@ -132,6 +135,14 @@ function TestActionButton({ visible, busy, disabled, onClick, children }) {
       {busy ? 'Sending…' : children}
     </button>
   );
+}
+
+function serviceStatusLabel(meta = {}, key = '') {
+  const row = meta?.serviceStatuses?.[key];
+  if (!row || (row.isUp !== true && row.isUp !== false)) return 'Last known status: not checked yet.';
+  const status = row.isUp ? 'UP' : 'DOWN';
+  const summary = String(row.summary || '').trim();
+  return `Last known status: ${status}${summary ? ` — ${summary}` : ''}`;
 }
 
 function MessageStampsModal({ open, onClose }) {
@@ -191,6 +202,623 @@ function MessageStampsModal({ open, onClose }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function statusTone(status) {
+  if (status === 'SUCCESS') return 'text-emerald-500';
+  if (status === 'WARNING') return 'text-amber-500';
+  if (status === 'FAILED') return 'text-red-500';
+  return 'text-[var(--admin-muted)]';
+}
+
+function StatusPill({ ok, label }) {
+  return (
+    <span
+      className={
+        'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ' +
+        (ok
+          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 data-[theme=dark]:text-emerald-200'
+          : 'border-amber-500/30 bg-amber-500/10 text-amber-600 data-[theme=dark]:text-amber-200')
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
+function PublicHttpsPanel() {
+  const defaultForm = {
+    enabled: false,
+    domain: '3jhotspot.com',
+    publicHostname: 'tv.3jhotspot.com',
+    publicUrl: 'https://tv.3jhotspot.com',
+    localServiceUrl: 'http://127.0.0.1:3000',
+    connectorCommand: '',
+    notes: '',
+  };
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [actionLoading, setActionLoading] = useState('');
+  const [status, setStatus] = useState(null);
+  const [form, setForm] = useState(defaultForm);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  function hydrate(data) {
+    const settings = data?.settings || {};
+    setStatus(data || null);
+    setForm((current) => ({
+      ...current,
+      enabled: settings.enabled === true,
+      domain: settings.domain || defaultForm.domain,
+      publicHostname: settings.publicHostname || defaultForm.publicHostname,
+      publicUrl: settings.publicUrl || defaultForm.publicUrl,
+      localServiceUrl: settings.localServiceUrl || defaultForm.localServiceUrl,
+      connectorCommand: data?.tokenTextAreaValue || (data?.tokenConfigured ? SAVED_TOKEN_TEXT : ''),
+      notes: settings.notes || '',
+    }));
+  }
+
+  async function load({ silent = false } = {}) {
+    if (!silent) setLoading(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/public-https', { cache: 'no-store' });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to load Public HTTPS status.');
+      hydrate(json);
+    } catch (err) {
+      setError(err?.message || 'Failed to load Public HTTPS status.');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  function updateField(key, value) {
+    setForm((current) => {
+      const next = { ...current, [key]: value };
+      if (key === 'publicHostname' && value) next.publicUrl = `https://${String(value).replace(/^https?:\/\//, '').replace(/\/.*$/, '')}`;
+      return next;
+    });
+  }
+
+  async function savePublicHttps() {
+    setSaving(true);
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch('/api/admin/public-https', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          connectorCommand: form.connectorCommand === SAVED_TOKEN_TEXT ? '' : form.connectorCommand,
+          tokenSavedIndicator: form.connectorCommand === SAVED_TOKEN_TEXT,
+        }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to save Public HTTPS settings.');
+      hydrate(json);
+      setMessage('Public HTTPS settings saved.');
+    } catch (err) {
+      setError(err?.message || 'Failed to save Public HTTPS settings.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runAction(action) {
+    setActionLoading(action);
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch('/api/admin/public-https', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'Public HTTPS action failed.');
+      hydrate(json);
+      const labels = { start: 'Cloudflare connector started.', restart: 'Cloudflare connector restarted.', stop: 'Cloudflare connector stopped.', check: 'Public HTTPS status refreshed.' };
+      setMessage(labels[action] || 'Public HTTPS action completed.');
+    } catch (err) {
+      setError(err?.message || 'Public HTTPS action failed.');
+    } finally {
+      setActionLoading('');
+    }
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard?.writeText(text);
+      setMessage('Copied.');
+    } catch {
+      setError('Could not copy to clipboard.');
+    }
+  }
+
+  if (loading) return <Section title="Public HTTPS" description="Loading Cloudflare Tunnel status."><div className="text-sm text-[var(--admin-muted)]">Loading…</div></Section>;
+
+  const running = status?.cloudflaredRunning === true;
+  const guide = status?.publicHostnameGuide || {};
+  const localCheck = status?.localServiceCheck || {};
+  const publicCheck = status?.publicServiceCheck || {};
+  const canStart = status?.tokenConfigured === true;
+
+  return (
+    <Section
+      title="Public HTTPS"
+      description="Run a dedicated Cloudflare Tunnel connector on this IPTV web server so tv.3jhotspot.com routes directly to the local IPTV app."
+    >
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={18} />Tunnel Token</div>
+          <div className="mt-3"><StatusPill ok={status?.tokenConfigured} label={status?.tokenConfigured ? `Saved ${status?.tokenHint || ''}` : 'Missing'} /></div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Globe2 size={18} />cloudflared</div>
+          <div className="mt-3"><StatusPill ok={status?.cloudflaredInstalled} label={status?.cloudflaredInstalled ? 'Installed' : 'Missing'} /></div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Play size={18} />Connector</div>
+          <div className="mt-3"><StatusPill ok={running} label={running ? `Running PID ${status?.cloudflaredPid || ''}` : 'Stopped'} /></div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><ExternalLink size={18} />Public URL</div>
+          <div className={`mt-3 text-xs font-semibold ${statusTone(publicCheck.status)}`}>{publicCheck.httpStatus || publicCheck.status || 'Not checked'}</div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+        <div className="text-sm font-semibold text-[var(--admin-text)]">Cloudflare Public Hostname</div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div><div className="text-xs text-[var(--admin-muted)]">Subdomain</div><div className="font-mono text-sm">{guide.subdomain || 'tv'}</div></div>
+          <div><div className="text-xs text-[var(--admin-muted)]">Domain</div><div className="font-mono text-sm">{guide.domain || form.domain}</div></div>
+          <div><div className="text-xs text-[var(--admin-muted)]">Type</div><div className="font-mono text-sm">{guide.type || 'HTTP'}</div></div>
+          <div><div className="text-xs text-[var(--admin-muted)]">URL</div><div className="font-mono text-sm">{guide.url || form.localServiceUrl}</div></div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Field label="Domain">
+          <TextInput value={form.domain} onChange={(value) => updateField('domain', value)} placeholder="3jhotspot.com" />
+        </Field>
+        <Field label="Public hostname">
+          <TextInput value={form.publicHostname} onChange={(value) => updateField('publicHostname', value)} placeholder="tv.3jhotspot.com" />
+        </Field>
+        <Field label="Public IPTV URL">
+          <TextInput value={form.publicUrl} onChange={(value) => updateField('publicUrl', value)} placeholder="https://tv.3jhotspot.com" />
+        </Field>
+        <Field label="Local IPTV service URL" help="Because the connector runs on this IPTV server, use localhost/127.0.0.1 rather than the LAN IP.">
+          <TextInput value={form.localServiceUrl} onChange={(value) => updateField('localServiceUrl', value)} placeholder="http://127.0.0.1:3000" />
+        </Field>
+        <div className="lg:col-span-2">
+          <Field label="Cloudflare connector command / token" help="Paste the connector command from Cloudflare or the raw tunnel token. It is stored as a secret and never shown again.">
+            <TextAreaInput
+              value={form.connectorCommand}
+              onChange={(value) => updateField('connectorCommand', value)}
+              onFocus={() => {
+                if (form.connectorCommand === SAVED_TOKEN_TEXT) updateField('connectorCommand', '');
+              }}
+              rows={3}
+              noWrap
+              placeholder={status?.tokenConfigured ? SAVED_TOKEN_TEXT : 'cloudflared tunnel run --token ey...'}
+            />
+            {status?.tokenConfigured && <div className="mt-2 text-xs font-semibold text-emerald-600">Token is saved{status?.tokenUpdatedAt ? ` · ${new Date(status.tokenUpdatedAt).toLocaleString()}` : ''}. Leave the field as-is or blank to keep it, or paste a new command to replace it.</div>}
+          </Field>
+        </div>
+        <div className="lg:col-span-2">
+          <Field label="Notes">
+            <TextAreaInput value={form.notes} onChange={(value) => updateField('notes', value)} rows={3} placeholder="Cloudflare tunnel name, DNS notes, or maintenance reminders." />
+          </Field>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <button type="button" disabled={saving} onClick={savePublicHttps} className="rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60" style={{ backgroundColor: 'var(--brand)' }}>
+          {saving ? 'Saving…' : 'Save Public HTTPS'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading) || !canStart} onClick={() => runAction('start')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <Play size={16} />{actionLoading === 'start' ? 'Starting…' : 'Start'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading) || !canStart} onClick={() => runAction('restart')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <RotateCcw size={16} />{actionLoading === 'restart' ? 'Restarting…' : 'Restart'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading) || !running} onClick={() => runAction('stop')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <Square size={16} />{actionLoading === 'stop' ? 'Stopping…' : 'Stop'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading)} onClick={() => runAction('check')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <RefreshCw size={16} />Refresh Status
+        </button>
+        <button type="button" onClick={() => copyText(`${guide.subdomain || 'tv'}\\n${guide.domain || form.domain}\\n${guide.type || 'HTTP'}\\n${guide.url || form.localServiceUrl}`)} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10">
+          <Copy size={16} />Copy Hostname Guide
+        </button>
+      </div>
+
+      {message ? <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{message}</div> : null}
+      {error ? <div className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div> : null}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="text-sm font-semibold">Service Checks</div>
+          <div className="mt-3 space-y-2 text-sm">
+            <div className="flex justify-between gap-3"><span className="text-[var(--admin-muted)]">Local IPTV app</span><span className={statusTone(localCheck.status)}>{localCheck.httpStatus || localCheck.status || 'Not checked'}</span></div>
+            <div className="flex justify-between gap-3"><span className="text-[var(--admin-muted)]">Public HTTPS</span><span className={statusTone(publicCheck.status)}>{publicCheck.httpStatus || publicCheck.status || 'Not checked'}</span></div>
+            {publicCheck.error ? <div className="text-xs text-red-300">{publicCheck.error}</div> : null}
+          </div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="text-sm font-semibold">Connector Logs</div>
+          {Array.isArray(status?.logs) && status.logs.length ? (
+            <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 text-xs">{status.logs.join('\n')}</pre>
+          ) : (
+            <div className="mt-3 text-sm text-[var(--admin-muted)]">No cloudflared logs yet.</div>
+          )}
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+
+function XuiHttpsPanel() {
+  const defaultForm = {
+    enabled: false,
+    domain: '3jhotspot.com',
+    publicHostname: 'xui.3jhotspot.com',
+    publicUrl: 'https://xui.3jhotspot.com',
+    originServiceUrl: 'http://127.0.0.1',
+    sshHost: '10.100.100.100',
+    sshPort: '22',
+    sshUsername: 'root',
+    sshAuthType: 'password',
+    sshPassword: '',
+    sshPrivateKey: '',
+    sshPassphrase: '',
+    sudoPassword: '',
+    connectorCommand: '',
+    notes: '',
+  };
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [actionLoading, setActionLoading] = useState('');
+  const [status, setStatus] = useState(null);
+  const [form, setForm] = useState(defaultForm);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  function hydrate(data) {
+    const settings = data?.settings || {};
+    setStatus(data || null);
+    setForm((current) => ({
+      ...current,
+      enabled: settings.enabled === true,
+      domain: settings.domain || defaultForm.domain,
+      publicHostname: settings.publicHostname || defaultForm.publicHostname,
+      publicUrl: settings.publicUrl || defaultForm.publicUrl,
+      originServiceUrl: settings.originServiceUrl || defaultForm.originServiceUrl,
+      sshHost: settings.sshHost || defaultForm.sshHost,
+      sshPort: String(settings.sshPort || defaultForm.sshPort),
+      sshUsername: settings.sshUsername || defaultForm.sshUsername,
+      sshAuthType: settings.sshAuthType === 'privateKey' ? 'privateKey' : 'password',
+      sshPassword: data?.sshPasswordTextAreaValue || (data?.sshPasswordConfigured ? SAVED_SSH_SECRET_TEXT : ''),
+      sshPrivateKey: data?.sshPrivateKeyTextAreaValue || (data?.sshPrivateKeyConfigured ? SAVED_SSH_SECRET_TEXT : ''),
+      sshPassphrase: data?.sshPassphraseTextAreaValue || (data?.sshPassphraseConfigured ? SAVED_SSH_SECRET_TEXT : ''),
+      sudoPassword: data?.sudoPasswordTextAreaValue || (data?.sudoPasswordConfigured ? SAVED_SSH_SECRET_TEXT : ''),
+      connectorCommand: data?.tokenTextAreaValue || (data?.tokenConfigured ? SAVED_TOKEN_TEXT : ''),
+      notes: settings.notes || '',
+    }));
+  }
+
+  async function load({ silent = false } = {}) {
+    if (!silent) setLoading(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/xui-https', { cache: 'no-store' });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to load XUI HTTPS status.');
+      hydrate(json);
+    } catch (err) {
+      setError(err?.message || 'Failed to load XUI HTTPS status.');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  function updateField(key, value) {
+    setForm((current) => {
+      const next = { ...current, [key]: value };
+      if (key === 'publicHostname' && value) next.publicUrl = `https://${String(value).replace(/^https?:\/\//, '').replace(/\/.*$/, '')}`;
+      return next;
+    });
+  }
+
+  function cleanedPayload() {
+    const stripSecret = (value, placeholder) => (value === placeholder ? '' : value);
+    return {
+      ...form,
+      connectorCommand: stripSecret(form.connectorCommand, SAVED_TOKEN_TEXT),
+      sshPassword: stripSecret(form.sshPassword, SAVED_SSH_SECRET_TEXT),
+      sshPrivateKey: stripSecret(form.sshPrivateKey, SAVED_SSH_SECRET_TEXT),
+      sshPassphrase: stripSecret(form.sshPassphrase, SAVED_SSH_SECRET_TEXT),
+      sudoPassword: stripSecret(form.sudoPassword, SAVED_SSH_SECRET_TEXT),
+    };
+  }
+
+  async function saveXuiHttps() {
+    setSaving(true);
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch('/api/admin/xui-https', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(cleanedPayload()),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to save XUI HTTPS settings.');
+      hydrate(json);
+      setMessage('XUI HTTPS settings saved. The XUI browser URL was synced to the XUI integration.');
+    } catch (err) {
+      setError(err?.message || 'Failed to save XUI HTTPS settings.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runAction(action) {
+    setActionLoading(action);
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch('/api/admin/xui-https', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || !json?.ok) throw new Error(json?.error || 'XUI HTTPS action failed.');
+      hydrate(json);
+      const labels = {
+        'test-ssh': 'XUI SSH connection verified.',
+        install: 'XUI Cloudflare connector installed or updated.',
+        start: 'XUI Cloudflare connector started.',
+        restart: 'XUI Cloudflare connector restarted.',
+        stop: 'XUI Cloudflare connector stopped.',
+        check: 'XUI HTTPS status refreshed.',
+      };
+      setMessage(labels[action] || 'XUI HTTPS action completed.');
+    } catch (err) {
+      setError(err?.message || 'XUI HTTPS action failed.');
+    } finally {
+      setActionLoading('');
+    }
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard?.writeText(text);
+      setMessage('Copied.');
+    } catch {
+      setError('Could not copy to clipboard.');
+    }
+  }
+
+  if (loading) return <Section title="XUI HTTPS" description="Loading XUI Cloudflare Tunnel status."><div className="text-sm text-[var(--admin-muted)]">Loading…</div></Section>;
+
+  const guide = status?.publicHostnameGuide || {};
+  const remoteStatus = status?.lastRemoteStatus || {};
+  const publicCheck = status?.publicServiceCheck || {};
+  const remoteRunning = remoteStatus.serviceActive === 'active';
+  const canInstall = status?.tokenConfigured === true && status?.sshConfigured === true;
+
+  return (
+    <Section
+      title="XUI HTTPS"
+      description="Deploy and manage the Cloudflare Tunnel connector on the XUI One server so xui.3jhotspot.com is reachable by the IPTV web app without exposing private LAN addresses."
+    >
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={18} />Tunnel Token</div>
+          <div className="mt-3"><StatusPill ok={status?.tokenConfigured} label={status?.tokenConfigured ? `Saved ${status?.tokenHint || ''}` : 'Missing'} /></div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Globe2 size={18} />XUI SSH</div>
+          <div className="mt-3"><StatusPill ok={status?.sshConfigured} label={status?.sshConfigured ? `${form.sshUsername}@${form.sshHost}` : 'Needs credentials'} /></div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Play size={18} />Remote Connector</div>
+          <div className="mt-3"><StatusPill ok={remoteRunning} label={remoteRunning ? `Running PID ${remoteStatus.servicePid || ''}` : remoteStatus.serviceActive || 'Not checked'} /></div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><ExternalLink size={18} />Public XUI URL</div>
+          <div className={`mt-3 text-xs font-semibold ${statusTone(publicCheck.status)}`}>{publicCheck.httpStatus || publicCheck.status || 'Not checked'}</div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+        <div className="text-sm font-semibold text-[var(--admin-text)]">Cloudflare Public Hostname</div>
+        <div className="mt-2 text-xs text-[var(--admin-muted)]">Create this hostname inside the Cloudflare tunnel for the XUI One server, then paste that tunnel connector command/token below.</div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div><div className="text-xs text-[var(--admin-muted)]">Subdomain</div><div className="font-mono text-sm">{guide.subdomain || 'xui'}</div></div>
+          <div><div className="text-xs text-[var(--admin-muted)]">Domain</div><div className="font-mono text-sm">{guide.domain || form.domain}</div></div>
+          <div><div className="text-xs text-[var(--admin-muted)]">Type</div><div className="font-mono text-sm">{guide.type || 'HTTP'}</div></div>
+          <div><div className="text-xs text-[var(--admin-muted)]">URL</div><div className="font-mono text-sm">{guide.url || form.originServiceUrl}</div></div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Field label="Domain">
+          <TextInput value={form.domain} onChange={(value) => updateField('domain', value)} placeholder="3jhotspot.com" />
+        </Field>
+        <Field label="Public hostname">
+          <TextInput value={form.publicHostname} onChange={(value) => updateField('publicHostname', value)} placeholder="xui.3jhotspot.com" />
+        </Field>
+        <Field label="Public XUI URL" help="This value is also used by the IPTV web token-login flow for outside-network playback.">
+          <TextInput value={form.publicUrl} onChange={(value) => updateField('publicUrl', value)} placeholder="https://xui.3jhotspot.com" />
+        </Field>
+        <Field label="XUI origin service URL" help="Because this connector runs on the XUI One server, use its local service address, usually http://127.0.0.1.">
+          <TextInput value={form.originServiceUrl} onChange={(value) => updateField('originServiceUrl', value)} placeholder="http://127.0.0.1" />
+        </Field>
+      </div>
+
+      <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+        <div className="text-sm font-semibold text-[var(--admin-text)]">XUI One Server SSH</div>
+        <div className="mt-1 text-xs text-[var(--admin-muted)]">Used only when you test SSH or install/start/stop the XUI Cloudflare connector.</div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          <Field label="SSH host">
+            <TextInput value={form.sshHost} onChange={(value) => updateField('sshHost', value)} placeholder="10.100.100.100" />
+          </Field>
+          <Field label="SSH port">
+            <TextInput value={form.sshPort} onChange={(value) => updateField('sshPort', value)} type="number" min={1} max={65535} step={1} />
+          </Field>
+          <Field label="SSH username">
+            <TextInput value={form.sshUsername} onChange={(value) => updateField('sshUsername', value)} placeholder="root" />
+          </Field>
+          <Field label="Authentication">
+            <select
+              value={form.sshAuthType}
+              onChange={(event) => updateField('sshAuthType', event.target.value)}
+              className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
+            >
+              <option value="password">Password</option>
+              <option value="privateKey">Private key</option>
+            </select>
+          </Field>
+          {form.sshAuthType === 'privateKey' ? (
+            <>
+              <div className="lg:col-span-2">
+                <Field label="SSH private key">
+                  <TextAreaInput
+                    value={form.sshPrivateKey}
+                    onChange={(value) => updateField('sshPrivateKey', value)}
+                    onFocus={() => {
+                      if (form.sshPrivateKey === SAVED_SSH_SECRET_TEXT) updateField('sshPrivateKey', '');
+                    }}
+                    rows={4}
+                    noWrap
+                    placeholder={status?.sshPrivateKeyConfigured ? SAVED_SSH_SECRET_TEXT : '-----BEGIN OPENSSH PRIVATE KEY-----'}
+                  />
+                </Field>
+              </div>
+              <Field label="Private key passphrase">
+                <TextInput
+                  value={form.sshPassphrase}
+                  onChange={(value) => updateField('sshPassphrase', value)}
+                  onFocus={() => {
+                    if (form.sshPassphrase === SAVED_SSH_SECRET_TEXT) updateField('sshPassphrase', '');
+                  }}
+                  type="password"
+                  placeholder={status?.sshPassphraseConfigured ? SAVED_SSH_SECRET_TEXT : 'Optional'}
+                />
+              </Field>
+            </>
+          ) : (
+            <Field label="SSH password">
+              <TextInput
+                value={form.sshPassword}
+                onChange={(value) => updateField('sshPassword', value)}
+                onFocus={() => {
+                  if (form.sshPassword === SAVED_SSH_SECRET_TEXT) updateField('sshPassword', '');
+                }}
+                type="password"
+                placeholder={status?.sshPasswordConfigured ? SAVED_SSH_SECRET_TEXT : 'Password'}
+              />
+            </Field>
+          )}
+          <Field label="Sudo password" help="Required only when SSH username is not root and systemd/cloudflared install needs sudo.">
+            <TextInput
+              value={form.sudoPassword}
+              onChange={(value) => updateField('sudoPassword', value)}
+              onFocus={() => {
+                if (form.sudoPassword === SAVED_SSH_SECRET_TEXT) updateField('sudoPassword', '');
+              }}
+              type="password"
+              placeholder={status?.sudoPasswordConfigured ? SAVED_SSH_SECRET_TEXT : 'Optional'}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="grid gap-4">
+        <Field label="Cloudflare connector command / token" help="Paste the connector command for the XUI tunnel or the raw token. It is encrypted and never shown again.">
+          <TextAreaInput
+            value={form.connectorCommand}
+            onChange={(value) => updateField('connectorCommand', value)}
+            onFocus={() => {
+              if (form.connectorCommand === SAVED_TOKEN_TEXT) updateField('connectorCommand', '');
+            }}
+            rows={3}
+            noWrap
+            placeholder={status?.tokenConfigured ? SAVED_TOKEN_TEXT : 'cloudflared tunnel run --token ey...'}
+          />
+          {status?.tokenConfigured && <div className="mt-2 text-xs font-semibold text-emerald-600">Token is saved{status?.tokenUpdatedAt ? ` · ${new Date(status.tokenUpdatedAt).toLocaleString()}` : ''}. Leave the field as-is or blank to keep it, or paste a new command to replace it.</div>}
+        </Field>
+        <Field label="Notes">
+          <TextAreaInput value={form.notes} onChange={(value) => updateField('notes', value)} rows={3} placeholder="Tunnel name, XUI hostname notes, or maintenance reminders." />
+        </Field>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <button type="button" disabled={saving} onClick={saveXuiHttps} className="rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60" style={{ backgroundColor: 'var(--brand)' }}>
+          {saving ? 'Saving…' : 'Save XUI HTTPS'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading)} onClick={() => runAction('test-ssh')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <ShieldCheck size={16} />{actionLoading === 'test-ssh' ? 'Testing…' : 'Test SSH'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading) || !canInstall} onClick={() => runAction('install')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <Play size={16} />{actionLoading === 'install' ? 'Installing…' : 'Install/Update Tunnel'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading) || !canInstall} onClick={() => runAction('start')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <Play size={16} />{actionLoading === 'start' ? 'Starting…' : 'Start'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading) || !canInstall} onClick={() => runAction('restart')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <RotateCcw size={16} />{actionLoading === 'restart' ? 'Restarting…' : 'Restart'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading) || !canInstall} onClick={() => runAction('stop')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <Square size={16} />{actionLoading === 'stop' ? 'Stopping…' : 'Stop'}
+        </button>
+        <button type="button" disabled={Boolean(actionLoading)} onClick={() => runAction('check')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60">
+          <RefreshCw size={16} />Refresh Status
+        </button>
+        <button type="button" onClick={() => copyText(`${guide.subdomain || 'xui'}\n${guide.domain || form.domain}\n${guide.type || 'HTTP'}\n${guide.url || form.originServiceUrl}`)} className="inline-flex items-center gap-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10">
+          <Copy size={16} />Copy Hostname Guide
+        </button>
+      </div>
+
+      {message ? <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{message}</div> : null}
+      {error ? <div className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div> : null}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="text-sm font-semibold">Service Checks</div>
+          <div className="mt-3 space-y-2 text-sm">
+            <div className="flex justify-between gap-3"><span className="text-[var(--admin-muted)]">XUI origin from XUI server</span><span className={statusTone(remoteStatus.originCheck ? 'SUCCESS' : remoteStatus.status)}>{remoteStatus.originCheck || remoteStatus.status || 'Not checked'}</span></div>
+            <div className="flex justify-between gap-3"><span className="text-[var(--admin-muted)]">Public XUI HTTPS</span><span className={statusTone(publicCheck.status)}>{publicCheck.httpStatus || publicCheck.status || 'Not checked'}</span></div>
+            {publicCheck.error ? <div className="text-xs text-red-300">{publicCheck.error}</div> : null}
+            {remoteStatus.error ? <div className="text-xs text-red-300">{remoteStatus.error}</div> : null}
+          </div>
+        </div>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="text-sm font-semibold">Remote Connector Logs</div>
+          {Array.isArray(remoteStatus.logs) && remoteStatus.logs.length ? (
+            <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3 text-xs">{remoteStatus.logs.join('\n')}</pre>
+          ) : (
+            <div className="mt-3 text-sm text-[var(--admin-muted)]">No remote cloudflared logs yet. Use Refresh Status after installing the connector.</div>
+          )}
+        </div>
+      </div>
+    </Section>
   );
 }
 
@@ -254,7 +882,13 @@ export default function AdminSettingsPanel() {
   const [bgMobile, setBgMobile] = useState('');
   const [helpUrl, setHelpUrl] = useState('');
   const [helpText, setHelpText] = useState('');
-  const [serversText, setServersText] = useState('');
+  const [turnstileEnabled, setTurnstileEnabled] = useState(false);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState('');
+  const [turnstileSecretKey, setTurnstileSecretKey] = useState('');
+  const [turnstileProtectPublicLogin, setTurnstileProtectPublicLogin] = useState(true);
+  const [turnstileProtectAdminLogin, setTurnstileProtectAdminLogin] = useState(true);
+  const [turnstileProtectAdminForgotPassword, setTurnstileProtectAdminForgotPassword] = useState(true);
+  const [turnstilePublicHostOnly, setTurnstilePublicHostOnly] = useState(true);
 
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
@@ -264,6 +898,10 @@ export default function AdminSettingsPanel() {
   const [notifyUserReports, setNotifyUserReports] = useState(false);
   const [reportNasSize, setReportNasSize] = useState(false);
   const [reportVodSize, setReportVodSize] = useState(false);
+  const [notifyNasStatus, setNotifyNasStatus] = useState(false);
+  const [notifyVpnStatus, setNotifyVpnStatus] = useState(false);
+  const [notifySystemHttpsStatus, setNotifySystemHttpsStatus] = useState(false);
+  const [notifyXuiHttpsStatus, setNotifyXuiHttpsStatus] = useState(false);
   const [dailyReportTime, setDailyReportTime] = useState('07:00');
   const [messageTemplates, setMessageTemplates] = useState(defaultTelegramMessageTemplates());
   const [notificationTimeZone, setNotificationTimeZone] = useState('Asia/Manila');
@@ -276,11 +914,17 @@ export default function AdminSettingsPanel() {
       triggerUsedGb: 0,
       limitUsedGb: 0,
     },
+    serviceStatuses: {},
+    serviceStatusLastCheckedAt: null,
   });
   const [telegramMeta, setTelegramMeta] = useState({
     hasBotToken: false,
     hasChatId: false,
     configured: false,
+  });
+  const [turnstileMeta, setTurnstileMeta] = useState({
+    secretConfigured: false,
+    envConfigured: false,
   });
 
   const load = async () => {
@@ -307,7 +951,14 @@ export default function AdminSettingsPanel() {
       setBgMobile(settings?.login?.backgroundMobileUrl || '/auth/login-bg-mobile.jpg');
       setHelpUrl(settings?.login?.helpLinkUrl || 'https://www.facebook.com/threejfiberwifi');
       setHelpText(settings?.login?.helpLinkText || 'FB Page');
-      setServersText((settings?.xuione?.servers || []).join('\n'));
+      const turnstile = settings?.security?.turnstile || {};
+      setTurnstileEnabled(turnstile.enabled === true);
+      setTurnstileSiteKey(String(turnstile.siteKey || '').trim());
+      setTurnstileProtectPublicLogin(turnstile.protectPublicLogin !== false);
+      setTurnstileProtectAdminLogin(turnstile.protectAdminLogin !== false);
+      setTurnstileProtectAdminForgotPassword(turnstile.protectAdminForgotPassword !== false);
+      setTurnstilePublicHostOnly(turnstile.enforcePublicHostOnly !== false);
+      setTurnstileSecretKey(json?.turnstile?.secretConfigured ? SAVED_TURNSTILE_SECRET_TEXT : '');
 
       setTelegramBotToken(telegram?.botToken || '');
       setTelegramChatId(telegram?.chatId || '');
@@ -317,6 +968,10 @@ export default function AdminSettingsPanel() {
       setNotifyUserReports(notificationSettings?.telegram?.userReportsEnabled === true);
       setReportNasSize(notificationSettings?.telegram?.nasSizeReportEnabled === true);
       setReportVodSize(notificationSettings?.telegram?.vodSizeReportEnabled === true);
+      setNotifyNasStatus(notificationSettings?.telegram?.nasStatusEnabled === true);
+      setNotifyVpnStatus(notificationSettings?.telegram?.vpnStatusEnabled === true);
+      setNotifySystemHttpsStatus(notificationSettings?.telegram?.systemHttpsStatusEnabled === true);
+      setNotifyXuiHttpsStatus(notificationSettings?.telegram?.xuiHttpsStatusEnabled === true);
       setDailyReportTime(String(notificationSettings?.telegram?.dailyReportTime || '07:00').trim() || '07:00');
       setMessageTemplates(normalizeTelegramMessageTemplates(notificationSettings?.telegram?.messageTemplates));
       setNotificationTimeZone(String(json?.notificationTimeZone || 'Asia/Manila').trim() || 'Asia/Manila');
@@ -329,11 +984,17 @@ export default function AdminSettingsPanel() {
           triggerUsedGb: Number(json?.notificationMeta?.autoDeleteThreshold?.triggerUsedGb || 0) || 0,
           limitUsedGb: Number(json?.notificationMeta?.autoDeleteThreshold?.limitUsedGb || 0) || 0,
         },
+        serviceStatuses: json?.notificationMeta?.serviceStatuses || {},
+        serviceStatusLastCheckedAt: Number(json?.notificationMeta?.serviceStatusLastCheckedAt || 0) || null,
       });
       setTelegramMeta({
         hasBotToken: telegram?.hasBotToken === true,
         hasChatId: telegram?.hasChatId === true,
         configured: telegram?.configured === true,
+      });
+      setTurnstileMeta({
+        secretConfigured: json?.turnstile?.secretConfigured === true,
+        envConfigured: json?.turnstile?.envConfigured === true,
       });
     } catch (error) {
       setErr(error?.message || 'Failed to load settings.');
@@ -363,8 +1024,15 @@ export default function AdminSettingsPanel() {
           helpLinkUrl: helpUrl,
           helpLinkText: helpText,
         },
-        xuione: {
-          servers: normalizeServers(serversText),
+        security: {
+          turnstile: {
+            enabled: turnstileEnabled,
+            siteKey: turnstileSiteKey,
+            protectPublicLogin: turnstileProtectPublicLogin,
+            protectAdminLogin: turnstileProtectAdminLogin,
+            protectAdminForgotPassword: turnstileProtectAdminForgotPassword,
+            enforcePublicHostOnly: turnstilePublicHostOnly,
+          },
         },
       },
       notificationSettings: {
@@ -375,6 +1043,10 @@ export default function AdminSettingsPanel() {
           userReportsEnabled: notifyUserReports,
           nasSizeReportEnabled: reportNasSize,
           vodSizeReportEnabled: reportVodSize,
+          nasStatusEnabled: notifyNasStatus,
+          vpnStatusEnabled: notifyVpnStatus,
+          systemHttpsStatusEnabled: notifySystemHttpsStatus,
+          xuiHttpsStatusEnabled: notifyXuiHttpsStatus,
           dailyReportTime: dailyReportTime || '07:00',
           messageTemplates,
         },
@@ -382,6 +1054,9 @@ export default function AdminSettingsPanel() {
       telegram: {
         botToken: telegramBotToken,
         chatId: telegramChatId,
+      },
+      turnstile: {
+        secretKey: turnstileSecretKey,
       },
     }),
     [
@@ -398,12 +1073,22 @@ export default function AdminSettingsPanel() {
       logoUrl,
       messageTemplates,
       notifyLiveChannels,
+      notifyNasStatus,
       notifyUserReports,
+      notifyVpnStatus,
+      notifySystemHttpsStatus,
+      notifyXuiHttpsStatus,
       reportNasSize,
       reportVodSize,
-      serversText,
       telegramBotToken,
       telegramChatId,
+      turnstileEnabled,
+      turnstileProtectAdminForgotPassword,
+      turnstileProtectAdminLogin,
+      turnstileProtectPublicLogin,
+      turnstilePublicHostOnly,
+      turnstileSecretKey,
+      turnstileSiteKey,
     ]
   );
 
@@ -422,7 +1107,6 @@ export default function AdminSettingsPanel() {
       if (!response.ok || !json?.ok) throw new Error(json?.error || 'Failed to save settings.');
 
       setOkMsg('Saved settings.');
-      setServersText((json?.settings?.xuione?.servers || []).join('\n'));
       setLiveChannelAlertDelayMinutes(String(json?.notificationSettings?.telegram?.liveChannelAlertDelayMinutes ?? 15));
       setLiveChannelDownReminderHours(String(json?.notificationSettings?.telegram?.liveChannelDownReminderHours ?? 12));
       setDailyReportTime(String(json?.notificationSettings?.telegram?.dailyReportTime || '07:00').trim() || '07:00');
@@ -437,12 +1121,19 @@ export default function AdminSettingsPanel() {
           triggerUsedGb: Number(json?.notificationMeta?.autoDeleteThreshold?.triggerUsedGb || 0) || 0,
           limitUsedGb: Number(json?.notificationMeta?.autoDeleteThreshold?.limitUsedGb || 0) || 0,
         },
+        serviceStatuses: json?.notificationMeta?.serviceStatuses || {},
+        serviceStatusLastCheckedAt: Number(json?.notificationMeta?.serviceStatusLastCheckedAt || 0) || null,
       });
       setTelegramMeta({
         hasBotToken: json?.telegram?.hasBotToken === true,
         hasChatId: json?.telegram?.hasChatId === true,
         configured: json?.telegram?.configured === true,
       });
+      setTurnstileMeta({
+        secretConfigured: json?.turnstile?.secretConfigured === true,
+        envConfigured: json?.turnstile?.envConfigured === true,
+      });
+      setTurnstileSecretKey(json?.turnstile?.secretConfigured ? SAVED_TURNSTILE_SECRET_TEXT : '');
     } catch (error) {
       setErr(error?.message || 'Failed to save settings.');
     } finally {
@@ -494,7 +1185,15 @@ export default function AdminSettingsPanel() {
 
   if (loading) return <div className="text-sm text-[var(--admin-muted)]">Loading…</div>;
 
-  const notificationsEnabled = notifyLiveChannels || notifyUserReports || reportNasSize || reportVodSize;
+  const notificationsEnabled =
+    notifyLiveChannels ||
+    notifyUserReports ||
+    reportNasSize ||
+    reportVodSize ||
+    notifyNasStatus ||
+    notifyVpnStatus ||
+    notifySystemHttpsStatus ||
+    notifyXuiHttpsStatus;
   const testingTelegram = Boolean(testingTelegramTarget);
   const liveDelayMinutes = Math.max(0, Number(liveChannelAlertDelayMinutes || 0) || 0);
   const liveReminderHours = Math.max(0, Number(liveChannelDownReminderHours || 0) || 0);
@@ -502,6 +1201,11 @@ export default function AdminSettingsPanel() {
     notificationMeta.autoDeleteThreshold.triggerUsedGb > 0 && notificationMeta.autoDeleteThreshold.limitUsedGb > 0
       ? `Immediate alert also sends when AutoDelete reaches Trigger ${notificationMeta.autoDeleteThreshold.triggerUsedGb.toFixed(1)} GB / Limit ${notificationMeta.autoDeleteThreshold.limitUsedGb.toFixed(1)} GB.`
       : 'Immediate alert also sends when the configured AutoDelete trigger state is reached.';
+  const turnstileCanEnable = Boolean(
+    String(turnstileSiteKey || '').trim() &&
+      (turnstileMeta.secretConfigured || turnstileMeta.envConfigured || (String(turnstileSecretKey || '').trim() && turnstileSecretKey !== SAVED_TURNSTILE_SECRET_TEXT))
+  );
+  const saveBlocked = activeTab === 'security' && turnstileEnabled && !turnstileCanEnable;
 
   let content = null;
   if (activeTab === 'branding') {
@@ -570,23 +1274,110 @@ export default function AdminSettingsPanel() {
         </div>
       </Section>
     );
-  } else if (activeTab === 'servers') {
+  } else if (activeTab === 'security') {
     content = (
       <Section
-        title="Xuione Servers"
-        description="This server list is used by auth and playback APIs when env vars do not override it."
+        title="Security"
+        description="Add a Cloudflare Turnstile challenge to exposed public/admin login surfaces. This blocks bot form submissions before expensive auth work runs."
       >
-        <Field label="Xuione servers (one per line)" help="Env vars `XUIONE_URLS` or `XUI_SERVERS` still take priority when set.">
-          <textarea
-            value={serversText}
-            onChange={(event) => setServersText(event.target.value)}
-            rows={7}
-            className="w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[--brand]/30"
-            placeholder="https://tv1.example.com/\nhttps://tv2.example.com/"
-          />
-        </Field>
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold text-[var(--admin-text)]">
+                <ShieldCheck size={18} />
+                Cloudflare Turnstile
+              </div>
+              <div className="mt-1 text-xs text-[var(--admin-muted)]">
+                Create a Turnstile widget in Cloudflare, then paste the Site Key and Secret Key here. The Secret Key is saved server-side and hidden after save.
+              </div>
+            </div>
+            <StatusPill
+              ok={turnstileEnabled && turnstileCanEnable}
+              label={turnstileEnabled ? (turnstileCanEnable ? 'Enabled' : 'Needs keys') : 'Disabled'}
+            />
+          </div>
+
+          <div className="mt-4">
+            <ToggleRow
+              label="Enable Turnstile protection"
+              description="When enabled, selected login flows require a successful Cloudflare Turnstile token before authentication runs."
+              checked={turnstileEnabled}
+              onChange={setTurnstileEnabled}
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Field label="Turnstile Site Key" help="Public key used by the browser widget. Safe to expose in page HTML.">
+            <TextInput value={turnstileSiteKey} onChange={setTurnstileSiteKey} placeholder="0x4AAAA..." />
+          </Field>
+          <Field
+            label="Turnstile Secret Key"
+            help="Private verification key used only by the server. Leave the saved placeholder unchanged to keep the current key."
+          >
+            <TextInput
+              value={turnstileSecretKey}
+              onChange={setTurnstileSecretKey}
+              onFocus={() => {
+                if (turnstileSecretKey === SAVED_TURNSTILE_SECRET_TEXT) setTurnstileSecretKey('');
+              }}
+              type="password"
+              placeholder={turnstileMeta.secretConfigured || turnstileMeta.envConfigured ? SAVED_TURNSTILE_SECRET_TEXT : '0x4AAAA...'}
+            />
+            {(turnstileMeta.secretConfigured || turnstileMeta.envConfigured) ? (
+              <div className="mt-2 text-xs font-semibold text-emerald-600">
+                Secret key is configured{turnstileMeta.envConfigured ? ' from environment' : ' in admin settings'}.
+              </div>
+            ) : null}
+          </Field>
+        </div>
+
+        <div className="rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-4">
+          <div className="text-sm font-semibold text-[var(--admin-text)]">Protected Surfaces</div>
+          <div className="mt-1 text-xs text-[var(--admin-muted)]">
+            Keep all three enabled for best protection. Existing IP throttles and failed-login lockouts still run even when Turnstile is disabled.
+          </div>
+          <div className="mt-4 space-y-3">
+            <ToggleRow
+              label="Public user login"
+              description="Protects `/login` submissions to `/api/auth/login` before Xuione/Xtream validation is called."
+              checked={turnstileProtectPublicLogin}
+              onChange={setTurnstileProtectPublicLogin}
+            />
+            <ToggleRow
+              label="Admin login"
+              description="Protects `/admin/login` submissions before admin password verification runs."
+              checked={turnstileProtectAdminLogin}
+              onChange={setTurnstileProtectAdminLogin}
+            />
+            <ToggleRow
+              label="Admin forgot password"
+              description="Protects password email/reset requests before mailer work runs."
+              checked={turnstileProtectAdminForgotPassword}
+              onChange={setTurnstileProtectAdminForgotPassword}
+            />
+            <ToggleRow
+              label="Only enforce on Public HTTPS hostname"
+              description="Recommended. Protects `tv.3jhotspot.com` while leaving LAN/local access usable if Cloudflare keys are restricted to the public domain."
+              checked={turnstilePublicHostOnly}
+              onChange={setTurnstilePublicHostOnly}
+            />
+          </div>
+        </div>
+
+        {saveBlocked ? (
+          <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-black dark:text-amber-200">
+            Turnstile cannot be enabled until both Site Key and Secret Key are configured.
+          </div>
+        ) : null}
       </Section>
     );
+  } else if (activeTab === 'publicHttps') {
+    content = <PublicHttpsPanel />;
+  } else if (activeTab === 'xuiHttps') {
+    content = <XuiHttpsPanel />;
+  } else if (activeTab === 'a2p') {
+    content = <AdminA2PSettingsPanel />;
   } else if (activeTab === 'messages') {
     content = (
       <Section
@@ -771,6 +1562,35 @@ export default function AdminSettingsPanel() {
                 </TestActionButton>
               }
             />
+            <div className="pt-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-[var(--admin-muted)]">Service Up/down Alerts</div>
+              <div className="mt-2 space-y-3">
+                <ToggleRow
+                  label="NAS Up/down"
+                  description={`Sends Telegram when the NAS mount changes between writable and unavailable. ${serviceStatusLabel(notificationMeta, 'nas')}`}
+                  checked={notifyNasStatus}
+                  onChange={setNotifyNasStatus}
+                />
+                <ToggleRow
+                  label="VPN Up/down"
+                  description={`Sends Telegram when VPN routing changes between ready and not ready. ${serviceStatusLabel(notificationMeta, 'vpn')}`}
+                  checked={notifyVpnStatus}
+                  onChange={setNotifyVpnStatus}
+                />
+                <ToggleRow
+                  label="3JTV HTTPS Up/down"
+                  description={`Sends Telegram when Public HTTPS changes between reachable and unavailable. ${serviceStatusLabel(notificationMeta, 'systemHttps')}`}
+                  checked={notifySystemHttpsStatus}
+                  onChange={setNotifySystemHttpsStatus}
+                />
+                <ToggleRow
+                  label="XUI HTTPS Up/down"
+                  description={`Sends Telegram when the XUI Cloudflare HTTPS tunnel changes between reachable and unavailable. ${serviceStatusLabel(notificationMeta, 'xuiHttps')}`}
+                  checked={notifyXuiHttpsStatus}
+                  onChange={setNotifyXuiHttpsStatus}
+                />
+              </div>
+            </div>
           </div>
         </div>
 
@@ -846,7 +1666,7 @@ export default function AdminSettingsPanel() {
       <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
         <h1 className="text-lg font-semibold">Settings</h1>
         <p className="mt-1 text-sm text-[var(--admin-muted)]">
-          Public brand settings, player defaults, Xuione server fallbacks, Telegram notifications, and Telegram message templates.
+          Public brand settings, player defaults, IPTV public HTTPS, XUI HTTPS, A2P SMS, Telegram notifications, and message templates.
         </p>
 
         <div className="mt-5 overflow-x-auto rounded-xl border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-1">
@@ -862,32 +1682,34 @@ export default function AdminSettingsPanel() {
 
       {content}
 
-      <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
-        {err ? <div className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div> : null}
-        {okMsg ? <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{okMsg}</div> : null}
+      {activeTab !== 'publicHttps' && activeTab !== 'xuiHttps' && activeTab !== 'a2p' ? (
+        <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
+          {err ? <div className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div> : null}
+          {okMsg ? <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{okMsg}</div> : null}
 
-        <div className="mt-5 flex flex-wrap gap-3">
-          <button
-            type="button"
-            disabled={saving}
-            onClick={save}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-            style={{ backgroundColor: 'var(--brand)' }}
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            type="button"
-            disabled={saving}
-            onClick={load}
-            className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
-          >
-            Reload
-          </button>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              disabled={saving || saveBlocked}
+              onClick={save}
+              className="rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+              style={{ backgroundColor: 'var(--brand)' }}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={load}
+              className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-4 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
+            >
+              Reload
+            </button>
+          </div>
         </div>
-      </div>
+      ) : null}
 
-      {activeTab !== 'notifications' && activeTab !== 'messages' ? (
+      {activeTab !== 'notifications' && activeTab !== 'messages' && activeTab !== 'xuiHttps' && activeTab !== 'a2p' ? (
         <div className="rounded-2xl border border-[var(--admin-border)] bg-[var(--admin-surface)] p-5">
           <h2 className="text-lg font-semibold">Secrets</h2>
           <p className="mt-1 text-sm text-[var(--admin-muted)]">

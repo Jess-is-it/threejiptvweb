@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 
 import { adminCookieName, getAdminFromSessionToken } from '../../../../lib/server/adminAuth';
 import { getSecret, getSecretsStatus, setSecret, secretKeys } from '../../../../lib/server/secrets';
-import { getPublicSettings, updatePublicSettings } from '../../../../lib/server/settings';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -71,12 +70,6 @@ async function effectiveSecrets() {
   };
 }
 
-async function xuioneServersEffective() {
-  const s = await getPublicSettings();
-  const list = Array.isArray(s?.xuione?.servers) ? s.xuione.servers : [];
-  return list;
-}
-
 function xuiApiInfo() {
   return {
     base: '/api/xuione',
@@ -99,14 +92,12 @@ export async function GET(req) {
 
   const status = await getSecretsStatus();
   const secrets = await effectiveSecrets();
-  const xuioneServers = await xuioneServersEffective();
   return NextResponse.json(
     {
       ok: true,
       env: envStatus(),
       status,
       secrets,
-      xuioneServers,
       xuiApi: xuiApiInfo(),
       keys: secretKeys(),
     },
@@ -124,7 +115,6 @@ export async function PUT(req) {
   } catch {}
 
   const patch = body?.secrets || body || {};
-  const serversPatch = body?.xuioneServers;
 
   const keys = secretKeys();
   const allowed = new Set(Object.values(keys));
@@ -134,20 +124,14 @@ export async function PUT(req) {
     await setSecret(k, v);
   }
 
-  if (Array.isArray(serversPatch)) {
-    await updatePublicSettings({ xuione: { servers: serversPatch } });
-  }
-
   const status = await getSecretsStatus();
   const secrets = await storedSecrets();
-  const xuioneServers = await xuioneServersEffective();
   return NextResponse.json(
     {
       ok: true,
       env: envStatus(),
       status,
       secrets,
-      xuioneServers,
       xuiApi: xuiApiInfo(),
       keys,
     },

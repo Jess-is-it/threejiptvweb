@@ -3,6 +3,14 @@ import { NextResponse } from 'next/server';
 import { getPublicSettings } from '../../../../lib/server/settings';
 import { xtreamWithFallback } from '../../xuione/_shared';
 import { getXuioneServersForRequest } from '../../../../lib/server/xuiServerRouting';
+import {
+  checkAuthLock,
+  checkRateLimit,
+  clearAuthFailures,
+  recordAuthFailure,
+  tooManyRequestsPayload,
+} from '../../../../lib/server/botProtection';
+import { turnstileErrorResponse, verifyTurnstile } from '../../../../lib/server/turnstile';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -47,7 +55,8 @@ function buildStreamBase(serverOrigin, username, password) {
 
 async function fetchXtreamLogin(serverOrigin, username, password) {
   // Use the shared Xuione helper so we also inherit mirror fallback + self-signed cert handling.
-  const data = await xtreamWithFallback({ server: serverOrigin, username, password });
+  const timeoutMs = Number(process.env.XUI_LOGIN_TIMEOUT_MS || 8000);
+  const data = await xtreamWithFallback({ server: serverOrigin, username, password, timeoutMs });
   return data || {};
 }
 
@@ -57,19 +66,62 @@ function parseBodyFromText(raw = '') {
   // Try JSON first
   try {
     const b = JSON.parse(raw || '{}');
-    username = String(b?.username || '').trim();
-    password = String(b?.password || '').trim();
+      username = String(b?.username || '').trim();
+      password = String(b?.password || '').trim();
+      return { username, password, turnstileToken: String(b?.turnstileToken || '').trim() };
   } catch {
     // Fallback: application/x-www-form-urlencoded
     const p = new URLSearchParams(raw || '');
     username = String(p.get('username') || '').trim();
     password = String(p.get('password') || '').trim();
+    return { username, password, turnstileToken: String(p.get('turnstileToken') || '').trim() };
   }
-  return { username, password };
+  return { username, password, turnstileToken: '' };
+}
+
+function publicLoginFailureResponse(req, username) {
+  const failure = recordAuthFailure(req, {
+    scope: 'public-login-failure',
+    identifier: username,
+    maxFailures: 5,
+    windowMs: 15 * 60_000,
+    lockMs: 15 * 60_000,
+  });
+  if (failure.locked) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Too many failed login attempts. Try again in ${failure.retryAfter} seconds.`,
+        retryAfterSeconds: failure.retryAfter,
+      },
+      { status: 429, headers: { 'Retry-After': String(failure.retryAfter), 'Cache-Control': 'no-store' } }
+    );
+  }
+  return NextResponse.json(
+    { ok: false, error: 'Invalid username or password.' },
+    { status: 401, headers: { 'Cache-Control': 'no-store' } }
+  );
+}
+
+function isInvalidUpstreamLogin(error) {
+  const message = String(error?.message || '');
+  return /\b(401|403|404)\b|not found|unauthorized|forbidden/i.test(message);
 }
 
 async function handle(req) {
   try {
+    const ipLimit = checkRateLimit(req, {
+      scope: 'public-login-post',
+      limit: 8,
+      windowMs: 60_000,
+    });
+    if (!ipLimit.allowed) {
+      return NextResponse.json(tooManyRequestsPayload(ipLimit), {
+        status: 429,
+        headers: { 'Retry-After': String(ipLimit.retryAfter), 'Cache-Control': 'no-store' },
+      });
+    }
+
     // READ BODY ONCE AS TEXT (avoids "body already been read")
     let raw = '';
     try {
@@ -80,7 +132,7 @@ async function handle(req) {
         { status: 400 }
       );
     }
-    const { username, password } = parseBodyFromText(raw);
+    const { username, password, turnstileToken } = parseBodyFromText(raw);
 
     if (!username || !password) {
       return NextResponse.json(
@@ -89,29 +141,68 @@ async function handle(req) {
       );
     }
 
+    const authLock = checkAuthLock(req, { scope: 'public-login-failure', identifier: username });
+    if (authLock.locked) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Too many failed login attempts. Try again in ${authLock.retryAfter} seconds.`,
+          retryAfterSeconds: authLock.retryAfter,
+        },
+        { status: 429, headers: { 'Retry-After': String(authLock.retryAfter), 'Cache-Control': 'no-store' } }
+      );
+    }
+
     const settings = await getPublicSettings();
+    const turnstile = await verifyTurnstile({
+      req,
+      area: 'public_login',
+      token: turnstileToken,
+      settings,
+    });
+    if (!turnstile.ok) {
+      return NextResponse.json(turnstileErrorResponse(turnstile), {
+        status: turnstile.status || 403,
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+
     const servers = await getXuioneServersForRequest({ req, settings });
     if (!servers.length) {
       return NextResponse.json(
         { ok: false, error: 'No Xuione servers configured.' },
-        { status: 500 }
+        { status: 503, headers: { 'Cache-Control': 'no-store' } }
       );
     }
     const chosen = pickConfiguredServer(servers);
     const serverOrigin = chosen?.origin || servers[0].origin || servers[0];
 
     // Validate with Xuione/Xtream
-    const data = await fetchXtreamLogin(serverOrigin, username, password);
+    let data = {};
+    try {
+      data = await fetchXtreamLogin(serverOrigin, username, password);
+    } catch (e) {
+      if (isInvalidUpstreamLogin(e)) {
+        return publicLoginFailureResponse(req, username);
+      }
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'Login service is temporarily unavailable. Please try again shortly.',
+          upstreamUnavailable: true,
+        },
+        { status: 502, headers: { 'Cache-Control': 'no-store' } }
+      );
+    }
     const ui = data?.user_info || {};
     const auth =
       ui?.auth === 1 || ui?.auth === '1' || (ui?.status || '').toLowerCase() === 'active';
 
     if (!auth) {
-      return NextResponse.json(
-        { ok: false, error: 'Invalid username or password.' },
-        { status: 401 }
-      );
+      return publicLoginFailureResponse(req, username);
     }
+
+    clearAuthFailures(req, { scope: 'public-login-failure', identifier: username });
 
     return NextResponse.json(
       {
@@ -128,9 +219,10 @@ async function handle(req) {
       { status: 200 }
     );
   } catch (e) {
+    console.error('[3JTV][AUTH_LOGIN] unexpected error', e);
     return NextResponse.json(
-      { ok: false, error: e?.message || 'Login failed.' },
-      { status: 500 }
+      { ok: false, error: 'Login failed.' },
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
     );
   }
 }

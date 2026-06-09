@@ -1723,7 +1723,7 @@ export default function VideoPlayer({
               </button>
             ) : null}
             <button
-              className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+              className="hidden items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55 sm:inline-flex"
               onClick={() => seekBy(-10)}
               aria-label="Rewind 10 seconds"
               title="Rewind 10s"
@@ -1731,7 +1731,7 @@ export default function VideoPlayer({
               <RotateCcw size={22} />
             </button>
             <button
-              className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55"
+              className="hidden items-center justify-center rounded-2xl border border-white/10 bg-black/45 p-4 text-white backdrop-blur-md hover:bg-black/55 sm:inline-flex"
               onClick={() => seekBy(10)}
               aria-label="Forward 10 seconds"
               title="Forward 10s"
@@ -1796,7 +1796,7 @@ export default function VideoPlayer({
                 </button>
 
                 {menuBrowserOpen ? (
-                  <div className="absolute bottom-14 right-0 w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-black/75 text-white shadow-2xl backdrop-blur-md">
+                  <div className="fixed bottom-24 left-3 right-3 z-[170] max-h-[calc(100dvh-7rem)] w-auto overflow-hidden rounded-2xl border border-white/10 bg-black/75 text-white shadow-2xl backdrop-blur-md sm:absolute sm:bottom-14 sm:left-auto sm:right-0 sm:max-h-none sm:w-[min(420px,calc(100vw-2rem))]">
                     {activeMenuGroup ? (
                       <>
                         <div className="flex items-center justify-between gap-3 border-b border-white/10 px-3 py-3">
@@ -1817,7 +1817,7 @@ export default function VideoPlayer({
                           </div>
                         </div>
 
-                        <div className="max-h-[60vh] space-y-2 overflow-auto p-3">
+                        <div className="max-h-[calc(100dvh-13rem)] space-y-2 overflow-auto p-3 sm:max-h-[60vh]">
                           {(Array.isArray(activeMenuGroup?.items) ? activeMenuGroup.items : []).map((item) => {
                             const isCurrent = String(item?.id || '').trim() === currentMenuItemId;
                             return (
@@ -1865,7 +1865,7 @@ export default function VideoPlayer({
                             Choose a category, then pick a channel.
                           </div>
                         </div>
-                        <div className="max-h-[60vh] space-y-2 overflow-auto p-3">
+                        <div className="max-h-[calc(100dvh-13rem)] space-y-2 overflow-auto p-3 sm:max-h-[60vh]">
                           {menuGroups.map((group) => {
                             const id = String(group?.id || '').trim();
                             const title = String(group?.title || group?.name || '').trim() || menuGroupLabel;

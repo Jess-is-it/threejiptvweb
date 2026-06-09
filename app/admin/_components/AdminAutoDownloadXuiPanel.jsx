@@ -33,6 +33,18 @@ function Input(props) {
   );
 }
 
+function Textarea(props) {
+  return (
+    <textarea
+      {...props}
+      className={
+        'w-full rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-solid)] px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-[--brand]/30 ' +
+        (props.className || '')
+      }
+    />
+  );
+}
+
 export default function AdminAutoDownloadXuiPanel() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -45,12 +57,16 @@ export default function AdminAutoDownloadXuiPanel() {
   const [triggerSaving, setTriggerSaving] = useState(false);
 
   const [baseUrl, setBaseUrl] = useState('');
+  const [publicBaseUrl, setPublicBaseUrl] = useState('');
+  const [publicTunnelConnectorCommand, setPublicTunnelConnectorCommand] = useState('');
   const [accessCode, setAccessCode] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [watchFolderIdMovies, setWatchFolderIdMovies] = useState('');
   const [watchFolderIdSeries, setWatchFolderIdSeries] = useState('');
   const [hasAccessCode, setHasAccessCode] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [hasPublicTunnelToken, setHasPublicTunnelToken] = useState(false);
+  const [publicTunnelTokenHint, setPublicTunnelTokenHint] = useState('');
   const [scanState, setScanState] = useState(null);
   const [watchfolderAutoTriggerEnabled, setWatchfolderAutoTriggerEnabled] = useState(true);
   const [watchfolderCooldownMinutes, setWatchfolderCooldownMinutes] = useState(10);
@@ -78,6 +94,9 @@ export default function AdminAutoDownloadXuiPanel() {
         if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to load XUI config.');
         const x = j.xui || {};
         setBaseUrl(x.baseUrl || '');
+        setPublicBaseUrl(x.publicBaseUrl || '');
+        setHasPublicTunnelToken(Boolean(x.hasPublicTunnelToken));
+        setPublicTunnelTokenHint(x.publicTunnelTokenHint || '');
         setWatchFolderIdMovies(x.watchFolderIdMovies || '');
         setWatchFolderIdSeries(x.watchFolderIdSeries || '');
         setHasAccessCode(Boolean(x.hasAccessCode));
@@ -108,19 +127,46 @@ export default function AdminAutoDownloadXuiPanel() {
       const r = await fetch('/api/admin/autodownload/xui', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ baseUrl, accessCode, apiKey, watchFolderIdMovies, watchFolderIdSeries }),
+        body: JSON.stringify({ baseUrl, publicBaseUrl, publicTunnelConnectorCommand, accessCode, apiKey, watchFolderIdMovies, watchFolderIdSeries }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to save.');
       setOk('Saved.');
+      setPublicTunnelConnectorCommand('');
       setAccessCode('');
       setApiKey('');
       setHasAccessCode(Boolean(j?.xui?.hasAccessCode));
       setHasApiKey(Boolean(j?.xui?.hasApiKey));
+      setHasPublicTunnelToken(Boolean(j?.xui?.hasPublicTunnelToken));
+      setPublicTunnelTokenHint(j?.xui?.publicTunnelTokenHint || '');
       return true;
     } catch (e) {
       setErr(e?.message || 'Failed to save.');
       return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearPublicTunnelToken = async () => {
+    if (!window.confirm('Remove the saved XUI Cloudflare tunnel token?')) return;
+    setBusy(true);
+    setErr('');
+    setOk('');
+    try {
+      const r = await fetch('/api/admin/autodownload/xui', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ baseUrl, publicBaseUrl, clearPublicTunnelToken: true, watchFolderIdMovies, watchFolderIdSeries }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'Failed to clear token.');
+      setPublicTunnelConnectorCommand('');
+      setHasPublicTunnelToken(false);
+      setPublicTunnelTokenHint('');
+      setOk('XUI tunnel token removed.');
+    } catch (e) {
+      setErr(e?.message || 'Failed to clear token.');
     } finally {
       setBusy(false);
     }
@@ -224,6 +270,7 @@ export default function AdminAutoDownloadXuiPanel() {
     {
       title: 'Watch folders',
       items: [
+        'Public playback tunnel URL is the Cloudflare hostname customer browsers use outside the 3J AP network.',
         'WATCH_FOLDER_ID (Movies) and (Series) should be different and must match your XUI watchfolder configuration.',
         'Scans are triggered by the scheduler when items are finalized into Final folders (unless forced).',
       ],
@@ -263,10 +310,19 @@ export default function AdminAutoDownloadXuiPanel() {
           <EditIconButton onClick={() => setEditOpen(true)} />
         </div>
 
-        <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="mt-3 grid gap-3 md:grid-cols-5">
           <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
-            <div className="text-xs text-[var(--admin-muted)]">Base URL</div>
+            <div className="text-xs text-[var(--admin-muted)]">Private Base URL</div>
             <div className="mt-1 font-mono text-xs">{baseUrl || '—'}</div>
+          </div>
+          <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+            <div className="text-xs text-[var(--admin-muted)]">Public Playback Tunnel</div>
+            <div className="mt-1 font-mono text-xs">{publicBaseUrl || '—'}</div>
+          </div>
+          <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
+            <div className="text-xs text-[var(--admin-muted)]">Tunnel Token</div>
+            <div className="mt-1 text-sm font-semibold">{hasPublicTunnelToken ? 'Saved' : 'Not set'}</div>
+            {publicTunnelTokenHint ? <div className="mt-1 font-mono text-xs text-[var(--admin-muted)]">{publicTunnelTokenHint}</div> : null}
           </div>
           <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface)] p-3">
             <div className="text-xs text-[var(--admin-muted)]">Credentials</div>
@@ -308,11 +364,12 @@ export default function AdminAutoDownloadXuiPanel() {
       <EditModal
         open={editOpen}
         title="Edit XUI Integration"
-        description="Update XUI base URL, credentials, and watchfolder IDs. Credentials are encrypted at rest."
+        description="Update private XUI API access, public playback tunnel URL, Cloudflare connector token, and watchfolder IDs. Credentials are encrypted at rest."
         error={err}
         success={ok}
         onCancel={() => {
           setEditOpen(false);
+          setPublicTunnelConnectorCommand('');
           setAccessCode('');
           setApiKey('');
         }}
@@ -324,8 +381,19 @@ export default function AdminAutoDownloadXuiPanel() {
         saving={busy}
       >
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Base URL" hint="Example: https://panel.example.com:port" note="Base URL of your XUI panel (include protocol and port if needed).">
-            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://xui.example.com:25500" />
+          <Field label="Private Base URL" hint="Example: http://10.100.100.100" note="Private XUI panel URL used by this server for API/provisioning.">
+            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://10.100.100.100" />
+          </Field>
+          <Field label="Public Playback Tunnel URL" hint="Example: https://xui.3jhotspot.com" note="Cloudflare Tunnel hostname that customer browsers use for XUI streams and artwork outside the 3J AP network.">
+            <Input value={publicBaseUrl} onChange={(e) => setPublicBaseUrl(e.target.value)} placeholder="https://xui.3jhotspot.com" />
+          </Field>
+          <Field label="Cloudflare Connector Command / Token" hint={hasPublicTunnelToken ? `Saved: ${publicTunnelTokenHint || 'token hidden'}` : 'Paste the connector command from Cloudflare.'} note="Store the XUI One tunnel token here. Run this connector on the XUI One server so outside customer browsers can reach XUI playback.">
+            <Textarea rows={4} value={publicTunnelConnectorCommand} onChange={(e) => setPublicTunnelConnectorCommand(e.target.value)} placeholder={hasPublicTunnelToken ? 'Leave blank to keep saved token' : 'cloudflared tunnel run --token ey...'} />
+            {hasPublicTunnelToken ? (
+              <button className="mt-2 rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-xs hover:bg-black/10 disabled:opacity-60" type="button" disabled={busy} onClick={clearPublicTunnelToken}>
+                Clear saved tunnel token
+              </button>
+            ) : null}
           </Field>
           <Field label="Access Code" hint="Not displayed after save" note="XUI access_code credential. Stored encrypted at rest.">
             <Input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder={hasAccessCode ? '(already saved)' : 'accesscode'} />

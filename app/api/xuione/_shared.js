@@ -43,6 +43,24 @@ function isLocalHostname(hostname = '') {
   return false;
 }
 
+function normalizeTimeoutMs(value) {
+  const timeoutMs = Number(value || 0);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return 0;
+  return Math.min(Math.max(Math.round(timeoutMs), 1000), 30_000);
+}
+
+function createTimeoutSignal(timeoutMs) {
+  const normalized = normalizeTimeoutMs(timeoutMs);
+  if (!normalized) return undefined;
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(normalized);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), normalized);
+  if (typeof timer?.unref === 'function') timer.unref();
+  return controller.signal;
+}
+
 export async function allowInsecureTlsFor(upstreamUrl) {
   if (String(process.env.ALLOW_INSECURE_UPSTREAM_TLS || '').toLowerCase() === 'true') return true;
   try {
@@ -73,9 +91,25 @@ export function resolveXuioneAssetUrl(value = '', server = '') {
   if (!raw) return '';
   if (/^(?:data|javascript):/i.test(raw)) return '';
 
-  if (/^https?:\/\//i.test(raw)) return raw;
-
   const origin = normalizeOrigin(server);
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const url = new URL(raw);
+      // XUI often returns internal panel artwork as absolute URLs based on the
+      // server's configured domain. If that domain is stale or points at the
+      // web app, keep the asset path but fetch it from the selected XUI origin.
+      if (origin && /^\/images\//i.test(url.pathname)) {
+        const upstream = new URL(origin);
+        upstream.pathname = url.pathname;
+        upstream.search = url.search;
+        upstream.hash = url.hash;
+        return upstream.toString();
+      }
+    } catch {}
+    return raw;
+  }
+
   if (/^\/\//.test(raw)) {
     if (!origin) return `https:${raw}`;
     try {
@@ -162,7 +196,7 @@ export function parseStreamBase(streamBase = '') {
 }
 
 /**
- * Generate mirror candidates, e.g. https://tv2.3jxentro.net/ -> tv2, tv1..tv6
+ * Generate mirror candidates for a tvN-style XUI hostname.
  * Original first, then other tvN hosts.
  */
 function mirrorServers(originalOrigin) {
@@ -182,7 +216,7 @@ function mirrorServers(originalOrigin) {
 /**
  * Fetch Xtream endpoint and force JSON. If panel returns HTML/garbage, throw.
  */
-async function xtreamOnce({ server, username, password, action, extra = {} }) {
+async function xtreamOnce({ server, username, password, action, extra = {}, signal }) {
   const url = new URL('player_api.php', server);
   url.searchParams.set('username', username);
   url.searchParams.set('password', password);
@@ -196,6 +230,7 @@ async function xtreamOnce({ server, username, password, action, extra = {} }) {
   const r = await fetch(url.toString(), {
     cache: 'no-store',
     redirect: 'follow',
+    ...(signal ? { signal } : {}),
     ...(insecureTls ? { dispatcher: insecureDispatcher } : {}),
     headers: {
       // be more “browser-y” – some panels behave differently
@@ -228,18 +263,21 @@ async function xtreamOnce({ server, username, password, action, extra = {} }) {
 /**
  * Try original host first, then tv1..tv6 mirrors until one returns JSON.
  */
-export async function xtreamWithFallback({ server, username, password, action, extra = {} }) {
+export async function xtreamWithFallback({ server, username, password, action, extra = {}, timeoutMs = 0 }) {
   const candidates = mirrorServers(server);
+  const signal = createTimeoutSignal(timeoutMs);
   let lastErr;
 
   for (const base of candidates) {
+    if (signal?.aborted) break;
     try {
-      return await xtreamOnce({ server: base, username, password, action, extra });
+      return await xtreamOnce({ server: base, username, password, action, extra, signal });
     } catch (e) {
       lastErr = e;
+      if (signal?.aborted) break;
       // try next mirror
     }
   }
 
-  throw lastErr || new Error('All Xuione mirrors failed');
+  throw lastErr || new Error('Xuione request timed out');
 }

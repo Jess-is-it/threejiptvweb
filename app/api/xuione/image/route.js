@@ -7,8 +7,14 @@ import { ensureArtworkCached } from '../../../../lib/server/artworkCache';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function fallbackResponse(req) {
-  return NextResponse.redirect(new URL('/placeholders/poster-fallback.jpg', req.url), { status: 307 });
+function fallbackResponse() {
+  return new NextResponse(null, {
+    status: 307,
+    headers: {
+      Location: '/placeholders/poster-fallback.jpg',
+      'Cache-Control': 'public, max-age=3600',
+    },
+  });
 }
 
 function buildResponse({ buffer, meta, cacheState = 'miss' } = {}) {
@@ -33,7 +39,7 @@ export async function GET(req) {
   const rawSrc = url.searchParams.get('src') || '';
   const server = url.searchParams.get('server') || '';
   const src = resolveXuioneAssetUrl(rawSrc, server);
-  if (!src) return fallbackResponse(req);
+  if (!src) return fallbackResponse();
 
   try {
     const cached = await ensureArtworkCached({
@@ -42,8 +48,8 @@ export async function GET(req) {
     });
     const response = buildResponse(cached);
     if (response) return response;
-    return fallbackResponse(req);
+    return fallbackResponse();
   } catch {
-    return fallbackResponse(req);
+    return fallbackResponse();
   }
 }

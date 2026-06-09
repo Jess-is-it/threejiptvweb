@@ -6,6 +6,7 @@ import { deriveStoragePolicy } from '../../../../lib/server/autodownload/storage
 import { getNotificationSettings, getNotificationState, getNotificationTimeZone, updateNotificationSettings } from '../../../../lib/server/notificationSettings';
 import { getSecret, secretKeys, setSecret } from '../../../../lib/server/secrets';
 import { getPublicSettings, updatePublicSettings } from '../../../../lib/server/settings';
+import { getTurnstileAdminMeta } from '../../../../lib/server/turnstile';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,6 +33,8 @@ function hasOwn(obj, key) {
   return Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+const SAVED_TURNSTILE_SECRET_TEXT = 'Saved secret configured - leave blank to keep it';
+
 async function telegramSettingsForAdmin() {
   const keys = secretKeys();
   const botToken = String((await getSecret(keys.telegramBotToken)) || process.env.TELEGRAM_BOT_TOKEN || '').trim();
@@ -46,12 +49,13 @@ async function telegramSettingsForAdmin() {
 }
 
 async function buildResponsePayload() {
-  const [settings, notificationSettings, notificationState, notificationTimeZone, telegram, db] = await Promise.all([
+  const [settings, notificationSettings, notificationState, notificationTimeZone, telegram, turnstile, db] = await Promise.all([
     getPublicSettings(),
     getNotificationSettings(),
     getNotificationState(),
     getNotificationTimeZone(),
     telegramSettingsForAdmin(),
+    getTurnstileAdminMeta(),
     getAdminDb(),
   ]);
 
@@ -59,6 +63,7 @@ async function buildResponsePayload() {
   const liveChannelsTracked = Object.keys(channels).length;
   const liveChannelsUp = Object.values(channels).filter((item) => item?.isUp === true).length;
   const liveChannelsDown = Object.values(channels).filter((item) => item?.isUp === false).length;
+  const serviceStatuses = notificationState?.telegram?.serviceStatus?.services || {};
 
   const vodTotalBytes = Number(db?.deletionState?.vodState?.totalBytes || 0) || 0;
   const nasTotalBytes = Number(db?.mountStatus?.space?.total || 0) || 0;
@@ -84,8 +89,11 @@ async function buildResponsePayload() {
         triggerUsedGb: Number(autoDeletePolicy?.triggerUsedGb || 0) || 0,
         limitUsedGb: Number(autoDeletePolicy?.limitUsedGb || 0) || 0,
       },
+      serviceStatuses,
+      serviceStatusLastCheckedAt: Number(notificationState?.telegram?.serviceStatus?.lastCheckedAt || 0) || null,
     },
     telegram,
+    turnstile,
     env: envStatus(),
   };
 }
@@ -112,9 +120,26 @@ export async function PUT(req) {
       hasOwn(body, 'settings') ||
       hasOwn(body, 'notificationSettings') ||
       hasOwn(body, 'telegram') ||
-      hasOwn(body, 'telegramSecrets');
+      hasOwn(body, 'telegramSecrets') ||
+      hasOwn(body, 'turnstile');
 
     const settingsPatch = hasOwn(body, 'settings') ? body.settings : wrapped ? null : body;
+    const turnstilePatch = hasOwn(body, 'turnstile') && body?.turnstile && typeof body.turnstile === 'object'
+      ? body.turnstile
+      : null;
+
+    const requestedTurnstile = settingsPatch?.security?.turnstile;
+    if (requestedTurnstile?.enabled === true) {
+      const siteKey = String(requestedTurnstile.siteKey || '').trim();
+      const newSecret = String(turnstilePatch?.secretKey || '').trim();
+      const meta = await getTurnstileAdminMeta();
+      const keepsExisting = !newSecret || newSecret === SAVED_TURNSTILE_SECRET_TEXT;
+      if (!siteKey) throw new Error('Turnstile Site Key is required before enabling Turnstile.');
+      if (keepsExisting && !meta.secretConfigured) {
+        throw new Error('Turnstile Secret Key is required before enabling Turnstile.');
+      }
+    }
+
     if (settingsPatch && typeof settingsPatch === 'object') {
       await updatePublicSettings(settingsPatch);
     }
@@ -137,6 +162,13 @@ export async function PUT(req) {
       }
       if (hasOwn(telegramPatch, 'chatId') || hasOwn(telegramPatch, 'telegramChatId')) {
         await setSecret(keys.telegramChatId, telegramPatch.chatId ?? telegramPatch.telegramChatId ?? '');
+      }
+    }
+
+    if (turnstilePatch) {
+      const value = String(turnstilePatch.secretKey || '').trim();
+      if (value && value !== SAVED_TURNSTILE_SECRET_TEXT) {
+        await setSecret(secretKeys().cloudflareTurnstileSecret, value);
       }
     }
 

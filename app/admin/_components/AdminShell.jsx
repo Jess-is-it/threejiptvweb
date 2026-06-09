@@ -142,6 +142,63 @@ function pageTitle(pathname) {
   return 'Admin';
 }
 
+function checkSucceeded(check) {
+  const status = String(check?.status || '').toUpperCase();
+  const httpStatus = Number(check?.httpStatus || 0) || 0;
+  return status === 'SUCCESS' || (httpStatus > 0 && httpStatus < 500);
+}
+
+function checkDescription(check) {
+  if (!check) return 'Not checked';
+  const httpStatus = Number(check?.httpStatus || 0) || 0;
+  const status = String(check?.status || '').trim();
+  if (httpStatus) return `HTTP ${httpStatus}${Number.isFinite(Number(check?.latencyMs)) ? ` in ${check.latencyMs}ms` : ''}`;
+  return status || String(check?.error || check?.message || 'Not checked');
+}
+
+function buildSystemHttpsSummary(payload) {
+  const settings = payload?.settings || {};
+  const running = payload?.cloudflaredRunning === true;
+  const publicOk = checkSucceeded(payload?.publicServiceCheck);
+  const active = running && publicOk;
+  const configured = Boolean(settings?.publicUrl || payload?.tokenConfigured || payload?.cloudflaredInstalled);
+  const hasIssue = configured && !active;
+  const checkText = checkDescription(payload?.publicServiceCheck);
+  const publicUrl = String(settings?.publicUrl || '').trim();
+  const title = active
+    ? `3JTV HTTPS is online at ${publicUrl || 'configured hostname'} (${checkText}).`
+    : !running
+        ? '3JTV HTTPS Cloudflare connector is not running.'
+        : `3JTV HTTPS public check failed: ${checkText}.`;
+  return { enabled: configured, active, hasIssue, label: active ? '3JTV HTTPS Active' : '3JTV HTTPS Inactive', title };
+}
+
+function buildXuiHttpsSummary(payload) {
+  const settings = payload?.settings || {};
+  const publicOk = checkSucceeded(payload?.publicServiceCheck);
+  const remoteStatus = payload?.lastRemoteStatus || {};
+  const remoteState = String(remoteStatus?.serviceActive || '').trim();
+  const remoteActive = !remoteState || remoteState === 'active';
+  const active = publicOk && remoteActive;
+  const configured = Boolean(settings?.publicUrl || payload?.tokenConfigured || payload?.sshConfigured);
+  const hasIssue = configured && !active;
+  const checkText = checkDescription(payload?.publicServiceCheck);
+  const publicUrl = String(settings?.publicUrl || '').trim();
+  const title = active
+    ? `XUI HTTPS is online at ${publicUrl || 'configured hostname'} (${checkText}).`
+    : remoteState && remoteState !== 'active'
+        ? `XUI HTTPS remote connector is ${remoteState}.`
+        : `XUI HTTPS public check failed: ${checkText}.`;
+  return { enabled: configured, active, hasIssue, label: active ? 'XUI HTTPS Active' : 'XUI HTTPS Inactive', title };
+}
+
+function statusBadgeTone({ active, hasIssue, enabled }) {
+  if (active) return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  if (hasIssue) return 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300';
+  if (enabled) return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+  return 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300';
+}
+
 export default function AdminShell({ admin, children }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -196,6 +253,20 @@ export default function AdminShell({ admin, children }) {
     hasIssue: false,
     label: 'NAS Inactive',
     title: 'NAS is unavailable.',
+  });
+  const [systemHttpsSummary, setSystemHttpsSummary] = useState({
+    enabled: false,
+    active: false,
+    hasIssue: false,
+    label: '3JTV HTTPS Inactive',
+    title: '3JTV HTTPS is unavailable.',
+  });
+  const [xuiHttpsSummary, setXuiHttpsSummary] = useState({
+    enabled: false,
+    active: false,
+    hasIssue: false,
+    label: 'XUI HTTPS Inactive',
+    title: 'XUI HTTPS is unavailable.',
   });
 
   useEffect(() => {
@@ -335,6 +406,57 @@ export default function AdminShell({ admin, children }) {
 
     loadNasSummary();
     timer = setInterval(loadNasSummary, 60000);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+
+    const loadHttpsSummary = async () => {
+      const fetchJson = async (url) => {
+        const r = await fetch(url, { cache: 'no-store' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j?.ok) throw new Error(j?.error || `Failed to load ${url}.`);
+        return j;
+      };
+
+      const [systemResult, xuiResult] = await Promise.allSettled([
+        fetchJson('/api/admin/public-https'),
+        fetchJson('/api/admin/xui-https'),
+      ]);
+      if (cancelled) return;
+
+      if (systemResult.status === 'fulfilled') {
+        setSystemHttpsSummary(buildSystemHttpsSummary(systemResult.value));
+      } else {
+        setSystemHttpsSummary({
+          enabled: false,
+          active: false,
+          hasIssue: true,
+          label: '3JTV HTTPS Inactive',
+          title: systemResult.reason?.message || 'Failed to read 3JTV HTTPS status.',
+        });
+      }
+
+      if (xuiResult.status === 'fulfilled') {
+        setXuiHttpsSummary(buildXuiHttpsSummary(xuiResult.value));
+      } else {
+        setXuiHttpsSummary({
+          enabled: false,
+          active: false,
+          hasIssue: true,
+          label: 'XUI HTTPS Inactive',
+          title: xuiResult.reason?.message || 'Failed to read XUI HTTPS status.',
+        });
+      }
+    };
+
+    loadHttpsSummary();
+    timer = setInterval(loadHttpsSummary, 60000);
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
@@ -975,9 +1097,7 @@ export default function AdminShell({ admin, children }) {
                 <span
                   className={cx(
                     'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold',
-                    nasSummary.active
-                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                      : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
+                    statusBadgeTone({ active: nasSummary.active, hasIssue: nasSummary.hasIssue, enabled: false })
                   )}
                   title={nasSummary.title}
                 >
@@ -987,18 +1107,32 @@ export default function AdminShell({ admin, children }) {
                 <span
                   className={cx(
                     'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold',
-                    vpnSummary.healthy
-                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                      : vpnSummary.hasIssue
-                        ? 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
-                        : vpnSummary.enabled
-                          ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                          : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
+                    statusBadgeTone({ active: vpnSummary.healthy, hasIssue: vpnSummary.hasIssue, enabled: vpnSummary.enabled })
                   )}
                   title={vpnSummary.title}
                 >
                   <Shield size={14} />
                   {vpnSummary.label}
+                </span>
+                <span
+                  className={cx(
+                    'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold',
+                    statusBadgeTone(systemHttpsSummary)
+                  )}
+                  title={systemHttpsSummary.title}
+                >
+                  <Globe size={14} />
+                  {systemHttpsSummary.label}
+                </span>
+                <span
+                  className={cx(
+                    'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold',
+                    statusBadgeTone(xuiHttpsSummary)
+                  )}
+                  title={xuiHttpsSummary.title}
+                >
+                  <LinkIcon size={14} />
+                  {xuiHttpsSummary.label}
                 </span>
                 <ThemeToggle />
                 <div className="hidden items-center gap-3 sm:flex">

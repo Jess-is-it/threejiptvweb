@@ -101,7 +101,7 @@ There is currently **no automated test suite**. Use:
 - `ssh2` for remote Engine Host command execution
 - `undici` for server-side HTTP
 - `bcryptjs` for admin auth hashing
-- Local/Netlify-backed JSON storage abstraction via `lib/server/blobStore.js`
+- Local JSON storage abstraction via `lib/server/blobStore.js`
 
 ### Key Directories
 - `app/` — pages + API routes
@@ -111,7 +111,7 @@ There is currently **no automated test suite**. Use:
 - `components/` — public UI, providers, player
 - `lib/server/` — auth/db/settings/secrets/vault/mailer
 - `lib/server/autodownload/` — AutoDownload services (SSH, mount, qB, processing, scheduler, XUI)
-- `data/.admin/` — local JSON data store (`db.json`, key file) outside Netlify context
+- `data/.admin/` — local JSON data store (`db.json`, key file)
 - `deploy/systemd/` — service and timer units for production
 
 ### Primary User Routes
@@ -120,12 +120,17 @@ There is currently **no automated test suite**. Use:
 - Public search: `/search` shows unified movie + series results. Header search category chips are merged into one combined `Categories` list and now open `/search?genre=<name>` instead of filling the text query. Genre-filtered results stay combined across movies + series and are sorted by TMDB popularity.
 - Watch: `/watch/movie/[id]`, `/watch/series/[seriesId]/[episodeId]`, `/watch/live/[id]`
   - Live playback on `/watch/live/[id]` reconstructs the Live TV category/channel menu from `/api/xuione/live` and passes it into `VideoPlayer`, restoring the in-player Categories menu plus Previous/Next channel controls. When navigation comes from a recent Live TV click intent, the player starts with sound requested and runs one automatic unmute attempt after playback starts so channel selection does not stay muted by default. The direct watch page uses `menuNavigation.switchMode="parent"` so Previous/Next channel clicks do not pre-attach one source and then reattach the same source again through parent state; `VideoPlayer` also keeps latest metadata/server callbacks in refs and avoids same-URL `srcs` state writes to prevent one-second live flicker/rewind after metadata or server-list refreshes.
+  - On mobile player layouts, the Live TV Categories/Channels browser uses a viewport-fixed panel so it cannot render off-screen when opened from the bottom-right control row. Mobile also hides the 10-second rewind/forward controls to keep Live TV controls usable on small screens.
   - Series playback waits for the episode metadata lookup to resolve the XUI container extension before attaching a source, then plays the direct episode file (`.mkv`, `.mp4`, etc.) first. It only uses `.m3u8` when the panel explicitly reports an HLS container, which avoids an initial unsupported-source flash from missing series HLS URLs.
   - Movie/Series subtitle lists are ordered by source priority: local NAS sidecar subtitles first, XUI/panel subtitles next, and OpenSubtitles fallback last. Local movie subtitles are discovered from the deployed movie title folder beside the video file; local series subtitles are discovered from the deployed series folder and matched by season/episode marker. The public Profile menu includes an `Auto use first available` subtitle preference stored locally per browser; when enabled, Movie/Series playback automatically selects the first available subtitle track, so local subtitles win whenever present.
   - OpenSubtitles is treated as a fallback for Movie/Series playback to protect the daily download quota. If no local/XUI subtitle exists and a viewer uses an OpenSubtitles track, the server downloads it once, saves it back into the deployed NAS folder as `<video-basename>.<lang>.srt`, and future playback exposes that file as a local subtitle instead of downloading it again from OpenSubtitles.
 - Admin auth: `/admin/login`, `/admin/setup`
+  - `/admin/login` includes email-only forgot-password reset. The reset form no longer links to first-time setup, starts a 60-second send-button countdown after a request, and `POST /api/admin/forgot-password` rate-limits by IP+email, reports when no admin uses the entered email, returns a masked destination on success, and only resets the stored password after SMTP delivery succeeds.
+  - Login/admin bot protection is enforced at two layers: `middleware.js` throttles `/login`, `/admin/*`, `/api/auth/login`, `/api/admin/login`, `/api/admin/forgot-password`, and `/api/admin/*` by client IP; route handlers also apply failed-login lockouts before expensive auth work.
+  - Cloudflare Turnstile is supported as an optional next-layer challenge on public user login, admin login, and admin forgot-password. It is configured from `/admin/settings -> Security`, stores only the Site Key in public settings, stores the Secret Key server-side under `cloudflareTurnstileSecret`, and defaults to enforcing only on the configured Public HTTPS hostname so LAN/local admin access is not blocked by public-domain Turnstile keys.
+  - Global browser hardening headers are configured in `next.config.js`: CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, HSTS, Referrer Policy, Permissions Policy, COOP, and DNS prefetch control. The CSP explicitly allows Cloudflare Turnstile, Cloudflare Insights/RUM, Google Fonts, local/remote images/media, websocket connections, and blob workers needed by the current player/UI.
 - Admin protected: `/admin`, `/admin/settings`, `/admin/category-settings`, `/admin/secrets`, `/admin/admins`, `/admin/reports`
-  - `/admin/settings` is now tabbed (`Branding`, `Player`, `Login`, `Xuione`, `Notifications`, `Messages`). The `Notifications` tab manages Telegram delivery/test settings plus immediate-alert switches for `Live TV Channels Up/down`, `User Reports`, `NAS`, and `/home/xui/content/vod`.
+  - `/admin/settings` is now tabbed (`Branding`, `Player`, `Login`, `Xuione`, `Security`, `Public HTTPS`, `XUI HTTPS`, `A2P Messaging`, `Notifications`, `Messages`). The `Security` tab manages Cloudflare Turnstile bot protection for exposed login surfaces. The `Public HTTPS` tab manages a local Cloudflare Tunnel connector for the IPTV web server, including public hostname/URL, local service URL, saved connector token, start/restart/stop actions, service checks, hostname guide copy, and cloudflared log tail. The `XUI HTTPS` tab manages the remote Cloudflare Tunnel connector on the XUI server, including remote SSH credentials, tunnel token, public XUI hostname/URL, remote service status, and public XUI check. The `A2P Messaging` tab manages Smart Messaging Suite SMS settings, encrypted API key/password storage, sender IDs, endpoint paths, prepaid credit checks, real test sends, and local SMS attempt logs. The `Notifications` tab manages Telegram delivery/test settings plus immediate-alert switches for `Live TV Channels Up/down`, `User Reports`, storage trigger alerts, and service Up/down alerts for NAS, VPN, `3JTV HTTPS`, and `XUI HTTPS`.
   - The `Messages` tab stores editable Telegram body templates for `Live TV status update`, `Live TV channel item`, `Live TV down reminder`, `User report`, `AutoDelete trigger alert`, and `Daily monitor report`, plus a Message Stamps modal that documents every supported `{{stamp}}`. Live TV, storage, and daily-report templates now expose granular per-field stamps (for example `{{channel-status}}`, `{{channel-server-line}}`, `{{nas-used-line}}`, `{{user-reports-open-line}}`) instead of requiring only combined summary stamps, while the default template text still mirrors the inline sentence-style Telegram output by using `*-part` helper stamps. Message editors disable soft wrapping so long inline stamp sentences stay on one editable line, and each template shows a rendered Telegram preview with sample values.
   - The Notifications tab also schedules one daily monitor report at `07:00` `Asia/Manila` by default (editable). That daily report always includes Live TV status, User Reports summary, NAS usage, VOD usage, and current AutoDelete trigger/limit state even when every immediate-alert switch is off.
   - Notification test actions are hidden behind a local `Test notifications` UI toggle inside the Notifications tab. When revealed, admins get a general Telegram test button, per-monitor-area realistic test buttons, and a daily-report test button.
@@ -162,10 +167,25 @@ There is currently **no automated test suite**. Use:
   - `/admin/autodownload/scan-log`
 
 ### Core APIs
-- Admin auth + profile: `/api/admin/login`, `/api/admin/logout`, `/api/admin/me`, `/api/admin/setup`
+- Admin auth + profile: `/api/admin/login`, `/api/admin/logout`, `/api/admin/me`, `/api/admin/setup`, `/api/admin/forgot-password`
+  - `/api/admin/login` has per-IP rate limiting plus per-IP+username failed-login lockout (`5` failures within `30` minutes locks for `30` minutes). `/api/admin/forgot-password` has per-IP throttling plus the existing IP+email cooldown.
+  - `/api/admin/login` and `/api/admin/forgot-password` call `lib/server/turnstile.js` before password verification/mailer work when Turnstile is enabled for the active request host.
 - Admin config: `/api/admin/settings`, `/api/admin/secrets`, `/api/admin/users`, `/api/admin/reports`
   - `GET/PUT /api/admin/settings` now also reads/saves admin-only Telegram notification settings, including Live TV change-delay/reminder settings, stored Telegram bot token/chat ID values, editable Telegram message templates, live-channel summary counts, last daily monitor-report date, and derived AutoDelete trigger/limit thresholds for the Notifications tab
   - `POST /api/admin/settings/telegram/test` sends Telegram test messages using the current form values (supports unsaved bot token/chat ID overrides and unsaved message-template overrides from the Admin Settings UI). The request body may include a `scenario` (`general`, `live_channels`, `user_reports`, `nas_trigger`, `vod_trigger`, `daily_monitor_report`) so the Notifications tab can send realistic per-area and daily-report test deliveries.
+- Public HTTPS admin: `/api/admin/public-https`
+  - `GET` returns saved `settings.publicHttps`, Cloudflare token status, cloudflared install/running state, hostname guide, local/public HTTP checks, and recent connector logs.
+  - `PUT` saves Public HTTPS settings and extracts/stores a Cloudflare Tunnel token from either a raw token or full `cloudflared ... --token ...` connector command.
+  - `POST` supports `start`, `restart`, `stop`, and `check/status` actions for the local cloudflared connector.
+- XUI HTTPS admin: `/api/admin/xui-https`
+  - `GET` returns saved XUI HTTPS settings, encrypted-secret configured flags, public XUI HTTP check, and cached/refreshable remote cloudflared status.
+  - `PUT` saves the public XUI hostname/URL, remote SSH settings, encrypted SSH secrets, sudo secret, and Cloudflare Tunnel token.
+  - `POST` supports `test-ssh`, `install`, `start`, `restart`, `stop`, and `check/status` for the remote XUI cloudflared connector.
+- A2P Messaging admin: `/api/admin/a2p-messaging`
+  - `GET/PUT` reads/saves Smart Messaging Suite settings used by `/admin/settings -> A2P Messaging`. API key and password are encrypted with `lib/server/vault.js`; responses expose only configured flags and masked hints.
+  - `POST /api/admin/a2p-messaging/check-credits` calls the Smart prepaid credits endpoint using Basic Auth username/password and stores last check status/response.
+  - `POST /api/admin/a2p-messaging/test-send` sends one real Smart SMS through `sendmsg`, records success/failure in local logs, and can consume credits.
+  - `GET /api/admin/a2p-messaging/messages` lists local SMS attempt logs with status/purpose/search pagination for the Messages sub-tab.
 - Media Library admin: `GET/POST /api/admin/media-library`
   - `GET` returns the merged movie/series management list with presence filters (`both|xui_only|nas_only`), category/genre filters, sorting, pagination, source health, and recent delete counts
   - `GET ?view=logs` returns the recent deletion log feed only
@@ -176,6 +196,9 @@ There is currently **no automated test suite**. Use:
   - Multipart `POST action=subtitle_upload` uploads subtitles for a deployed Movie/Series library row (`type`, `id`, `files[]`, optional `languages[]`). The server resolves the row from the inventory/XUI merged library, verifies the NAS is writable, finds the deployed video files through the Engine Host, writes via SSH/SFTP, and rejects ambiguous Series files that cannot be matched to a deployed episode.
   - JSON `POST action=subtitle_plan` previews Add Subtitles matching before upload. Series subtitle files are auto-matched by `SxxEyy` / `1x02` markers against deployed episode videos, and the Admin modal lets the user manually assign each subtitle to a deployed episode when filenames are missing or ambiguous. Uploads may include `assignments[]` video paths so the backend renames each subtitle beside the selected episode video.
 - Public auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/health`
+  - `/api/auth/login` has per-IP request throttling plus per-IP+username failed-login lockout (`5` failures within `15` minutes locks for `15` minutes). Invalid Xuione upstream auth responses (`401/403/404`) are normalized to a controlled `401` so bot probes do not leak upstream HTML or create repeated raw `500` errors.
+  - `/api/auth/login` also verifies Cloudflare Turnstile tokens before Xuione/Xtream validation when Turnstile is enabled for the active request host.
+  - `/api/auth/login` applies an upstream XUI timeout (`XUI_LOGIN_TIMEOUT_MS`, default `8000`) and returns a controlled `502` JSON payload with `upstreamUnavailable=true` when the XUI login server is unreachable. The public login UI sanitizes non-JSON/HTML upstream or Cloudflare errors so raw HTML is never shown in the login form.
 - Playback proxy: `/api/proxy/hls` (rewrites playlists, proxies segments/keys, handles fallback)
 - Content APIs: `/api/xuione/*`, `/api/tmdb/*`
 - Movie/Series catalog APIs `/api/xuione/vod` and `/api/xuione/series` accept `resolveKids=1` to synchronously resolve persistent `kidsSafe` tags from TMDB metadata. Standard catalog requests return immediately with any cached tags and backfill unresolved titles in the background so newly added XUI items get tagged without client-side TMDB scans.
@@ -218,6 +241,8 @@ There is currently **no automated test suite**. Use:
     - `POST /api/admin/autodownload/download-settings/vpn/compare` (runs VPN-vs-no-VPN benchmark using one popular seeded movie source, then restores prior VPN state)
 
 ### System Architecture (Operational)
+0. **Deployment/runtime**
+   - Production runs from `/home/threejiptvweb/3j-tv` on port `3000` using systemd service `3j-tv.service`; `master` is the only supported deployment branch.
 1. **Public playback flow**
    - User authenticates via `/api/auth/login` (Xtream/XUI validation).
    - Session stored client-side by `components/SessionProvider.jsx`.
@@ -227,20 +252,27 @@ There is currently **no automated test suite**. Use:
 2. **Admin flow**
    - Cookie-based admin sessions from `/api/admin/login`.
    - Protected UI rendered via `app/admin/(protected)/layout.jsx` and `app/admin/_components/AdminShell.jsx`.
+   - App-level bot protection lives in `middleware.js` and `lib/server/botProtection.js`. It is in-memory/per-Node-process and resets on service restart; keep Cloudflare/WAF, Turnstile, or IP allowlisting as the next recommended edge layer for public admin exposure.
+   - `middleware.js` also stamps security headers onto middleware-generated responses such as throttled `429` responses and admin redirects, while `next.config.js` owns the full global CSP/security-header policy for normal app/API responses.
+   - Turnstile browser widgets are rendered by `components/TurnstileWidget.jsx`; public/admin login pages decide whether to render them through `lib/turnstileClient.js` using `settings.security.turnstile` plus the configured Public HTTPS hostname.
 3. **AutoDownload flow**
    - Engine host registered (encrypted SSH creds).
    - NAS mount managed via CIFS + `/etc/fstab` health logic.
    - qBittorrent provisioned/controlled on Engine Host.
-   - Completed downloads move through staging -> processing -> final.
+   - Completed downloads move through download-stage folders -> processing -> final.
    - TMDB normalization + cleanup rules applied in processing.
    - XUI watchfolder scans triggered with pending/cooldown logic.
 
 ### Data Storage Model
 Main object is in admin DB (`lib/server/adminDb.js`), including:
 - `admins`, `sessions`, `secrets`, `settings`
-  - `notificationSettings` (admin-only Telegram immediate-alert toggles, daily monitor-report time, and Telegram message templates)
-  - `notificationState` (current observed live-channel snapshot, last notified live-channel snapshot, pending delayed live-status changes, down-reminder timestamps, last daily monitor-report send date, and dedupe state for storage-trigger Telegram alerts)
+  - `notificationSettings` (admin-only Telegram immediate-alert toggles, service Up/down toggles, daily monitor-report time, and Telegram message templates)
+  - `notificationState` (current observed live-channel snapshot, last notified live-channel snapshot, pending delayed live-status changes, down-reminder timestamps, last daily monitor-report send date, dedupe state for storage-trigger Telegram alerts, and last-known NAS/VPN/HTTPS service states for change-only Telegram alerts)
+  - `a2pMessaging` (Smart Messaging Suite settings, encrypted credential payloads, endpoint paths, sender IDs, last credit/test-send status)
+  - `a2pMessageLogs` (bounded local Smart SMS attempt log with masked destination, purpose, response summary, status, error, and created time)
   - Public `settings.catalog` now stores category labels, page-layout rows, hero-carousel rules (source/count/sort criteria), and row behavior controls (top-row rotation cadence, display counts, pool sizes).
+  - Public `settings.publicHttps` stores Public HTTPS/Cloudflare Tunnel configuration (`enabled`, provider, domain, public hostname/URL, local service URL, notes, token update timestamp). The Cloudflare Tunnel token itself is stored in encrypted admin secrets under `cloudflareTunnelToken`.
+  - `xuiHttps` stores the XUI Cloudflare Tunnel configuration, public XUI hostname/URL, remote XUI SSH metadata, cached remote status, and vault-encrypted tunnel/SSH/sudo secrets. Saving XUI HTTPS also syncs `xuiIntegration.publicBaseUrl`.
 - `reports`, `notifications`
 - `requestSettings` (daily limit default, per-username daily overrides, default landing category, customizable display labels for fixed request statuses)
 - `requests` (one row per TMDB media id + media type, deduped globally, with requesters/reminder subscribers, status workflow, archive support)
@@ -257,13 +289,19 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
   - `sourceProviderDomainHealth` remains as a legacy compatibility array and is no longer authoritative.
 - `libraryInventory` (persisted Movies/Series NAS snapshot for admin KPIs + duplicate checks, including folder-count rollups by movie category/genre and series genre, plus count-report write status/paths)
 - `xuiIntegration`, `xuiScanState`, `xuiScanLogs`
-- Blob/file-backed cache outside the admin DB:
-  - `kids_catalog_cache` (stored via `lib/server/blobStore.js`, local file `data/.admin/kids_catalog_cache.json` outside Netlify) persists TMDB-derived `kidsSafe`, `kidsReason`, certification/rating, and matched TMDB ids keyed by TMDB id or normalized title/year so public Movies/Series/Kids mode can render instantly after the first classification pass.
+- File-backed cache outside the admin DB:
+  - `kids_catalog_cache` (stored via `lib/server/blobStore.js`, local file `data/.admin/kids_catalog_cache.json`) persists TMDB-derived `kidsSafe`, `kidsReason`, certification/rating, and matched TMDB ids keyed by TMDB id or normalized title/year so public Movies/Series/Kids mode can render instantly after the first classification pass.
 - Browser localStorage stores public user-local playback state:
   - `3jtv_watchlist_v1` stores My Watchlist entries with content id/type, title, poster/backdrop metadata, genre/year/rating/duration/plot, playback extension, href, and added timestamp.
   - `3jtv_continue_v1` stores continue-watching progress rows.
 
 ### Important Current Behaviors
+- Public HTTPS uses `lib/server/publicHttps.js` to run a Cloudflare Tunnel connector locally on the IPTV web server. Defaults are `tv.3jhotspot.com -> http://127.0.0.1:3000`, configurable from `/admin/settings -> Public HTTPS`. Runtime files default to `~/.config/3j-tv/cloudflared.token`, `~/.local/share/3j-tv/cloudflared.log`, and `~/.local/bin/cloudflared`, overridable via `IPTV_PUBLIC_HTTPS_CONFIG_DIR`, `IPTV_PUBLIC_HTTPS_DATA_DIR`, `IPTV_PUBLIC_HTTPS_BIN_DIR`, `IPTV_CLOUDFLARED_LOG_FILE`, and `IPTV_CLOUDFLARED_BIN`. Start/restart installs cloudflared if missing, writes the token file with `0600`, and spawns `cloudflared tunnel --no-autoupdate run --token-file ...`; status detects running processes by token-file path and checks both local and public URLs with bounded timeouts.
+- XUI HTTPS uses `lib/server/xuiHttps.js` to manage a remote Cloudflare Tunnel connector on the XUI One server over SSH. Defaults are `xui.3jhotspot.com -> http://127.0.0.1` on the XUI host; the Settings tab can test SSH, install/start/restart/stop the remote systemd connector, and check both public XUI URL health and cached remote service state with bounded public URL timeouts.
+- Local LAN HTTP access on `192.168.50.15` is served by Nginx site `/etc/nginx/sites-available/threej-iptv-local`, proxying all paths to the same production app at `http://127.0.0.1:3000`. `/api/proxy/hls` is the streaming-specific location with buffering/request buffering disabled and 1-hour timeouts; `/_next/static/` and normal page/API routes keep buffering enabled with normal timeouts so the local proxy loads faster without changing app code.
+- Smart A2P Messaging uses `lib/server/a2pMessaging.js`, `/api/admin/a2p-messaging/*`, and `/admin/settings -> A2P Messaging`. It stores Smart API key/password as vault-encrypted payloads in the admin DB, supports API-key headers / Basic Auth / body credentials, uses Smart default paths (`/cgphttp/servlet/sendmsg`, `/cgpapi/service1/credits`), and records all test-send attempts in `a2pMessageLogs`.
+- Runtime builds use `.next-runtime`. Production build command remains `npm run build:runtime`. `scripts/build-runtime.sh` refuses to build when the production runtime service is active to avoid live `ChunkLoadError` caused by rewriting chunks mid-request.
+- Global security headers are part of runtime output through `next.config.js`; after changing CSP/header policy, rebuild the target runtime bundle and smoke-check `/login` plus `/admin/login` for CSP console errors before marking deployment complete.
 - Scheduler orchestration: `lib/server/autodownload/schedulerService.js`
 - Processing pipeline: `lib/server/autodownload/processingService.js`
 - XUI debounced scan logic: `lib/server/autodownload/xuiService.js`
@@ -304,7 +342,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Queue-to-torrent binding now prefers strict source-hash matching and avoids fallback mis-linking when a source hash is known.
 - Download source provider health/backoff/log orchestration: `lib/server/autodownload/sourceProvidersService.js`
 - Provider adapter engine modules: `lib/server/autodownload/providers/*`, `sourceEngine.js`, `ranking.js`, `filters.js`
-- AutoDownload staging folders are under `<mountDir>/qBittorrent/Movies` and `<mountDir>/qBittorrent/Series`; final library categories/genres stay under `<mountDir>/Movies` and `<mountDir>/Series`.
+- AutoDownload qBittorrent pipeline folders are under `<mountDir>/qBittorrent/Movies` and `<mountDir>/qBittorrent/Series`; final library categories/genres stay under `<mountDir>/Movies` and `<mountDir>/Series`.
 - AutoDownload library folder defaults now use `Downloaded and Processing` (downloaded stage) and `Cleaned and Ready` (processing hold stage) for both Movies and Series.
 - AutoDownload processing + folder-validation no longer renames Movie/Series category or genre folders with count suffixes (e.g., `English(174)`); canonical folders remain unsuffixed (`English`, `Asian`, genre names).
 - Admin Library Inventory now exposes live folder-count chips (`Category (count)`, `Category/Genre (count)`, `Series Genre (count)`) so counts stay visible without mutating NAS folder names.
@@ -370,6 +408,8 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - Watch Movie playback now starts with the direct VOD container URL (`/movie/.../{id}.{ext}`) and falls back to HLS only if needed; Series was already MP4/container-first, so Movies now follow the more stable VOD path too.
 - `VideoPlayer` no longer proxies cross-origin direct file/container playback; only HLS manifests/segments/keys stay on `/api/proxy/hls`, so VOD MP4/MKV playback can bypass the Next.js proxy path entirely while HLS still works through same-origin rewriting.
 - Auth/health server selection is now LAN-aware: when the request comes from a private/local network, `/api/auth/health` and `/api/auth/login` prefer private-IP XUI origins derived from configured Xuione hosts (served as `http://<private-ip>/`), while external requests keep the configured public origins.
+- Public settings now normalize Xuione server entries before auth/playback use. Entries without a scheme are normalized, invalid entries are ignored, and the configured Public HTTPS web-app hostname (for example `tv.3jhotspot.com`) is rejected as an XUI origin so a mistaken admin save cannot break public login with `No Xuione servers configured`.
+- XUI internal artwork URLs under `/images/...` are normalized through `/api/xuione/image` to the selected XUI origin before caching, and image fallback redirects use a relative `Location` header so internal runtime hosts like `0.0.0.0:3000` never leak to browsers.
 - Watch pages (`movie`, `live`, `series`) now auto-align the in-browser session origin to the preferred local/public server returned by `/api/auth/health`, so an old session that was created on the public hostname is rewritten to the local XUI origin when the same user later browses from LAN.
 - Local XUI VOD URLs can still 302 to public `tvN.3jxentro.net/vauth/...`; to avoid browser-side QUIC/CORB breakage on LAN playback, `VideoPlayer` now proxies private-host direct media/subtitle URLs through `/api/proxy/hls`, and the proxy manually follows redirects while rewriting public `tvN` redirects back to the resolved private IP when the upstream is LAN-local.
 - Movie watch pages now disable HLS fallback when Xuione already reports a concrete container extension (`mp4`, `mkv`, etc.); for this panel, many movie `.m3u8` URLs redirect into `/vauth/...` HTML 404 responses, so HLS fallback was causing black-screen recovery loops instead of helping.
@@ -455,6 +495,7 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
   - optional: `XUI_ADMIN_BASE_URL`, `XUI_ADMIN_ACCESS_CODE`, `XUI_ADMIN_API_KEY`, `XUI_ADMIN_USERNAME`, `XUI_ADMIN_PASSWORD`
   - `SCHEDULER_TOKEN`
   - optional: `ALLOW_INSECURE_UPSTREAM_TLS`, `PINNED_SERVER`, `LOAD_BALANCING_ENABLED`
+  - optional: `CLOUDFLARE_TURNSTILE_SECRET_KEY` (alternative to saving the Turnstile secret in Admin Settings)
 - Run:
   - `npm run dev`
   - `npm run build`
@@ -491,8 +532,8 @@ Main object is in admin DB (`lib/server/adminDb.js`), including:
 - `npm run build`
 - `npm run start`
 
-### Netlify Note
-- Project originated from Netlify Next starter and includes Netlify-compatible support.
+### Template Cleanup
+- Legacy Netlify starter demo routes/resources are removed. `/blobs`, `/edge`, `/image-cdn`, `/classics`, `/revalidation`, and `/quotes/random` should remain unavailable.
 
 ---
 
@@ -564,7 +605,8 @@ sudo journalctl -u 3j-tv -f
 - Admin Secrets UI is simplified for OpenSubtitles: only API key, username, and password are shown. `opensubtitlesUserAgent` remains supported internally but should default automatically (`3JTV v1.0`) unless there is a specific reason to override it in env/admin DB.
 - Admin Secrets page uses a single `Edit Secrets` modal for all secret groups. Do not add per-row edit buttons back unless explicitly requested; labels/help text should live inside the modal form.
 - Public movie subtitle order is now local-first: scan the NAS movie folder (via Engine Host + library inventory) for sidecar `.srt`/`.vtt` files and expose them through `/api/subtitles/local` before using XUI subtitle metadata, and only hit OpenSubtitles if neither local files nor XUI provide any track. This is specifically to reduce OpenSubtitles free-tier usage.
-- Admin top navigation now shows a color-coded VPN status pill immediately left of the dark/light toggle. It polls `/api/admin/autodownload/download-settings/vpn` and should display `VPN Off`, `VPN Pending`, `VPN Issue`, or `VPN Active` using the most recent VPN error/test/apply summary as hover text.
+- Admin top navigation shows color-coded status pills for NAS, VPN, `3JTV HTTPS`, and `XUI HTTPS` immediately left of the dark/light toggle. NAS polls `/api/admin/autodownload/mount/status?cached=1`, VPN polls `/api/admin/autodownload/download-settings/vpn`, `3JTV HTTPS` polls `/api/admin/public-https`, and `XUI HTTPS` polls `/api/admin/xui-https`; the HTTPS pills follow the same operational runtime checks used by Settings (`connector running` + `public URL OK`), not only the saved `enabled` flag.
+- Telegram service-status alerts run inside `runTelegramNotificationTick()`. When enabled in `/admin/settings -> Notifications`, NAS, VPN, `3JTV HTTPS`, and `XUI HTTPS` are baselined on first check and Telegram sends only on later UP/DOWN transitions to avoid repeated spam.
 - Storage & Mount now has two display sections: `NAS` (Mount Status, Folder Structure, Categories / Genres) and `Storage Devices` for the XUI VOD volume. Storage detection reads engine-host data from `/api/admin/autodownload/mount/storage-devices`, uses configurable `mountSettings.xuiVodPath` from the Storage & Mount settings modal, and falls back to detected `*/vod` candidates if the preferred path is missing. Show logical volume free space plus backing-device raw sizes; for combined/LVM/RAID storage, per-disk free space should be labeled as not directly measurable. This page is diagnostic/display-only for existing server folders, so status pills should use `Ready` / `Not Ready` / `Detected` instead of `Created`.
 - NAS mount status checks must not block indefinitely on stale CIFS mounts. `mountService.fetchMountStatus()` and generated `3jtv-mount-health-check` now preflight TCP/445 from the Engine Host to the configured NAS, wrap mount/write/df probes in shell timeouts, and report a clear unreachable-host error instead of only `Mount not writable`.
 - Storage & Mount `Share Path` supports nested SMB paths. The first path segment must be the real Windows share name, and additional segments are mounted directly in the CIFS source. The current NAS root should use `D/iptv_files`, which becomes `//192.168.50.24/D/iptv_files`. Do not assume a folder like `iptv_files` is an SMB share unless `smbclient -L` lists it.
@@ -619,12 +661,13 @@ And require:
 - AutoDelete preview must still check protection rules first. Only when strict protection filtering yields zero candidates may the preview bypass protections and fill the delete target from oldest TMDB release dates.
 - AutoDelete scheduling/execution pauses while the NAS mount is offline or not writable, and due deletion logs resume automatically once the NAS is back online.
 - AutoDelete has two distinct times: `previewRefreshTime` for rebuilding the next candidate set, and `deleteExecutionTime` for when due deletion logs are allowed to execute after the delay window.
-- The Deletion Log page should reuse the current-cycle stored preview on normal page loads instead of forcing a fresh VOD storage probe each time; only rebuild when the preview is stale/missing.
+- The Deletion Log page uses a fast read path on normal page loads and does not run a fresh VOD/XUI storage probe. Admins can explicitly click `Refresh Preview` to rebuild the cached preview when needed.
 - Admin top bar shows both `NAS` and `VPN` status pills; inactive states should render red so failures are obvious in light and dark themes.
 - Real deletion logs now carry both `totalVodBytes` and `totalNasBytes`, and per-item details must expose VOD/XUI and NAS deletion states separately so the admin can tell whether the system deleted both copies or only one side.
 - Admin form field hints/notes should not be rendered as inline text beside or under inputs anymore. For text fields and other form controls, place an info tooltip icon beside the field label and show the hint/note on hover. For table columns, keep hints on the header itself via hover tooltip/title instead of adding separate icon clutter.
 - Scheduler now runs an auto-deletion cycle before selection/dispatch. When deletion mode is active and `pauseSelectionWhileActive` is true, movie/series selection and qB dispatch must be skipped with reason `deletion_active` until pending deletion logs are cleared.
 - New deletion data lives in `db.deletionLogs` and `db.deletionState`. Each deletion log stores a scheduled run per media type with `deleteDate`, `storageSnapshot`, `triggerVolume`, `totalEstimatedBytes`, and per-item deletion state (`scheduled`, `deleting`, `deleted`, `failed`) including NAS/XUI deletion results.
+- Download Source health automatically clears expired provider/domain backoff windows during state load, ignores expired `backoff` skip logs for active blocking decisions, and treats degraded backup domains as non-blocking when the active domain is healthy.
 - Public `Leaving Soon` titles come from `/api/public/autodownload/leaving-soon` and `/api/public/autodownload/leaving-soon/details`. Home / Movies / Series pages now show `Leaving Soon` rows, and movie/series detail pages query the details route to render a removal-date banner when a currently available title is scheduled for deletion.
 - Auto deletion prioritizes oldest deployed titles from released AutoDownload rows, checks XUI One watch activity via admin API `activity_logs`, and uses a three-pass fallback: (1) avoid newly-added + recently-watched titles, (2) ignore recent-watch protection, (3) ignore both protections if storage pressure still requires deletion. Series deletions operate on whole-series rows only.
 - Reminder subscribers are reused for deletion warnings: if a title already has upcoming/reminder subscribers in `db.upcomingReminders`, entering `Leaving Soon` should create a user notification (`type: leaving_soon`) exactly once per scheduled item.

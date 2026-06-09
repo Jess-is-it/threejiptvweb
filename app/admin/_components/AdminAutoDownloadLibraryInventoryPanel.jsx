@@ -529,7 +529,7 @@ export default function AdminAutoDownloadLibraryInventoryPanel() {
               <div>
                 <div className="text-lg font-semibold">Clean Library Preview</div>
                 <div className="mt-1 text-sm text-[var(--admin-muted)]">
-                  Final library only: <code>/Movies</code> and <code>/Series</code>. qBittorrent staging folders are excluded.
+                  Final library only: <code>/Movies</code> and <code>/Series</code>. qBittorrent pipeline folders are excluded.
                 </div>
               </div>
               <button

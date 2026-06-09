@@ -249,14 +249,20 @@ export default function AdminAutoDownloadDeletionLogPanel({ type = 'movie' }) {
   const [logs, setLogs] = useState([]);
   const [state, setState] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [previewStale, setPreviewStale] = useState(false);
   const [selectedLog, setSelectedLog] = useState(null);
   const title = normalizedType === 'series' ? 'Series Deletion Log' : 'Movies Deletion Log';
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ refreshPreview = false } = {}) => {
     setLoading(true);
     setErr('');
     try {
-      const response = await fetch(`/api/admin/autodownload/deletion-log?type=${encodeURIComponent(normalizedType)}&limit=200`, {
+      const query = new URLSearchParams({
+        type: normalizedType,
+        limit: '200',
+      });
+      if (refreshPreview) query.set('refresh', '1');
+      const response = await fetch(`/api/admin/autodownload/deletion-log?${query.toString()}`, {
         cache: 'no-store',
       });
       const json = await response.json().catch(() => ({}));
@@ -265,12 +271,14 @@ export default function AdminAutoDownloadDeletionLogPanel({ type = 'movie' }) {
       setLogs(nextLogs);
       setState(json.state || null);
       setPreview(json.preview || null);
+      setPreviewStale(Boolean(json.previewStale || json.previewRefreshSkipped));
       setSelectedLog((current) => {
         if (!current) return current;
         return nextLogs.find((entry) => String(entry?.id || '') === String(current?.id || '')) || null;
       });
     } catch (error) {
       setErr(error?.message || 'Failed to load deletion logs.');
+      if (refreshPreview) throw error;
     } finally {
       setLoading(false);
     }
@@ -278,7 +286,7 @@ export default function AdminAutoDownloadDeletionLogPanel({ type = 'movie' }) {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 60000);
+    const timer = setInterval(() => load(), 60000);
     return () => clearInterval(timer);
   }, [load]);
 
@@ -296,6 +304,20 @@ export default function AdminAutoDownloadDeletionLogPanel({ type = 'movie' }) {
       await load();
     } catch (error) {
       setErr(error?.message || 'Failed to run deletion cycle.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshPreview = async () => {
+    setBusy(true);
+    setErr('');
+    setOk('');
+    try {
+      await load({ refreshPreview: true });
+      setOk('Deletion preview refreshed.');
+    } catch (error) {
+      setErr(error?.message || 'Failed to refresh deletion preview.');
     } finally {
       setBusy(false);
     }
@@ -324,11 +346,18 @@ export default function AdminAutoDownloadDeletionLogPanel({ type = 'movie' }) {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={load}
+            onClick={() => load()}
             disabled={loading || busy}
             className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
           >
             Refresh
+          </button>
+          <button
+            onClick={refreshPreview}
+            disabled={loading || busy}
+            className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-2 text-sm hover:bg-black/10 disabled:opacity-60"
+          >
+            Refresh Preview
           </button>
           <button
             onClick={runDeletionCycle}
@@ -342,6 +371,11 @@ export default function AdminAutoDownloadDeletionLogPanel({ type = 'movie' }) {
 
       {err ? <div className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div> : null}
       {ok ? <div className="mt-4 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{ok}</div> : null}
+      {previewStale ? (
+        <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100">
+          Showing cached deletion logs. Use Refresh Preview only when you need to rebuild the storage/XUI preview.
+        </div>
+      ) : null}
       {loading ? (
         <div className="mt-4 flex items-center justify-center">
           <div className="inline-flex items-center gap-2 rounded-full border border-[var(--admin-border)] bg-[var(--admin-surface-2)] px-3 py-1.5 text-xs text-[var(--admin-muted)]">

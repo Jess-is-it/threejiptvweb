@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useSession } from '../../components/SessionProvider';
 import { usePublicSettings } from '../../components/PublicSettingsProvider';
+import TurnstileWidget from '../../components/TurnstileWidget';
 import { prefetchMovieCatalog, prefetchSeriesCatalog } from '../../lib/publicCatalogCache';
+import { turnstileApplies } from '../../lib/turnstileClient';
 
 export default function LoginPage() {
   const { session, ready, login } = useSession();
@@ -28,6 +30,8 @@ export default function LoginPage() {
   const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
 
   const brandColor = settings?.brand?.color || '#FA5252';
   const logoUrl = settings?.brand?.logoUrl || '/brand/logo.svg';
@@ -35,13 +39,19 @@ export default function LoginPage() {
   const bgMobile = settings?.login?.backgroundMobileUrl || '/auth/login-bg-mobile.jpg';
   const helpUrl = settings?.login?.helpLinkUrl || 'https://www.facebook.com/threejfiberwifi';
   const helpText = settings?.login?.helpLinkText || 'FB Page';
+  const turnstileRequired = turnstileApplies(settings, 'protectPublicLogin');
+  const turnstileSiteKey = settings?.security?.turnstile?.siteKey || '';
 
   const onSubmit = async (e) => {
     e.preventDefault();
     setErr('');
+    if (turnstileRequired && !turnstileToken) {
+      setErr('Complete the security challenge first.');
+      return;
+    }
     setLoading(true);
     try {
-      const { ok, error, streamBase } = await login({ username, password, remember });
+      const { ok, error, streamBase } = await login({ username, password, remember, turnstileToken });
       if (!ok) throw new Error(error || 'Login failed.');
       if (streamBase) {
         void prefetchMovieCatalog(streamBase).catch(() => {});
@@ -50,6 +60,10 @@ export default function LoginPage() {
       router.replace('/');
     } catch (e) {
       setErr(e.message || 'Login failed.');
+      if (turnstileRequired) {
+        setTurnstileToken('');
+        setTurnstileResetKey((value) => value + 1);
+      }
     } finally {
       setLoading(false);
     }
@@ -128,9 +142,19 @@ export default function LoginPage() {
               <div className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</div>
             ) : null}
 
+            {turnstileRequired ? (
+              <TurnstileWidget
+                siteKey={turnstileSiteKey}
+                action="public_login"
+                resetKey={turnstileResetKey}
+                onVerify={setTurnstileToken}
+                onExpire={() => setTurnstileToken('')}
+              />
+            ) : null}
+
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (turnstileRequired && !turnstileToken)}
               className="flex w-full items-center justify-center rounded-lg px-4 py-4 font-medium text-white transition disabled:opacity-60"
               style={{ backgroundColor: brandColor }}
             >

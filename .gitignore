@@ -38,11 +38,10 @@ yarn-error.log*
 .cache
 .stackbit/cache
 
-# Local Netlify folder
-.netlify
-
 # Admin portal local data (dev only)
+/data/.admin
 /data/.admin/
+.codex-backups/
 
 # Local artwork cache (runtime)
 /data/.image-cache/

@@ -14,7 +14,8 @@ export async function GET(req) {
     const { searchParams } = new URL(req.url);
     const type = String(searchParams.get('type') || 'all').trim().toLowerCase();
     const limit = Math.max(1, Math.min(500, Number(searchParams.get('limit') || 200) || 200));
-    const result = await getDeletionLogs({ type, limit });
+    const refreshPreview = ['1', 'true', 'yes'].includes(String(searchParams.get('refresh') || '').trim().toLowerCase());
+    const result = await getDeletionLogs({ type, limit, refreshPreview });
     return NextResponse.json({ ok: true, ...result }, { status: 200 });
   } catch (error) {
     return NextResponse.json({ ok: false, error: error?.message || 'Failed to load deletion logs.' }, { status: 500 });

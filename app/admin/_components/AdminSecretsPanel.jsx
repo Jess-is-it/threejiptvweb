@@ -64,13 +64,6 @@ function Section({ title, description, children }) {
 
 const EMPTY_OBJECT = {};
 
-function normalizeServersFromText(text) {
-  return String(text || '')
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((u) => (u.endsWith('/') ? u : `${u}/`));
-}
 
 export default function AdminSecretsPanel() {
   const [loading, setLoading] = useState(true);
@@ -85,7 +78,6 @@ export default function AdminSecretsPanel() {
   const [opensubtitlesApiKey, setOpensubtitlesApiKey] = useState('');
   const [opensubtitlesUsername, setOpensubtitlesUsername] = useState('');
   const [opensubtitlesPassword, setOpensubtitlesPassword] = useState('');
-  const [xuiServersText, setXuiServersText] = useState('');
   const [xuiAdminBaseUrl, setXuiAdminBaseUrl] = useState('');
   const [xuiAdminAccessCode, setXuiAdminAccessCode] = useState('');
   const [xuiAdminApiKey, setXuiAdminApiKey] = useState('');
@@ -104,7 +96,6 @@ export default function AdminSecretsPanel() {
     setOpensubtitlesApiKey(payload?.secrets?.opensubtitlesApiKey || '');
     setOpensubtitlesUsername(payload?.secrets?.opensubtitlesUsername || '');
     setOpensubtitlesPassword(payload?.secrets?.opensubtitlesPassword || '');
-    setXuiServersText((payload?.xuioneServers || []).join('\n'));
     setXuiAdminBaseUrl(payload?.secrets?.xuiAdminBaseUrl || '');
     setXuiAdminAccessCode(payload?.secrets?.xuiAdminAccessCode || '');
     setXuiAdminApiKey(payload?.secrets?.xuiAdminApiKey || '');
@@ -178,11 +169,6 @@ export default function AdminSecretsPanel() {
             ? 'Fallback subtitles in player'
             : 'Fallback subtitles in player · from env'
           : 'Fallback subtitles in player',
-    },
-    {
-      title: 'Xuione Servers',
-      status: `${Array.isArray(meta?.xuioneServers) ? meta.xuioneServers.length : 0} server(s)`,
-      detail: 'Used by auth and playback APIs',
     },
     {
       title: 'XUI Admin API',
@@ -265,7 +251,6 @@ export default function AdminSecretsPanel() {
           firebaseProjectId: fbProjectId,
           firebaseAppId: fbAppId,
         },
-        xuioneServers: normalizeServersFromText(xuiServersText),
       };
 
       const response = await fetch('/api/admin/secrets', {
@@ -294,7 +279,7 @@ export default function AdminSecretsPanel() {
         <div>
           <h2 className="text-lg font-semibold text-[var(--admin-text)]">Secrets</h2>
           <p className="mt-1 text-sm text-[var(--admin-muted)]">
-            Store API keys, credentials, and Xuione server origins used by the admin and public playback APIs.
+            Store API keys and credentials used by the admin and public playback APIs. XUI playback origins are managed in XUI Integration.
           </p>
           {xuiApi?.endpoints?.length ? (
             <div className="mt-2 text-xs text-[var(--admin-muted)]">{xuiApi.endpoints.map((item) => item.path).join(' · ')}</div>
@@ -338,21 +323,13 @@ export default function AdminSecretsPanel() {
             </div>
             <div className="mt-1 text-xs text-[var(--admin-muted)]">Uses API key plus account username/password. User-Agent is automatic.</div>
           </div>
-          <div className="rounded-lg border border-[var(--admin-border)] bg-[var(--admin-surface-2)] p-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-[var(--admin-muted)]">Xuione Servers</div>
-            <div className="mt-2 text-sm text-[var(--admin-text)]">
-              {Array.isArray(meta?.xuioneServers) && meta.xuioneServers.length
-                ? meta.xuioneServers.join(' · ')
-                : 'No Xuione servers configured'}
-            </div>
-          </div>
         </div>
       </div>
 
       <EditModal
         open={modalOpen}
         title="Edit Secrets"
-        description="Edit all API keys, credentials, and Xuione servers in one form."
+        description="Edit all API keys and credentials in one form."
         error={err}
         success=""
         onCancel={closeEditor}
@@ -397,17 +374,6 @@ export default function AdminSecretsPanel() {
                 />
               </Field>
             </div>
-          </Section>
-
-          <Section title="Xuione / XUI" description="One server URL per line. These are used by auth, catalog, and playback APIs.">
-            <Field label="Xuione Servers" help="Example: `https://tv1.example.com/`">
-              <Textarea
-                value={xuiServersText}
-                onChange={setXuiServersText}
-                placeholder="https://tv1.example.com/\nhttps://tv2.example.com/"
-                rows={5}
-              />
-            </Field>
           </Section>
 
           <Section

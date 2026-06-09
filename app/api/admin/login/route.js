@@ -6,6 +6,14 @@ import {
   verifyAdminPassword,
   hasAnyAdmin,
 } from '../../../../lib/server/adminAuth';
+import {
+  checkAuthLock,
+  checkRateLimit,
+  clearAuthFailures,
+  recordAuthFailure,
+  tooManyRequestsPayload,
+} from '../../../../lib/server/botProtection';
+import { turnstileErrorResponse, verifyTurnstile } from '../../../../lib/server/turnstile';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -33,6 +41,18 @@ function setAdminCookie(req, res, token, maxAgeSeconds) {
 }
 
 export async function POST(req) {
+  const ipLimit = checkRateLimit(req, {
+    scope: 'admin-login-post',
+    limit: 6,
+    windowMs: 60_000,
+  });
+  if (!ipLimit.allowed) {
+    return NextResponse.json(tooManyRequestsPayload(ipLimit), {
+      status: 429,
+      headers: { 'Retry-After': String(ipLimit.retryAfter), 'Cache-Control': 'no-store' },
+    });
+  }
+
   if (!(await hasAnyAdmin())) {
     return NextResponse.json(
       { ok: false, error: 'No admin exists yet. Visit /admin/setup first.' },
@@ -47,11 +67,53 @@ export async function POST(req) {
 
   const username = String(body?.username || body?.email || '').trim();
   const password = String(body?.password || '');
+  const turnstile = await verifyTurnstile({
+    req,
+    area: 'admin_login',
+    token: body?.turnstileToken,
+  });
+  if (!turnstile.ok) {
+    return NextResponse.json(turnstileErrorResponse(turnstile), {
+      status: turnstile.status || 403,
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
+  const authLock = checkAuthLock(req, { scope: 'admin-login-failure', identifier: username });
+  if (authLock.locked) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Too many failed admin login attempts. Try again in ${authLock.retryAfter} seconds.`,
+        retryAfterSeconds: authLock.retryAfter,
+      },
+      { status: 429, headers: { 'Retry-After': String(authLock.retryAfter), 'Cache-Control': 'no-store' } }
+    );
+  }
 
   const admin = await verifyAdminPassword({ username, password });
   if (!admin) {
+    const failure = recordAuthFailure(req, {
+      scope: 'admin-login-failure',
+      identifier: username,
+      maxFailures: 5,
+      windowMs: 30 * 60_000,
+      lockMs: 30 * 60_000,
+    });
+    if (failure.locked) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Too many failed admin login attempts. Try again in ${failure.retryAfter} seconds.`,
+          retryAfterSeconds: failure.retryAfter,
+        },
+        { status: 429, headers: { 'Retry-After': String(failure.retryAfter), 'Cache-Control': 'no-store' } }
+      );
+    }
     return NextResponse.json({ ok: false, error: 'Invalid username or password.' }, { status: 401 });
   }
+
+  clearAuthFailures(req, { scope: 'admin-login-failure', identifier: username });
 
   const ttlSeconds = 60 * 60 * 24 * 7; // 7 days
   const sess = await createAdminSession(admin.id, { ttlMs: ttlSeconds * 1000 });
